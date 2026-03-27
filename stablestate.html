@@ -1203,43 +1203,46 @@ function renderSVG(parsed) {
   }
 
   // Helper: build orthogonal route between two points
-  function buildRoute(fromPt, toPt, fromSide, toSide) {
+  // channelOffset: pixel offset for the intermediate channel to avoid overlap
+  //   when multiple transitions share the same routing corridor
+  function buildRoute(fromPt, toPt, fromSide, toSide, channelOffset) {
     const points = [fromPt];
     const margin = 20;
+    const co = channelOffset || 0; // channel offset in pixels
 
     // same-axis opposite sides
     if (fromSide === 'right' && toSide === 'left') {
-      if (Math.abs(fromPt.y - toPt.y) < 2) {
+      if (Math.abs(fromPt.y - toPt.y) < 2 && Math.abs(co) < 1) {
         points.push(toPt);
       } else {
-        const midX = (fromPt.x + toPt.x) / 2;
+        const midX = (fromPt.x + toPt.x) / 2 + co;
         points.push({ x: midX, y: fromPt.y });
         points.push({ x: midX, y: toPt.y });
         points.push(toPt);
       }
     } else if (fromSide === 'left' && toSide === 'right') {
-      if (Math.abs(fromPt.y - toPt.y) < 2) {
+      if (Math.abs(fromPt.y - toPt.y) < 2 && Math.abs(co) < 1) {
         points.push(toPt);
       } else {
-        const midX = (fromPt.x + toPt.x) / 2;
+        const midX = (fromPt.x + toPt.x) / 2 + co;
         points.push({ x: midX, y: fromPt.y });
         points.push({ x: midX, y: toPt.y });
         points.push(toPt);
       }
     } else if (fromSide === 'bottom' && toSide === 'top') {
-      if (Math.abs(fromPt.x - toPt.x) < 2) {
+      if (Math.abs(fromPt.x - toPt.x) < 2 && Math.abs(co) < 1) {
         points.push(toPt);
       } else {
-        const midY = (fromPt.y + toPt.y) / 2;
+        const midY = (fromPt.y + toPt.y) / 2 + co;
         points.push({ x: fromPt.x, y: midY });
         points.push({ x: toPt.x, y: midY });
         points.push(toPt);
       }
     } else if (fromSide === 'top' && toSide === 'bottom') {
-      if (Math.abs(fromPt.x - toPt.x) < 2) {
+      if (Math.abs(fromPt.x - toPt.x) < 2 && Math.abs(co) < 1) {
         points.push(toPt);
       } else {
-        const midY = (fromPt.y + toPt.y) / 2;
+        const midY = (fromPt.y + toPt.y) / 2 + co;
         points.push({ x: fromPt.x, y: midY });
         points.push({ x: toPt.x, y: midY });
         points.push(toPt);
@@ -1247,54 +1250,63 @@ function renderSVG(parsed) {
     }
     // same sides — U-shape
     else if (fromSide === 'right' && toSide === 'right') {
-      const outX = Math.max(fromPt.x, toPt.x) + margin;
+      const outX = Math.max(fromPt.x, toPt.x) + margin + Math.abs(co);
       points.push({ x: outX, y: fromPt.y });
       points.push({ x: outX, y: toPt.y });
       points.push(toPt);
     } else if (fromSide === 'left' && toSide === 'left') {
-      const outX = Math.min(fromPt.x, toPt.x) - margin;
+      const outX = Math.min(fromPt.x, toPt.x) - margin - Math.abs(co);
       points.push({ x: outX, y: fromPt.y });
       points.push({ x: outX, y: toPt.y });
       points.push(toPt);
     } else if (fromSide === 'top' && toSide === 'top') {
-      const outY = Math.min(fromPt.y, toPt.y) - margin;
+      const outY = Math.min(fromPt.y, toPt.y) - margin - Math.abs(co);
       points.push({ x: fromPt.x, y: outY });
       points.push({ x: toPt.x, y: outY });
       points.push(toPt);
     } else if (fromSide === 'bottom' && toSide === 'bottom') {
-      const outY = Math.max(fromPt.y, toPt.y) + margin;
+      const outY = Math.max(fromPt.y, toPt.y) + margin + Math.abs(co);
       points.push({ x: fromPt.x, y: outY });
       points.push({ x: toPt.x, y: outY });
       points.push(toPt);
     }
-    // adjacent sides — L-shape
+    // adjacent sides — L-shape (offset applied to the corner point)
     else if (fromSide === 'right' && toSide === 'top') {
-      points.push({ x: toPt.x, y: fromPt.y });
+      points.push({ x: toPt.x + co, y: fromPt.y });
+      points.push({ x: toPt.x + co, y: toPt.y });
       points.push(toPt);
     } else if (fromSide === 'right' && toSide === 'bottom') {
-      points.push({ x: toPt.x, y: fromPt.y });
+      points.push({ x: toPt.x + co, y: fromPt.y });
+      points.push({ x: toPt.x + co, y: toPt.y });
       points.push(toPt);
     } else if (fromSide === 'left' && toSide === 'top') {
-      points.push({ x: toPt.x, y: fromPt.y });
+      points.push({ x: toPt.x + co, y: fromPt.y });
+      points.push({ x: toPt.x + co, y: toPt.y });
       points.push(toPt);
     } else if (fromSide === 'left' && toSide === 'bottom') {
-      points.push({ x: toPt.x, y: fromPt.y });
+      points.push({ x: toPt.x + co, y: fromPt.y });
+      points.push({ x: toPt.x + co, y: toPt.y });
       points.push(toPt);
     } else if (fromSide === 'top' && toSide === 'right') {
-      points.push({ x: fromPt.x, y: toPt.y });
+      points.push({ x: fromPt.x, y: toPt.y + co });
+      points.push({ x: toPt.x, y: toPt.y + co });
       points.push(toPt);
     } else if (fromSide === 'top' && toSide === 'left') {
-      points.push({ x: fromPt.x, y: toPt.y });
+      points.push({ x: fromPt.x, y: toPt.y + co });
+      points.push({ x: toPt.x, y: toPt.y + co });
       points.push(toPt);
     } else if (fromSide === 'bottom' && toSide === 'right') {
-      points.push({ x: fromPt.x, y: toPt.y });
+      points.push({ x: fromPt.x, y: toPt.y + co });
+      points.push({ x: toPt.x, y: toPt.y + co });
       points.push(toPt);
     } else if (fromSide === 'bottom' && toSide === 'left') {
-      points.push({ x: fromPt.x, y: toPt.y });
+      points.push({ x: fromPt.x, y: toPt.y + co });
+      points.push({ x: toPt.x, y: toPt.y + co });
       points.push(toPt);
     } else {
       // fallback: simple L
-      points.push({ x: toPt.x, y: fromPt.y });
+      points.push({ x: toPt.x + co, y: fromPt.y });
+      points.push({ x: toPt.x + co, y: toPt.y });
       points.push(toPt);
     }
     return points;
@@ -1403,7 +1415,13 @@ function renderSVG(parsed) {
       const tgtIdx = tgtGroup.indexOf(ti);
       const fromPt = getPortPoint(srcBox, srcSide, srcIdx, srcGroup.length);
       const toPt = getPortPoint(tgtBox, tgtSide, tgtIdx, tgtGroup.length);
-      route = buildRoute(fromPt, toPt, srcSide, tgtSide);
+      // Channel offset: spread intermediate routing channels when multiple
+      // transitions share the same source side, to prevent line overlap.
+      // Offset is ±8px centered around 0 based on source port index.
+      const channelSpacing = 8;
+      const channelOffset = srcGroup.length <= 1 ? 0
+        : (srcIdx - (srcGroup.length - 1) / 2) * channelSpacing;
+      route = buildRoute(fromPt, toPt, srcSide, tgtSide, channelOffset);
     }
 
     // Crossing detection: check this route against all previously rendered routes

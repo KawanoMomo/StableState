@@ -1459,8 +1459,9 @@ function renderSVG(parsed) {
     }
 
     // Crossing detection: check this route against all previously rendered routes
+    // Now handles BOTH horizontal and vertical segment crossings
     const bridgeR = 6;
-    const crossings = []; // {segIdx, x, y, t} for this route's segments
+    const crossings = []; // {segIdx, x, y, t, isHoriz} for this route's segments
     for (let si = 0; si < route.length - 1; si++) {
       const a1 = route[si], a2 = route[si + 1];
       for (const prevRoute of allRoutes) {
@@ -1468,13 +1469,10 @@ function renderSVG(parsed) {
           const b1 = prevRoute[pi], b2 = prevRoute[pi + 1];
           const hit = segmentIntersection(a1, a2, b1, b2);
           if (hit) {
-            // Determine if this segment is horizontal
             const isHoriz = Math.abs(a2.y - a1.y) < Math.abs(a2.x - a1.x);
-            if (isHoriz) {
-              const segLen = Math.hypot(a2.x - a1.x, a2.y - a1.y);
-              const t = segLen > 0 ? Math.hypot(hit.x - a1.x, hit.y - a1.y) / segLen : 0;
-              crossings.push({ segIdx: si, x: hit.x, y: hit.y, t: t });
-            }
+            const segLen = Math.hypot(a2.x - a1.x, a2.y - a1.y);
+            const t = segLen > 0 ? Math.hypot(hit.x - a1.x, hit.y - a1.y) / segLen : 0;
+            crossings.push({ segIdx: si, x: hit.x, y: hit.y, t: t, isHoriz: isHoriz });
           }
         }
       }
@@ -1489,7 +1487,7 @@ function renderSVG(parsed) {
       const pts = route.map(p => `${p.x},${p.y}`).join(' ');
       svg += `<polyline points="${pts}" fill="none" stroke="#89DDFF" stroke-width="1.5" marker-end="url(#arrowHead)"/>`;
     } else {
-      // Path with bridge arcs
+      // Path with bridge arcs (handles both horizontal and vertical crossings)
       let d = `M ${route[0].x},${route[0].y}`;
       for (let si = 0; si < route.length - 1; si++) {
         const a1 = route[si], a2 = route[si + 1];
@@ -1497,17 +1495,22 @@ function renderSVG(parsed) {
         if (segCrossings.length === 0) {
           d += ` L ${a2.x},${a2.y}`;
         } else {
-          // Walk along segment, inserting arcs at crossing points
-          let prevX = a1.x, prevY = a1.y;
           for (const cr of segCrossings) {
-            // Line to just before the crossing
-            const bx1 = cr.x - bridgeR;
-            const bx2 = cr.x + bridgeR;
-            d += ` L ${bx1},${cr.y}`;
-            // Arc over
-            d += ` A ${bridgeR},${bridgeR} 0 0,1 ${bx2},${cr.y}`;
-            prevX = bx2;
-            prevY = cr.y;
+            if (cr.isHoriz) {
+              // Horizontal segment: arc hops left-to-right over crossing
+              const dir = a2.x > a1.x ? 1 : -1; // direction of travel
+              const bx1 = cr.x - bridgeR * dir;
+              const bx2 = cr.x + bridgeR * dir;
+              d += ` L ${bx1},${cr.y}`;
+              d += ` A ${bridgeR},${bridgeR} 0 0,${dir > 0 ? 1 : 0} ${bx2},${cr.y}`;
+            } else {
+              // Vertical segment: arc hops top-to-bottom over crossing
+              const dir = a2.y > a1.y ? 1 : -1; // direction of travel
+              const by1 = cr.y - bridgeR * dir;
+              const by2 = cr.y + bridgeR * dir;
+              d += ` L ${cr.x},${by1}`;
+              d += ` A ${bridgeR},${bridgeR} 0 0,${dir > 0 ? 0 : 1} ${cr.x},${by2}`;
+            }
           }
           // Line to end of segment
           d += ` L ${a2.x},${a2.y}`;
@@ -1544,6 +1547,10 @@ function renderSVG(parsed) {
       if (tr.action) guardAction.push('/ ' + tr.action);
       if (guardAction.length > 0) {
         labelLines.push({ text: guardAction.join(' '), color: '#C3E88D', size: 9 });
+      }
+      // Show transition kind if non-default
+      if (tr.kind && tr.kind !== parsed.config.transition) {
+        labelLines.push({ text: '@' + tr.kind, color: '#F59E0B', size: 8 });
       }
       if (midSegHoriz) {
         // Stack labels above the line
@@ -1849,6 +1856,10 @@ function renderTable(parsed) {
       if (matching.length > 0) {
         const tgtEl = resolveStateRef(matching[0].to, parsed);
         val = tgtEl ? tgtEl.label || tgtEl.id : matching[0].to;
+        // Append @kind if non-default (spec: "Active @external")
+        if (matching[0].kind && matching[0].kind !== parsed.config.transition) {
+          val += ' @' + matching[0].kind;
+        }
       }
       thtml += `<td class="table-editable" data-field="target" data-state="${lc.id}" data-event="${esc(evName)}" style="cursor:pointer">${esc(val)}</td>`;
     }

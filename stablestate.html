@@ -168,12 +168,27 @@ input[type=number]::-webkit-inner-spin-button { -webkit-appearance:none; }
       <textarea id="editor" spellcheck="false">@canvas width=960 height=600 grid=20
 @config transition=local
 
+group sys "System" at 0,0 size 46x28 color=#1a1a3e border=#3a3a5a
+
 initial ini at 1,5
-state idle "Idle" at 4,3 size 8x4 entry=IdleEntry
-final fin at 20,5
+state idle "Idle" at 3,3 size 8x5 entry=IdleEntry
+state active "Active" at 15,1 size 24x14 entry=ActiveEntry exit=ActiveExit {
+  state accel "Accel" at 1,3 size 9x5 entry=AccelEntry do=AccelDo
+  state cruise "Cruise" at 13,3 size 9x5 entry=CruiseEntry
+}
+state error "Error" at 3,18 size 8x5 color=#7F1D1D border=#DC2626
+choice c1 at 12,14
+final fin at 40,14
 
 ini -> idle
-idle -> fin : EvShutdown</textarea>
+idle -> active : EvStart [IsReady] / ActInit
+active.accel -> active.cruise : EvSpeedOk
+active.cruise -> active.accel : EvBrake
+active -> idle : EvStop / ActStop
+active -> c1 : EvError
+c1 -> error : [IsCritical]
+c1 -> idle :
+error -> fin : EvShutdown</textarea>
     </div>
     <div id="error-bar"></div>
   </div>
@@ -298,8 +313,10 @@ idle -> fin : EvShutdown</textarea>
 let parsed = null;
 let currentTab = 'diagram';
 let currentTool = 'select';
-let actionsMode = false;
+let showActions = false;
 let zoomLevel = 100;
+let selection = new Set();
+function isSelected(id) { return selection.has(id); }
 
 // ═══════════════════════════════════════════════
 // Tab Switching
@@ -336,8 +353,8 @@ function setTool(name) {
 // Actions Toggle
 // ═══════════════════════════════════════════════
 function toggleActions() {
-  actionsMode = !actionsMode;
-  document.getElementById('btn-actions').classList.toggle('active', actionsMode);
+  showActions = !showActions;
+  document.getElementById('btn-actions').classList.toggle('active', showActions);
   refresh();
 }
 
@@ -803,17 +820,178 @@ function updateErrorBar(result) {
 }
 
 // ═══════════════════════════════════════════════
-// SVG Renderer (stub)
+// HTML Escape Helper
+// ═══════════════════════════════════════════════
+function esc(s) {
+  return s ? s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;') : '';
+}
+
+// ═══════════════════════════════════════════════
+// Coordinate Helper — absolute pixel position
+// ═══════════════════════════════════════════════
+function getAbsolutePos(element, parsed) {
+  let ox = 0, oy = 0;
+  let pid = element.parent;
+  while (pid) {
+    const p = parsed.stateMap[pid];
+    if (p) { ox += p.x; oy += p.y; pid = p.parent; }
+    else break;
+  }
+  return { x: (element.x + ox) * parsed.canvas.grid, y: (element.y + oy) * parsed.canvas.grid };
+}
+
+// ═══════════════════════════════════════════════
+// SVG Renderer
 // ═══════════════════════════════════════════════
 function renderSVG(parsed) {
-  // TODO: Implement SVG rendering
-  const wrap = document.getElementById('svg-wrap');
-  if (!parsed) return;
-  const c = parsed.canvas;
-  wrap.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" width="${c.width}" height="${c.height}" viewBox="0 0 ${c.width} ${c.height}">
-    <rect width="${c.width}" height="${c.height}" fill="#fff"/>
-    <text x="${c.width/2}" y="${c.height/2}" text-anchor="middle" fill="#999" font-size="14" font-family="IBM Plex Sans">StableState — diagram will render here</text>
-  </svg>`;
+  if (!parsed) return '';
+  const { canvas } = parsed;
+  const g = canvas.grid;
+  const sans = "'IBM Plex Sans','Noto Sans JP',sans-serif";
+  const mono = "'IBM Plex Mono',monospace";
+  const shadow = 'filter="drop-shadow(2px 2px 4px rgba(0,0,0,0.4))"';
+
+  let svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${canvas.width}" height="${canvas.height}">`;
+
+  // ─── 1. Grid pattern ───
+  svg += `<defs>`;
+  svg += `<pattern id="gridPat" width="${g}" height="${g}" patternUnits="userSpaceOnUse">`;
+  svg += `<circle cx="${g/2}" cy="${g/2}" r="0.8" fill="#2a2a4a"/></pattern>`;
+  svg += `</defs>`;
+  svg += `<rect width="${canvas.width}" height="${canvas.height}" fill="#1a1a2e"/>`;
+  svg += `<rect width="${canvas.width}" height="${canvas.height}" fill="url(#gridPat)"/>`;
+
+  // ─── 2. Groups ───
+  for (const grp of parsed.groups) {
+    const px = grp.x * g;
+    const py = grp.y * g;
+    const pw = grp.w * g;
+    const ph = grp.h * g;
+    const fill = grp.color || '#1a1a3e';
+    const border = grp.borderColor || '#3a3a5a';
+    const textClr = grp.textColor || '#888888';
+    svg += `<rect x="${px}" y="${py}" width="${pw}" height="${ph}" rx="6" ry="6" fill="${esc(fill)}" fill-opacity="0.3" stroke="${esc(border)}" stroke-width="1"/>`;
+    svg += `<text x="${px + 10}" y="${py + 16}" font-family="${sans}" font-size="11" font-weight="600" fill="${esc(textClr)}">${esc(grp.label)}</text>`;
+  }
+
+  // ─── 3. Composite states (states with children) ───
+  for (const st of parsed.states.filter(s => s.children.length > 0)) {
+    const pos = getAbsolutePos(st, parsed);
+    const pw = st.w * g;
+    const ph = st.h * g;
+    const fill = st.color || 'rgba(99,102,241,0.08)';
+    const border = st.borderColor || '#6366F1';
+    const textClr = st.textColor || '#e0e0e0';
+    const round = st.round != null ? st.round : 10;
+    const sel = isSelected(st.id);
+    const strokeClr = sel ? 'white' : border;
+    const strokeW = sel ? 2.5 : 1.5;
+    const dashAttr = st.style === 'dashed' ? ' stroke-dasharray="6 3"' : '';
+
+    svg += `<rect x="${pos.x}" y="${pos.y}" width="${pw}" height="${ph}" rx="${round}" ry="${round}" fill="${esc(fill)}" stroke="${esc(strokeClr)}" stroke-width="${strokeW}"${dashAttr} ${shadow}/>`;
+    svg += `<text x="${pos.x + 10}" y="${pos.y + 18}" font-family="${sans}" font-size="12" font-weight="600" fill="${esc(textClr)}">${esc(st.label)}</text>`;
+
+    // If showActions and composite has actions, render them below label
+    if (showActions && (st.entry || st.do || st.exit)) {
+      let ay = pos.y + 32;
+      if (st.entry) {
+        svg += `<text x="${pos.x + 10}" y="${ay}" font-family="${mono}" font-size="10" fill="#888888">entry / ${esc(st.entry)}</text>`;
+        ay += 14;
+      }
+      if (st.do) {
+        svg += `<text x="${pos.x + 10}" y="${ay}" font-family="${mono}" font-size="10" fill="#888888">do / ${esc(st.do)}</text>`;
+        ay += 14;
+      }
+      if (st.exit) {
+        svg += `<text x="${pos.x + 10}" y="${ay}" font-family="${mono}" font-size="10" fill="#888888">exit / ${esc(st.exit)}</text>`;
+      }
+    }
+  }
+
+  // ─── 4. Leaf states (states without children) ───
+  for (const st of parsed.states.filter(s => s.children.length === 0)) {
+    const pos = getAbsolutePos(st, parsed);
+    const pw = st.w * g;
+    const ph = st.h * g;
+    const fill = st.color || '#1e293b';
+    const border = st.borderColor || '#818CF8';
+    const textClr = st.textColor || '#e0e0e0';
+    const round = st.round != null ? st.round : 10;
+    const sel = isSelected(st.id);
+    const strokeClr = sel ? 'white' : border;
+    const strokeW = sel ? 2.5 : 1.5;
+    const dashAttr = st.style === 'dashed' ? ' stroke-dasharray="6 3"' : '';
+    const hasActions = showActions && (st.entry || st.do || st.exit);
+
+    svg += `<rect x="${pos.x}" y="${pos.y}" width="${pw}" height="${ph}" rx="${round}" ry="${round}" fill="${esc(fill)}" stroke="${esc(strokeClr)}" stroke-width="${strokeW}"${dashAttr} ${shadow}/>`;
+
+    if (hasActions) {
+      // Label at top
+      svg += `<text x="${pos.x + pw/2}" y="${pos.y + 20}" text-anchor="middle" font-family="${sans}" font-size="13" font-weight="600" fill="${esc(textClr)}">${esc(st.label)}</text>`;
+      // Separator line
+      const sepY = pos.y + 28;
+      svg += `<line x1="${pos.x + 4}" y1="${sepY}" x2="${pos.x + pw - 4}" y2="${sepY}" stroke="${esc(border)}" stroke-width="0.5" opacity="0.5"/>`;
+      // Action text
+      let ay = sepY + 16;
+      if (st.entry) {
+        svg += `<text x="${pos.x + 8}" y="${ay}" font-family="${mono}" font-size="10" fill="#888888">entry / ${esc(st.entry)}</text>`;
+        ay += 14;
+      }
+      if (st.do) {
+        svg += `<text x="${pos.x + 8}" y="${ay}" font-family="${mono}" font-size="10" fill="#888888">do / ${esc(st.do)}</text>`;
+        ay += 14;
+      }
+      if (st.exit) {
+        svg += `<text x="${pos.x + 8}" y="${ay}" font-family="${mono}" font-size="10" fill="#888888">exit / ${esc(st.exit)}</text>`;
+      }
+    } else {
+      // Centered label only
+      svg += `<text x="${pos.x + pw/2}" y="${pos.y + ph/2 + 5}" text-anchor="middle" font-family="${sans}" font-size="13" font-weight="600" fill="${esc(textClr)}">${esc(st.label)}</text>`;
+    }
+  }
+
+  // ─── 5. Pseudo-states ───
+  for (const ps of parsed.pseudoStates) {
+    const pos = getAbsolutePos(ps, parsed);
+
+    switch (ps.type) {
+      case 'initial': {
+        svg += `<circle cx="${pos.x}" cy="${pos.y}" r="10" fill="#e0e0e0" ${shadow}/>`;
+        break;
+      }
+      case 'final': {
+        svg += `<circle cx="${pos.x}" cy="${pos.y}" r="12" fill="none" stroke="#e0e0e0" stroke-width="2" ${shadow}/>`;
+        svg += `<circle cx="${pos.x}" cy="${pos.y}" r="7" fill="#e0e0e0"/>`;
+        break;
+      }
+      case 'choice': {
+        const cx = pos.x;
+        const cy = pos.y;
+        svg += `<polygon points="${cx},${cy-10} ${cx+10},${cy} ${cx},${cy+10} ${cx-10},${cy}" fill="#1e293b" stroke="#818CF8" stroke-width="1.5" ${shadow}/>`;
+        break;
+      }
+      case 'history': {
+        svg += `<circle cx="${pos.x}" cy="${pos.y}" r="16" fill="#1e293b" stroke="#818CF8" stroke-width="1.5" ${shadow}/>`;
+        svg += `<text x="${pos.x}" y="${pos.y + 5}" text-anchor="middle" font-family="${sans}" font-size="14" font-weight="700" fill="#e0e0e0">H</text>`;
+        break;
+      }
+      case 'deephistory': {
+        svg += `<circle cx="${pos.x}" cy="${pos.y}" r="16" fill="#1e293b" stroke="#818CF8" stroke-width="1.5" ${shadow}/>`;
+        svg += `<text x="${pos.x}" y="${pos.y + 5}" text-anchor="middle" font-family="${sans}" font-size="14" font-weight="700" fill="#e0e0e0">H*</text>`;
+        break;
+      }
+      case 'fork':
+      case 'join': {
+        const pw = ps.w != null ? ps.w * g : 6;
+        const ph = ps.h != null ? ps.h * g : 40;
+        svg += `<rect x="${pos.x - pw/2}" y="${pos.y - ph/2}" width="${pw}" height="${ph}" rx="2" ry="2" fill="#e0e0e0" ${shadow}/>`;
+        break;
+      }
+    }
+  }
+
+  svg += '</svg>';
+  return svg;
 }
 
 // ═══════════════════════════════════════════════
@@ -846,7 +1024,7 @@ function refresh() {
   parsed = parseDSL(text);
   validate(parsed);
   updateErrorBar(parsed);
-  renderSVG(parsed);
+  document.getElementById('svg-wrap').innerHTML = renderSVG(parsed);
   renderTable(parsed);
   renderProps();
   updateLineNumbers();

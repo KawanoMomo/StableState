@@ -62,7 +62,18 @@ body { background: var(--bg); color: var(--text); font-family: 'IBM Plex Sans','
 #error-bar { padding:4px 10px; background:#7F1D1D; color:#FCA5A5; font-size:10px; display:none; border-top:1px solid #DC2626; max-height:100px; overflow-y:auto; font-family:'IBM Plex Mono',monospace; }
 #editor-wrap { flex:1; display:flex; overflow:hidden; background:var(--editor); }
 #line-nums { width:40px; padding:12px 4px 12px 0; text-align:right; font-family:'IBM Plex Mono',monospace; font-size:12px; line-height:20px; color:var(--dim); user-select:none; overflow:hidden; flex-shrink:0; }
-#editor { flex:1; background:transparent; color:var(--text); border:none; outline:none; font-family:'IBM Plex Mono',monospace; font-size:12px; line-height:20px; padding:12px 12px 12px 4px; resize:none; white-space:pre; overflow-x:auto; tab-size:2; }
+#editor-container { flex:1; position:relative; overflow:hidden; }
+#highlight-overlay { position:absolute; top:0; left:0; width:100%; height:100%; padding:12px 12px 12px 4px; font-family:'IBM Plex Mono',monospace; font-size:12px; line-height:20px; white-space:pre; overflow:hidden; pointer-events:none; tab-size:2; color:var(--text); margin:0; border:0; }
+#editor { position:absolute; top:0; left:0; width:100%; height:100%; background:transparent; color:transparent; caret-color:#e0e0e0; border:none; outline:none; font-family:'IBM Plex Mono',monospace; font-size:12px; line-height:20px; padding:12px 12px 12px 4px; resize:none; white-space:pre; overflow:auto; tab-size:2; }
+
+/* Syntax highlighting */
+.hl-comment { color: #546E7A; }
+.hl-keyword { color: #C792EA; }
+.hl-keyword2 { color: #89DDFF; }
+.hl-arrow { color: #89DDFF; }
+.hl-string { color: #C3E88D; }
+.hl-color { color: #F78C6C; }
+.hl-number { color: #F78C6C; }
 
 /* ─── Center Panel ─── */
 #center-panel { flex:1; display:flex; flex-direction:column; overflow:hidden; }
@@ -166,7 +177,9 @@ input[type=number]::-webkit-inner-spin-button { -webkit-appearance:none; }
     <div class="panel-label"><span class="dot" style="color:var(--accent)">&#9679;</span> DSL</div>
     <div id="editor-wrap">
       <div id="line-nums"></div>
-      <textarea id="editor" spellcheck="false">@canvas width=960 height=600 grid=20
+      <div id="editor-container">
+        <pre id="highlight-overlay"></pre>
+        <textarea id="editor" spellcheck="false">@canvas width=960 height=600 grid=20
 @config transition=local
 
 group sys "System" at 0,0 size 46x28 color=#1a1a3e border=#3a3a5a
@@ -190,6 +203,7 @@ active -> c1 : EvError
 c1 -> error : [IsCritical]
 c1 -> idle :
 error -> fin : EvShutdown</textarea>
+      </div>
     </div>
     <div id="error-bar"></div>
   </div>
@@ -2279,6 +2293,24 @@ function addEvent() {
 }
 
 // ═══════════════════════════════════════════════
+// Syntax Highlighting
+// ═══════════════════════════════════════════════
+function updateHighlight() {
+  const text = getDsl();
+  const highlighted = text
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/(^[ \t]*#.*$)/gm, '<span class="hl-comment">$1</span>')
+    .replace(/(@canvas|@config)\b/g, '<span class="hl-keyword">$1</span>')
+    .replace(/\b(state|initial|final|choice|history|deephistory|fork|join|region|group|note)\b/g, '<span class="hl-keyword">$1</span>')
+    .replace(/(->)/g, '<span class="hl-arrow">$1</span>')
+    .replace(/("(?:[^"\\]|\\.)*")/g, '<span class="hl-string">$1</span>')
+    .replace(/(=#[0-9A-Fa-f]{6})\b/g, '<span class="hl-color">$1</span>')
+    .replace(/(\bat\b|\bsize\b)/g, '<span class="hl-keyword2">$1</span>')
+    .replace(/\b(\d+(?:\.\d+)?)\b/g, '<span class="hl-number">$1</span>');
+  document.getElementById('highlight-overlay').innerHTML = highlighted + '\n';
+}
+
+// ═══════════════════════════════════════════════
 // Refresh Pipeline
 // ═══════════════════════════════════════════════
 function refresh() {
@@ -2291,6 +2323,7 @@ function refresh() {
   renderProps();
   updateLineNumbers();
   updateStatus();
+  updateHighlight();
 }
 
 // ═══════════════════════════════════════════════
@@ -2322,9 +2355,12 @@ editorEl.addEventListener('input', function() {
   refresh();
 });
 
-// Sync line numbers scroll
+// Sync line numbers and highlight overlay scroll
 editorEl.addEventListener('scroll', function() {
   document.getElementById('line-nums').scrollTop = this.scrollTop;
+  const overlay = document.getElementById('highlight-overlay');
+  overlay.scrollTop = this.scrollTop;
+  overlay.scrollLeft = this.scrollLeft;
 });
 
 // ═══════════════════════════════════════════════

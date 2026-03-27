@@ -11,6 +11,9 @@ StableState — ブラウザベースのUML状態遷移図エディタ。テキ�
 - `stablestate.html` 単一ファイルにパーサー・レンダラー・インタラクションをすべて収める
 - 外部依存なし、ビルドステップなし（Google Fontsのみ外部読み込み）
 - Excel出力時のみSheetJS利用（HTMLに埋め込み、CDN非依存）
+- パイプライン: DSLテキスト → `parseDSL()` → `validate()` → `renderSVG()` / `renderTable()` / `renderProps()`
+- 双方向同期: GUI操作（ドラッグ・リサイズ・プロパティ変更）→ DSLテキスト書き戻し → `refresh()` による全再レンダリング
+- Undo/Redo: DSLテキスト全体のスナップショットをスタックに保持（最大100件）
 
 ## ファイル構成
 
@@ -21,13 +24,103 @@ E:/00_Git/04_StableState/
 ├── VERSION                       # セマンティックバージョン
 ├── docs/
 │   └── superpowers/specs/        # 設計仕様書
-└── vscode-stablestate/           # VSCode拡張（予定）
+├── tests/                        # テストファイル
+└── vscode-stablestate/           # VSCode拡張
     ├── package.json
     ├── src/extension.js
     ├── language-configuration.json
     └── syntaxes/
         └── stablestate.tmLanguage.json
 ```
+
+## 実装済み関数一覧（stablestate.html）
+
+### パーサー
+| 関数 | 責務 |
+|---|---|
+| `parseDSL(text)` | DSLテキストを解析し、states/pseudoStates/groups/transitions/notes等を含むparsedオブジェクトを返す |
+| `parseProps(propsStr, target)` | `key=value` 形式のプロパティ文字列を解析しターゲットオブジェクトに適用 |
+| `checkDuplicate(id, lineNum, result)` | ID重複チェック（state/pseudo/group/noteの全マップ横断） |
+| `resolveStateRef(dotPath, parsed)` | ドット区切りパス（例: `active.accel`）を実際の状態オブジェクトに解決 |
+| `validate(result)` | パース結果に対するセマンティック検証（遷移参照、初期状態必須、choice分岐、config制約、境界チェック） |
+
+### DSL書き戻し（双方向同期）
+| 関数 | 責務 |
+|---|---|
+| `updatePos(type, id, nx, ny, dsl)` | 要素の `at X,Y` 座標を更新 |
+| `updateSize(type, id, nw, nh, dsl)` | 要素の `size WxH` を更新 |
+| `updateProp(type, id, prop, val, dsl)` | プロパティ `key=value` を追加/更新 |
+| `updateLabel(type, id, newLabel, dsl)` | クォート付きラベルを更新 |
+| `addTransition(from, to, event, guard, action, kind, dsl)` | 遷移行を末尾に追加 |
+| `removeTransition(from, to, event, guard, dsl)` | 一致する遷移行を削除 |
+| `updateTransition(from, to, event, guard, field, val, dsl)` | 遷移行の特定フィールドを更新 |
+| `removeDSLElement(id, dsl)` | 要素定義行（複合状態は子含む）と関連遷移を削除 |
+
+### レンダラー
+| 関数 | 責務 |
+|---|---|
+| `renderSVG(parsed)` | parsedデータからSVG文字列を生成（グリッド・グループ・状態・擬似状態・注釈・遷移・リサイズハンドル・スナップガイド） |
+| `renderTable(parsed)` | 状態遷移表HTMLを生成（階層ヘッダー・entry/do/exit行・イベントブロック・インライン編集） |
+| `renderProps()` | プロパティパネルHTML生成（状態/擬似状態/グループ/注釈の編集UI + Config設定） |
+| `updateHighlight()` | DSLエディタのシンタックスハイライトオーバーレイを更新 |
+
+### レンダリング補助
+| 関数 | 責務 |
+|---|---|
+| `getAbsolutePos(element, parsed)` | ネスト階層を辿って絶対ピクセル座標を算出 |
+| `getBox(ref)` | 状態/擬似状態の参照からバウンディングボックス `{x,y,w,h}` を取得 |
+| `computePortSide(srcBox, tgtBox)` | 2つのボックス間の接続側面（top/bottom/left/right）を決定 |
+| `getPortPoint(box, side, portIndex, portCount)` | ボックス辺上のポート座標を算出（複数ポート分散配置） |
+| `buildRoute(fromPt, toPt, fromSide, toSide)` | 直交ルーティング（L字/U字/直線）のポイント列を生成 |
+| `buildSelfRoute(box)` | 自己遷移ループのルートを生成 |
+| `segmentIntersection(a1, a2, b1, b2)` | 線分交差判定（交差橋描画用） |
+| `routeMidpoint(points)` | ポリライン中点算出（ラベル配置用） |
+
+### UI制御
+| 関数 | 責務 |
+|---|---|
+| `refresh()` | メイン更新パイプライン（parse → validate → render all） |
+| `switchTab(name)` | Diagram/Tableタブ切替 |
+| `setTool(name)` | ツール選択（select/state/group/initial/final/connect） |
+| `toggleActions()` | entry/do/exit表示トグル |
+| `toggleAnnotations()` | 注釈レイヤー表示トグル |
+| `setZoom(delta)` / `applyZoom()` | ズーム制御 |
+| `updateLineNumbers()` | エディタ行番号更新 |
+| `updateStatus()` | ステータスバー更新 |
+| `updateErrorBar(result)` | エラーバー表示 |
+
+### インタラクション
+| 関数 | 責務 |
+|---|---|
+| `svgCoords(e)` | マウスイベントからズーム補正済みSVG座標を算出 |
+| `hitTest(px, py)` | クリック座標から要素を特定（状態→擬似→グループ→注釈の順） |
+| `hitTestHandle(px, py)` | リサイズハンドルのヒットテスト |
+| `collectDragSet(selectionSet)` | 選択要素+グループ内包要素のドラッグ対象一覧を収集 |
+| `computeSnapGuides(dragItems)` | ドラッグ中のスナップガイドライン算出 |
+| `connectSelected()` | 2要素選択時の接続（遷移追加） |
+| `deleteSelected()` | 選択要素の削除 |
+| `copySelection()` / `pasteSelection()` | DSL行単位のコピー&ペースト |
+| `addNewElement(type)` | ツールバーからの新規要素追加 |
+
+### Undo/Redo
+| 関数 | 責務 |
+|---|---|
+| `getDsl()` / `setDsl(text)` | エディタテキストのget/set |
+| `pushHistory()` | 現在のDSLをundoスタックにpush |
+| `undo()` / `redo()` | undoスタック/redoスタックからの復元 |
+
+### エクスポート
+| 関数 | 責務 |
+|---|---|
+| `exportSVG()` | SVGファイルダウンロード |
+| `exportPNG()` | PNG画像ダウンロード（Canvas経由） |
+| `copyPNG()` | PNG画像をクリップボードにコピー |
+| `addEvent()` | テーブルビューへの新規イベント追加 |
+
+### ユーティリティ
+| 関数 | 責務 |
+|---|---|
+| `esc(s)` | HTML特殊文字エスケープ |
 
 ## DSL構文リファレンス
 
@@ -100,7 +193,7 @@ tip -> idle    # 注釈から状態への点線接続
 ## UIレイアウト
 
 3ペイン構成:
-- **左ペイン（320px）**: DSLテキストエディタ
+- **左ペイン（320px）**: DSLテキストエディタ（シンタックスハイライト付き）
 - **中央ペイン**: Diagram / Table タブ切替（排他表示）
 - **右ペイン（220px）**: プロパティパネル（選択要素の編集 + Config設定）
 
@@ -114,6 +207,32 @@ tip -> idle    # 注釈から状態への点線接続
 
 ## 段階的リリース計画
 
-- **Phase 1（コア）**: 単純状態 + 複合状態、基本遷移、開始/終了/選択擬似状態、DSL↔GUI双方向同期、状態遷移表、注釈、SVG/PNGエクスポート、VSCode拡張
+- **Phase 1（コア）** --- **完了 (v0.1.0)**
+  - 単純状態 + 複合状態（ネスト対応）
+  - 基本遷移（イベント/ガード/アクション/種別）
+  - 開始/終了/選択擬似状態
+  - グループ（視覚グルーピング）
+  - 注釈（ノート）+ 点線接続
+  - DSL↔GUI双方向同期（ドラッグ移動・リサイズ・プロパティ編集）
+  - 状態遷移表（階層ヘッダー・インライン編集）
+  - SVG/PNGエクスポート + クリップボードコピー
+  - プロパティパネル（色・スタイル・ラベル・座標・サイズ）
+  - Undo/Redo（Ctrl+Z/Y）
+  - 選択（クリック/Shift+クリック/Ctrl+A）・削除・コピー&ペースト
+  - スナップガイド
+  - 交差橋（crossing bridge）表示
+  - ズーム（ボタン+マウスホイール）
+  - シンタックスハイライト（DSLエディタ）
+  - VSCode拡張（TextMate文法・プレビュー・スニペット）
 - **Phase 2（拡張）**: 履歴擬似状態、PlantUML/Excelエクスポート、Auto-Route、検索/フィルター、Visual Diff
 - **Phase 3（直交領域）**: 直交領域（region）、フォーク/ジョイン
+
+## 既知の制限事項
+
+- DSLパーサーは正規表現ベースのため、非常に複雑なネスト構造（3階層以上）で予期しない動作の可能性あり
+- PNGエクスポートはGoogle Fontsの読み込みに依存（オフライン環境ではフォントフォールバック）
+- 遷移ルーティングは自動最適化なし（手動制御ポイント未対応）。Phase 2のAuto-Routeで改善予定
+- 状態遷移表は直交領域（orthogonal=true）有効時に生成不可
+- クリップボードコピー（copyPNG）はHTTPS環境またはlocalhost以外では動作しない（ブラウザセキュリティ制約）
+- DSLエディタのシンタックスハイライトは簡易的な正規表現置換のため、コメント行内のキーワードもハイライトされる場合がある
+- プロパティ値に空白を含む文字列は未対応（`key=value` 形式のため）

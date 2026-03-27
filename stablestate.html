@@ -1361,13 +1361,14 @@ function renderSVG(parsed) {
   // Collect all polyline routes for crossing detection
   const allRoutes = [];
 
-  // Pre-compute port distribution: group transitions by (sourceId, side) and (targetId, side)
-  const srcPortGroups = {}; // key: "srcId:side" -> array of transition indices
-  const tgtPortGroups = {}; // key: "tgtId:side" -> array of transition indices
+  // Pre-compute port distribution
+  // UNIFIED edge groups: merge incoming and outgoing transitions on the same edge
+  // so they share the same port space and don't overlap at the connection point.
+  const edgeGroups = {}; // key: "stateId:side" -> [{ti, dir:'src'|'tgt'}]
   const transitionSides = []; // per-transition: {srcSide, tgtSide, srcBox, tgtBox, isSelf, isReverse}
 
   // Build bidirectional pair lookup: detect A→B / B→A pairs
-  const pairKey = (a, b) => [a, b].sort().join('↔');
+  const pairKey = (a, b) => [a, b].sort().join('\u2194');
   const pairMap = {}; // pairKey → [ti, ...]
   for (let ti = 0; ti < parsed.transitions.length; ti++) {
     const tr = parsed.transitions[ti];
@@ -1380,17 +1381,16 @@ function renderSVG(parsed) {
   for (const pk of Object.keys(pairMap)) {
     const indices = pairMap[pk];
     if (indices.length < 2) continue;
-    // Find transitions that go in opposite directions
     for (let i = 1; i < indices.length; i++) {
       const t0 = parsed.transitions[indices[0]];
       const ti2 = parsed.transitions[indices[i]];
       if (t0.from === ti2.to && t0.to === ti2.from) {
-        reverseSet.add(indices[i]); // mark the later one as "reverse"
+        reverseSet.add(indices[i]);
       }
     }
   }
 
-  // First pass: compute sides for all transitions
+  // First pass: compute sides for all transitions and build unified edge groups
   for (let ti = 0; ti < parsed.transitions.length; ti++) {
     const tr = parsed.transitions[ti];
     const srcBox = getBox(tr.from);
@@ -1406,15 +1406,11 @@ function renderSVG(parsed) {
       srcSide = 'right';
       tgtSide = 'top';
     } else if (isReverse) {
-      // Reverse transitions use alternate sides to avoid overlap
-      // If forward goes right→left, reverse goes bottom→top (or top→bottom)
       const fwdSides = computePortSide(srcBox, tgtBox);
       if (fwdSides.srcSide === 'right' || fwdSides.srcSide === 'left') {
-        // Forward is horizontal, reverse goes via bottom
         srcSide = 'bottom';
         tgtSide = 'bottom';
       } else {
-        // Forward is vertical, reverse goes via right
         srcSide = 'right';
         tgtSide = 'right';
       }
@@ -1425,12 +1421,13 @@ function renderSVG(parsed) {
     }
     transitionSides.push({ srcSide, tgtSide, srcBox, tgtBox, isSelf, isReverse });
 
+    // Add to unified edge groups (both source and target edges)
     const srcKey = tr.from + ':' + srcSide;
     const tgtKey = tr.to + ':' + tgtSide;
-    if (!srcPortGroups[srcKey]) srcPortGroups[srcKey] = [];
-    srcPortGroups[srcKey].push(ti);
-    if (!tgtPortGroups[tgtKey]) tgtPortGroups[tgtKey] = [];
-    tgtPortGroups[tgtKey].push(ti);
+    if (!edgeGroups[srcKey]) edgeGroups[srcKey] = [];
+    edgeGroups[srcKey].push({ ti, dir: 'src' });
+    if (!edgeGroups[tgtKey]) edgeGroups[tgtKey] = [];
+    edgeGroups[tgtKey].push({ ti, dir: 'tgt' });
   }
 
   // Second pass: compute routes and render
@@ -1447,18 +1444,17 @@ function renderSVG(parsed) {
     } else {
       const srcKey = tr.from + ':' + srcSide;
       const tgtKey = tr.to + ':' + tgtSide;
-      const srcGroup = srcPortGroups[srcKey];
-      const tgtGroup = tgtPortGroups[tgtKey];
-      const srcIdx = srcGroup.indexOf(ti);
-      const tgtIdx = tgtGroup.indexOf(ti);
-      const fromPt = getPortPoint(srcBox, srcSide, srcIdx, srcGroup.length);
-      const toPt = getPortPoint(tgtBox, tgtSide, tgtIdx, tgtGroup.length);
-      // Channel offset: spread intermediate routing channels when multiple
-      // transitions share the same source side, to prevent line overlap.
-      // Offset is ±8px centered around 0 based on source port index.
-      const channelSpacing = 8;
-      const channelOffset = srcGroup.length <= 1 ? 0
-        : (srcIdx - (srcGroup.length - 1) / 2) * channelSpacing;
+      // Find this transition's index within the UNIFIED edge group
+      const srcEdge = edgeGroups[srcKey];
+      const tgtEdge = edgeGroups[tgtKey];
+      const srcIdx = srcEdge.findIndex(e => e.ti === ti);
+      const tgtIdx = tgtEdge.findIndex(e => e.ti === ti);
+      const fromPt = getPortPoint(srcBox, srcSide, srcIdx, srcEdge.length);
+      const toPt = getPortPoint(tgtBox, tgtSide, tgtIdx, tgtEdge.length);
+      // Channel offset based on position within unified group
+      const channelSpacing = 10;
+      const channelOffset = srcEdge.length <= 1 ? 0
+        : (srcIdx - (srcEdge.length - 1) / 2) * channelSpacing;
       route = buildRoute(fromPt, toPt, srcSide, tgtSide, channelOffset);
     }
 

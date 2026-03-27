@@ -320,6 +320,112 @@ function resolveStateRef(dotPath, parsed) {
 }
 
 // ═══════════════════════════════════════════════
+// Validation (copied from stablestate.html)
+// ═══════════════════════════════════════════════
+function validate(result) {
+  const allIds = new Set([
+    ...Object.keys(result.stateMap),
+    ...Object.keys(result.pseudoMap)
+  ]);
+
+  function refExists(ref) {
+    if (allIds.has(ref)) return true;
+    return resolveStateRef(ref, result) !== null;
+  }
+
+  // Transition references
+  for (const t of result.transitions) {
+    if (!refExists(t.from)) {
+      result.errors.push({ line: t.line, msg: 'Undefined state reference: ' + t.from });
+    }
+    if (!refExists(t.to)) {
+      result.errors.push({ line: t.line, msg: 'Undefined state reference: ' + t.to });
+    }
+  }
+
+  // Initial state required at each hierarchy level
+  const rootInitials = result.pseudoStates.filter(p => p.type === 'initial' && p.parent === null);
+  const rootStates = result.states.filter(s => s.parent === null);
+  if (rootStates.length > 0 && rootInitials.length === 0) {
+    result.errors.push({ line: 1, msg: 'Warning: No initial pseudo-state at root level' });
+  }
+  for (const s of result.states) {
+    if (s.children.length > 0) {
+      const childInitials = result.pseudoStates.filter(p => p.type === 'initial' && p.parent === s.id);
+      if (childInitials.length === 0) {
+        result.errors.push({ line: s.line, msg: 'Warning: No initial pseudo-state inside composite state ' + s.id });
+      }
+    }
+  }
+
+  // Initial pseudo-state must have exactly 1 outgoing transition, with no event/guard
+  for (const ps of result.pseudoStates) {
+    if (ps.type !== 'initial') continue;
+    const outgoing = result.transitions.filter(t => t.from === ps.id);
+    if (outgoing.length === 0) {
+      result.errors.push({ line: ps.line, msg: 'initial pseudo-state ' + ps.id + ' must have exactly 1 outgoing transition (has 0)' });
+    } else if (outgoing.length > 1) {
+      result.errors.push({ line: ps.line, msg: 'initial pseudo-state ' + ps.id + ' must have exactly 1 outgoing transition (has ' + outgoing.length + ')' });
+    }
+    for (const t of outgoing) {
+      if (t.event) {
+        result.errors.push({ line: t.line, msg: 'initial pseudo-state transition must not have an event (found: ' + t.event + ')' });
+      }
+      if (t.guard) {
+        result.errors.push({ line: t.line, msg: 'initial pseudo-state transition must not have a guard (found: [' + t.guard + '])' });
+      }
+    }
+  }
+
+  // Choice branches
+  for (const ps of result.pseudoStates) {
+    if (ps.type !== 'choice') continue;
+    const outgoing = result.transitions.filter(t => t.from === ps.id);
+    let guardlessCount = 0;
+    for (const t of outgoing) {
+      if (t.event) {
+        result.errors.push({ line: t.line, msg: 'choice pseudo-state transition must not have an event (found: ' + t.event + ')' });
+      }
+      if (!t.guard) {
+        guardlessCount++;
+      }
+    }
+    if (guardlessCount > 1) {
+      result.errors.push({ line: ps.line, msg: 'choice pseudo-state ' + ps.id + ' has ' + guardlessCount + ' guard-less transitions (max 1 allowed as else/default)' });
+    }
+  }
+
+  // Config constraints
+  const needsOrthogonal = result.pseudoStates.filter(p => ['fork', 'join'].includes(p.type));
+  if (needsOrthogonal.length > 0 && !result.config.orthogonal) {
+    for (const ps of needsOrthogonal) {
+      result.errors.push({ line: ps.line, msg: 'Warning: ' + ps.type + ' pseudo-state ' + ps.id + ' used without @config orthogonal=true' });
+    }
+  }
+  if (result.regions.length > 0 && !result.config.orthogonal) {
+    for (const r of result.regions) {
+      result.errors.push({ line: r.line || 1, msg: 'Warning: region used without @config orthogonal=true' });
+    }
+  }
+  const needsHistory = result.pseudoStates.filter(p => ['history', 'deephistory'].includes(p.type));
+  if (needsHistory.length > 0 && !result.config.history) {
+    for (const ps of needsHistory) {
+      result.errors.push({ line: ps.line, msg: 'Warning: ' + ps.type + ' pseudo-state ' + ps.id + ' used without @config history=true' });
+    }
+  }
+
+  // Nesting bounds
+  for (const s of result.states) {
+    if (!s.parent) continue;
+    const parent = result.stateMap[s.parent];
+    if (!parent) continue;
+    if (s.x + s.w > parent.w || s.y + s.h > parent.h || s.x < 0 || s.y < 0) {
+      result.errors.push({ line: s.line, msg: 'Warning: state ' + s.id + ' exceeds bounds of parent ' + parent.id });
+    }
+  }
+}
+
+// ═══════════════════════════════════════════════
 // Test Framework
 // ═══════════════════════════════════════════════
 let totalTests = 0;
@@ -483,6 +589,54 @@ function test_closing_brace_props() {
 }
 
 // ═══════════════════════════════════════════════
+// Validation Test Cases
+// ═══════════════════════════════════════════════
+
+function test_validate_undefined_ref() {
+  const r = parseDSL('state a "A" at 1,1 size 4x3\na -> nonexistent : EvGo');
+  validate(r);
+  assert(r.errors.some(e => e.msg.includes('nonexistent')), 'undefined ref error');
+}
+
+function test_validate_initial_required() {
+  const r = parseDSL('state a "A" at 1,1 size 4x3');
+  validate(r);
+  assert(r.errors.some(e => e.msg.includes('initial')), 'missing initial warning');
+}
+
+function test_validate_initial_one_transition() {
+  const dsl = 'initial ini at 0,0\nstate a "A" at 2,2 size 4x3\nstate b "B" at 8,2 size 4x3\nini -> a\nini -> b';
+  const r = parseDSL(dsl);
+  validate(r);
+  assert(r.errors.some(e => e.msg.includes('initial')), 'initial multi-transition error');
+}
+
+function test_validate_choice_no_event() {
+  const dsl = 'state a "A" at 1,1 size 4x3\nchoice c1 at 5,5\nc1 -> a : EvBad';
+  const r = parseDSL(dsl);
+  validate(r);
+  assert(r.errors.some(e => e.msg.includes('choice')), 'choice with event error');
+}
+
+function test_validate_dot_notation_ok() {
+  const dsl = `state p "P" at 1,1 size 20x10 {
+  state c "C" at 2,2 size 5x3
+}
+state x "X" at 25,1 size 5x3
+p.c -> x : EvGo`;
+  const r = parseDSL(dsl);
+  validate(r);
+  assert(!r.errors.some(e => e.msg.includes('Undefined')), 'dot notation resolved ok');
+}
+
+function test_validate_no_errors_clean() {
+  const dsl = 'initial ini at 0,0\nstate a "A" at 2,2 size 4x3\nini -> a';
+  const r = parseDSL(dsl);
+  validate(r);
+  assert(r.errors.length === 0, 'no errors on clean DSL');
+}
+
+// ═══════════════════════════════════════════════
 // Run All Tests
 // ═══════════════════════════════════════════════
 runTest('test_canvas', test_canvas);
@@ -500,6 +654,14 @@ runTest('test_composite_state', test_composite_state);
 runTest('test_pseudo_inside_composite', test_pseudo_inside_composite);
 runTest('test_resolve_dot_path', test_resolve_dot_path);
 runTest('test_closing_brace_props', test_closing_brace_props);
+
+// Validation tests
+runTest('test_validate_undefined_ref', test_validate_undefined_ref);
+runTest('test_validate_initial_required', test_validate_initial_required);
+runTest('test_validate_initial_one_transition', test_validate_initial_one_transition);
+runTest('test_validate_choice_no_event', test_validate_choice_no_event);
+runTest('test_validate_dot_notation_ok', test_validate_dot_notation_ok);
+runTest('test_validate_no_errors_clean', test_validate_no_errors_clean);
 
 // Summary
 const summaryClass = failedTests === 0 ? 'all-pass' : 'has-fail';

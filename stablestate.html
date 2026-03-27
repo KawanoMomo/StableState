@@ -59,7 +59,7 @@ body { background: var(--bg); color: var(--text); font-family: 'IBM Plex Sans','
 #editor-panel { width:320px; min-width:240px; display:flex; flex-direction:column; border-right:1px solid var(--border); background:var(--editor); }
 .panel-label { padding:4px 10px; font-size:10px; font-weight:600; color:var(--muted); border-bottom:1px solid var(--border); display:flex; align-items:center; gap:4px; text-transform:uppercase; letter-spacing:0.05em; }
 .panel-label .dot { font-size:10px; }
-#error-bar { padding:4px 10px; background:#7F1D1D; color:#FCA5A5; font-size:10px; display:none; }
+#error-bar { padding:4px 10px; background:#7F1D1D; color:#FCA5A5; font-size:10px; display:none; border-top:1px solid #DC2626; max-height:100px; overflow-y:auto; font-family:'IBM Plex Mono',monospace; }
 #editor-wrap { flex:1; display:flex; overflow:hidden; background:var(--editor); }
 #line-nums { width:40px; padding:12px 4px 12px 0; text-align:right; font-family:'IBM Plex Mono',monospace; font-size:12px; line-height:20px; color:var(--dim); user-select:none; overflow:hidden; flex-shrink:0; }
 #editor { flex:1; background:transparent; color:var(--text); border:none; outline:none; font-family:'IBM Plex Mono',monospace; font-size:12px; line-height:20px; padding:12px 12px 12px 4px; resize:none; white-space:pre; overflow-x:auto; tab-size:2; }
@@ -163,7 +163,6 @@ input[type=number]::-webkit-inner-spin-button { -webkit-appearance:none; }
   <!-- Left: DSL Editor -->
   <div id="editor-panel">
     <div class="panel-label"><span class="dot" style="color:var(--accent)">&#9679;</span> DSL</div>
-    <div id="error-bar"></div>
     <div id="editor-wrap">
       <div id="line-nums"></div>
       <textarea id="editor" spellcheck="false">@canvas width=960 height=600 grid=20
@@ -176,6 +175,7 @@ final fin at 20,5
 ini -> idle
 idle -> fin : EvShutdown</textarea>
     </div>
+    <div id="error-bar"></div>
   </div>
 
   <!-- Center: Diagram / Table -->
@@ -674,6 +674,135 @@ function resolveStateRef(dotPath, parsed) {
 }
 
 // ═══════════════════════════════════════════════
+// Validation
+// ═══════════════════════════════════════════════
+function validate(result) {
+  // Helper: collect all defined IDs (states + pseudos) for reference checking
+  const allIds = new Set([
+    ...Object.keys(result.stateMap),
+    ...Object.keys(result.pseudoMap)
+  ]);
+
+  // Helper: check if a reference (possibly dot-notation) resolves
+  function refExists(ref) {
+    if (allIds.has(ref)) return true;
+    return resolveStateRef(ref, result) !== null;
+  }
+
+  // ─── Transition references: from/to must reference defined state/pseudo IDs ───
+  for (const t of result.transitions) {
+    if (!refExists(t.from)) {
+      result.errors.push({ line: t.line, msg: 'Undefined state reference: ' + t.from });
+    }
+    if (!refExists(t.to)) {
+      result.errors.push({ line: t.line, msg: 'Undefined state reference: ' + t.to });
+    }
+  }
+
+  // ─── Initial state required at each hierarchy level ───
+  // Check root level
+  const rootInitials = result.pseudoStates.filter(p => p.type === 'initial' && p.parent === null);
+  const rootStates = result.states.filter(s => s.parent === null);
+  if (rootStates.length > 0 && rootInitials.length === 0) {
+    result.errors.push({ line: 1, msg: 'Warning: No initial pseudo-state at root level' });
+  }
+  // Check each composite state
+  for (const s of result.states) {
+    if (s.children.length > 0) {
+      const childInitials = result.pseudoStates.filter(p => p.type === 'initial' && p.parent === s.id);
+      if (childInitials.length === 0) {
+        result.errors.push({ line: s.line, msg: 'Warning: No initial pseudo-state inside composite state ' + s.id });
+      }
+    }
+  }
+
+  // ─── Initial pseudo-state must have exactly 1 outgoing transition, with no event/guard ───
+  for (const ps of result.pseudoStates) {
+    if (ps.type !== 'initial') continue;
+    const outgoing = result.transitions.filter(t => t.from === ps.id);
+    if (outgoing.length === 0) {
+      result.errors.push({ line: ps.line, msg: 'initial pseudo-state ' + ps.id + ' must have exactly 1 outgoing transition (has 0)' });
+    } else if (outgoing.length > 1) {
+      result.errors.push({ line: ps.line, msg: 'initial pseudo-state ' + ps.id + ' must have exactly 1 outgoing transition (has ' + outgoing.length + ')' });
+    }
+    for (const t of outgoing) {
+      if (t.event) {
+        result.errors.push({ line: t.line, msg: 'initial pseudo-state transition must not have an event (found: ' + t.event + ')' });
+      }
+      if (t.guard) {
+        result.errors.push({ line: t.line, msg: 'initial pseudo-state transition must not have a guard (found: [' + t.guard + '])' });
+      }
+    }
+  }
+
+  // ─── Choice branches: must be guard-only (no event), max 1 guard-less (else/default) ───
+  for (const ps of result.pseudoStates) {
+    if (ps.type !== 'choice') continue;
+    const outgoing = result.transitions.filter(t => t.from === ps.id);
+    let guardlessCount = 0;
+    for (const t of outgoing) {
+      if (t.event) {
+        result.errors.push({ line: t.line, msg: 'choice pseudo-state transition must not have an event (found: ' + t.event + ')' });
+      }
+      if (!t.guard) {
+        guardlessCount++;
+      }
+    }
+    if (guardlessCount > 1) {
+      result.errors.push({ line: ps.line, msg: 'choice pseudo-state ' + ps.id + ' has ' + guardlessCount + ' guard-less transitions (max 1 allowed as else/default)' });
+    }
+  }
+
+  // ─── Config constraints ───
+  // region/fork/join used without orthogonal=true → warning
+  const needsOrthogonal = result.pseudoStates.filter(p => ['fork', 'join'].includes(p.type));
+  if (needsOrthogonal.length > 0 && !result.config.orthogonal) {
+    for (const ps of needsOrthogonal) {
+      result.errors.push({ line: ps.line, msg: 'Warning: ' + ps.type + ' pseudo-state ' + ps.id + ' used without @config orthogonal=true' });
+    }
+  }
+  if (result.regions.length > 0 && !result.config.orthogonal) {
+    for (const r of result.regions) {
+      result.errors.push({ line: r.line || 1, msg: 'Warning: region used without @config orthogonal=true' });
+    }
+  }
+  // history/deephistory without history=true → warning
+  const needsHistory = result.pseudoStates.filter(p => ['history', 'deephistory'].includes(p.type));
+  if (needsHistory.length > 0 && !result.config.history) {
+    for (const ps of needsHistory) {
+      result.errors.push({ line: ps.line, msg: 'Warning: ' + ps.type + ' pseudo-state ' + ps.id + ' used without @config history=true' });
+    }
+  }
+
+  // ─── Nesting bounds: child state coords+size exceeding parent bounds → warning ───
+  for (const s of result.states) {
+    if (!s.parent) continue;
+    const parent = result.stateMap[s.parent];
+    if (!parent) continue;
+    // Child coords are relative to parent
+    if (s.x + s.w > parent.w || s.y + s.h > parent.h || s.x < 0 || s.y < 0) {
+      result.errors.push({ line: s.line, msg: 'Warning: state ' + s.id + ' exceeds bounds of parent ' + parent.id });
+    }
+  }
+}
+
+// ═══════════════════════════════════════════════
+// Error Bar Display
+// ═══════════════════════════════════════════════
+function updateErrorBar(result) {
+  const bar = document.getElementById('error-bar');
+  if (!result || result.errors.length === 0) {
+    bar.style.display = 'none';
+    bar.innerHTML = '';
+    return;
+  }
+  bar.style.display = 'block';
+  bar.innerHTML = result.errors
+    .map(e => '<div>L' + e.line + ': ' + e.msg.replace(/</g, '&lt;').replace(/>/g, '&gt;') + '</div>')
+    .join('');
+}
+
+// ═══════════════════════════════════════════════
 // SVG Renderer (stub)
 // ═══════════════════════════════════════════════
 function renderSVG(parsed) {
@@ -715,6 +844,8 @@ function addEvent() { /* TODO */ }
 function refresh() {
   const text = document.getElementById('editor').value;
   parsed = parseDSL(text);
+  validate(parsed);
+  updateErrorBar(parsed);
   renderSVG(parsed);
   renderTable(parsed);
   renderProps();

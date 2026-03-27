@@ -146,7 +146,7 @@ input[type=number]::-webkit-inner-spin-button { -webkit-appearance:none; }
     <button class="tb" id="tool-group" onclick="setTool('group')">+Group</button>
     <button class="tb" id="tool-initial" onclick="setTool('initial')">&#9679;Initial</button>
     <button class="tb" id="tool-final" onclick="setTool('final')">&#9678;Final</button>
-    <button class="tb" id="tool-connect" onclick="setTool('connect')">&#8599;Connect</button>
+    <button class="tb" id="tool-connect" onclick="setTool('connect')" title="Click source element, then click target element to create a transition">&#8599;Connect</button>
     <div class="sep"></div>
     <button class="tb" id="btn-actions" onclick="toggleActions()">Actions</button>
     <button class="tb active" id="btn-annotations" onclick="toggleAnnotations()">Notes</button>
@@ -251,6 +251,7 @@ error -> fin : EvShutdown</textarea>
 let parsed = null;
 let currentTab = 'diagram';
 let currentTool = 'select';
+let connectFrom = null; // first element ID in connect mode
 let showActions = false;
 let zoomLevel = 100;
 let selection = new Set();
@@ -297,6 +298,7 @@ function setTool(name) {
     const el = document.getElementById('tool-' + t);
     if (el) el.classList.toggle('active', t === name);
   });
+  updateStatus();
 }
 
 // ═══════════════════════════════════════════════
@@ -2445,7 +2447,15 @@ function updateStatus() {
   if (!parsed) return;
   document.getElementById('status-states').textContent = 'States: ' + parsed.states.length;
   document.getElementById('status-transitions').textContent = 'Transitions: ' + parsed.transitions.length;
-  document.getElementById('status-errors').textContent = 'Errors: ' + parsed.errors.length;
+  if (currentTool === 'connect') {
+    document.getElementById('status-errors').textContent = connectFrom
+      ? 'Connect: click target element'
+      : 'Connect: click source element';
+    document.getElementById('status-errors').style.color = '#F59E0B';
+  } else {
+    document.getElementById('status-errors').textContent = 'Errors: ' + parsed.errors.length;
+    document.getElementById('status-errors').style.color = '';
+  }
 }
 
 // ═══════════════════════════════════════════════
@@ -2706,6 +2716,38 @@ function redo() {
 
     // Hit test elements
     const hit = hitTest(pt.x, pt.y);
+
+    // Connect mode: click source, then click target to create transition
+    if (currentTool === 'connect') {
+      if (!hit) {
+        // Click empty area: cancel connect mode
+        connectFrom = null;
+        setTool('select');
+        return;
+      }
+      if (!connectFrom) {
+        // First click: set source, highlight it
+        connectFrom = hit.id;
+        selection.clear();
+        selection.add(hit.id);
+        refresh();
+        return;
+      } else {
+        // Second click: create transition from connectFrom to hit.id
+        if (hit.id !== connectFrom) {
+          const event = prompt('Event name (optional):');
+          pushHistory();
+          let dsl = getDsl();
+          dsl = addTransition(connectFrom, hit.id, event || null, null, null, null, dsl);
+          setDsl(dsl);
+        }
+        connectFrom = null;
+        selection.clear();
+        setTool('select');
+        refresh();
+        return;
+      }
+    }
 
     if (!hit) {
       // Click on empty area: clear selection
@@ -3083,8 +3125,9 @@ document.addEventListener('keydown', function(e) {
   const origSetTool = setTool;
   setTool = function(name) {
     if (name === 'connect') {
-      connectSelected();
-      origSetTool('select');
+      // Enter connect mode: user clicks source, then target
+      connectFrom = null;
+      origSetTool(name);
       return;
     }
     if (name === 'state' || name === 'group' || name === 'initial' || name === 'final') {
@@ -3092,6 +3135,7 @@ document.addEventListener('keydown', function(e) {
       origSetTool('select');
       return;
     }
+    connectFrom = null; // clear connect state when switching tools
     origSetTool(name);
   };
 })();

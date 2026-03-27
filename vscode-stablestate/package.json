@@ -1,0 +1,31 @@
+{
+  "name": "stablestate",
+  "displayName": "StableState",
+  "description": "UML State Machine Diagram Editor with DSL",
+  "version": "0.1.0",
+  "engines": { "vscode": "^1.80.0" },
+  "categories": ["Programming Languages", "Visualization"],
+  "activationEvents": ["onLanguage:stablestate"],
+  "main": "./src/extension.js",
+  "contributes": {
+    "languages": [{
+      "id": "stablestate",
+      "aliases": ["StableState", "stablestate"],
+      "extensions": [".sstate"],
+      "configuration": "./language-configuration.json"
+    }],
+    "grammars": [{
+      "language": "stablestate",
+      "scopeName": "source.stablestate",
+      "path": "./syntaxes/stablestate.tmLanguage.json"
+    }],
+    "commands": [
+      { "command": "stablestate.preview", "title": "StableState: Open Preview" },
+      { "command": "stablestate.exportSVG", "title": "StableState: Export SVG" },
+      { "command": "stablestate.exportPNG", "title": "StableState: Export PNG" }
+    ],
+    "keybindings": [
+      { "command": "stablestate.preview", "key": "ctrl+shift+v", "when": "editorLangId == stablestate" }
+    ]
+  }
+}

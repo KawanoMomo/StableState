@@ -1,0 +1,234 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "StableState",
+  "scopeName": "source.stablestate",
+  "patterns": [
+    { "include": "#comment" },
+    { "include": "#canvas-directive" },
+    { "include": "#config-directive" },
+    { "include": "#transition-line" },
+    { "include": "#note-connection" },
+    { "include": "#state-line" },
+    { "include": "#pseudo-state-line" },
+    { "include": "#region-group-line" },
+    { "include": "#block-braces" },
+    { "include": "#string" },
+    { "include": "#color-literal" },
+    { "include": "#numeric" },
+    { "include": "#property" },
+    { "include": "#arrow" },
+    { "include": "#kind-keyword" }
+  ],
+  "repository": {
+    "comment": {
+      "name": "comment.line.number-sign.stablestate",
+      "match": "#.*$"
+    },
+    "canvas-directive": {
+      "match": "(@canvas)\\b",
+      "captures": {
+        "1": { "name": "keyword.control.canvas.stablestate" }
+      }
+    },
+    "config-directive": {
+      "match": "(@config)\\b",
+      "captures": {
+        "1": { "name": "keyword.control.config.stablestate" }
+      }
+    },
+    "state-line": {
+      "match": "\\b(state)\\s+([A-Za-z_][A-Za-z0-9_]*)",
+      "captures": {
+        "1": { "name": "keyword.control.state.stablestate" },
+        "2": { "name": "entity.name.tag.stablestate" }
+      }
+    },
+    "pseudo-state-line": {
+      "patterns": [
+        {
+          "match": "\\b(initial)\\s+([A-Za-z_][A-Za-z0-9_]*)",
+          "captures": {
+            "1": { "name": "keyword.control.initial.stablestate" },
+            "2": { "name": "entity.name.tag.stablestate" }
+          }
+        },
+        {
+          "match": "\\b(final)\\s+([A-Za-z_][A-Za-z0-9_]*)",
+          "captures": {
+            "1": { "name": "keyword.control.final.stablestate" },
+            "2": { "name": "entity.name.tag.stablestate" }
+          }
+        },
+        {
+          "match": "\\b(history)\\s+([A-Za-z_][A-Za-z0-9_]*)",
+          "captures": {
+            "1": { "name": "keyword.control.history.stablestate" },
+            "2": { "name": "entity.name.tag.stablestate" }
+          }
+        },
+        {
+          "match": "\\b(deephistory)\\s+([A-Za-z_][A-Za-z0-9_]*)",
+          "captures": {
+            "1": { "name": "keyword.control.deephistory.stablestate" },
+            "2": { "name": "entity.name.tag.stablestate" }
+          }
+        },
+        {
+          "match": "\\b(choice)\\s+([A-Za-z_][A-Za-z0-9_]*)",
+          "captures": {
+            "1": { "name": "keyword.control.choice.stablestate" },
+            "2": { "name": "entity.name.tag.stablestate" }
+          }
+        },
+        {
+          "match": "\\b(fork)\\s+([A-Za-z_][A-Za-z0-9_]*)",
+          "captures": {
+            "1": { "name": "keyword.control.fork.stablestate" },
+            "2": { "name": "entity.name.tag.stablestate" }
+          }
+        },
+        {
+          "match": "\\b(join)\\s+([A-Za-z_][A-Za-z0-9_]*)",
+          "captures": {
+            "1": { "name": "keyword.control.join.stablestate" },
+            "2": { "name": "entity.name.tag.stablestate" }
+          }
+        },
+        {
+          "match": "\\b(note)\\s+([A-Za-z_][A-Za-z0-9_]*)",
+          "captures": {
+            "1": { "name": "keyword.control.note.stablestate" },
+            "2": { "name": "entity.name.tag.stablestate" }
+          }
+        }
+      ]
+    },
+    "region-group-line": {
+      "patterns": [
+        {
+          "match": "\\b(region)\\s+([A-Za-z_][A-Za-z0-9_]*)",
+          "captures": {
+            "1": { "name": "keyword.control.region.stablestate" },
+            "2": { "name": "entity.name.tag.stablestate" }
+          }
+        },
+        {
+          "match": "\\b(group)\\s+([A-Za-z_][A-Za-z0-9_]*)",
+          "captures": {
+            "1": { "name": "keyword.control.group.stablestate" },
+            "2": { "name": "entity.name.tag.stablestate" }
+          }
+        }
+      ]
+    },
+    "transition-line": {
+      "patterns": [
+        {
+          "comment": "Transition arrow with optional event, guard, action, and kind",
+          "match": "(->)",
+          "name": "keyword.operator.arrow.stablestate"
+        },
+        {
+          "comment": "Event name after colon in transition",
+          "match": ":\\s*([A-Za-z_][A-Za-z0-9_]*)",
+          "captures": {
+            "1": { "name": "variable.other.event.stablestate" }
+          }
+        },
+        {
+          "comment": "Guard condition in brackets",
+          "begin": "\\[",
+          "end": "\\]",
+          "beginCaptures": {
+            "0": { "name": "punctuation.definition.guard.begin.stablestate" }
+          },
+          "endCaptures": {
+            "0": { "name": "punctuation.definition.guard.end.stablestate" }
+          },
+          "patterns": [
+            { "include": "#string" },
+            { "include": "#numeric" }
+          ]
+        }
+      ]
+    },
+    "note-connection": {
+      "comment": "Note connection lines e.g. note1 -> stateA",
+      "match": "\\b([A-Za-z_][A-Za-z0-9_]*)\\s*(->)\\s*([A-Za-z_][A-Za-z0-9_]*)",
+      "captures": {
+        "2": { "name": "keyword.operator.arrow.stablestate" }
+      }
+    },
+    "block-braces": {
+      "begin": "\\{",
+      "end": "\\}",
+      "beginCaptures": {
+        "0": { "name": "punctuation.definition.block.begin.stablestate" }
+      },
+      "endCaptures": {
+        "0": { "name": "punctuation.definition.block.end.stablestate" }
+      },
+      "patterns": [
+        { "include": "#comment" },
+        { "include": "#canvas-directive" },
+        { "include": "#config-directive" },
+        { "include": "#transition-line" },
+        { "include": "#note-connection" },
+        { "include": "#state-line" },
+        { "include": "#pseudo-state-line" },
+        { "include": "#region-group-line" },
+        { "include": "#block-braces" },
+        { "include": "#string" },
+        { "include": "#color-literal" },
+        { "include": "#numeric" },
+        { "include": "#property" },
+        { "include": "#arrow" },
+        { "include": "#kind-keyword" }
+      ]
+    },
+    "string": {
+      "name": "string.quoted.double.stablestate",
+      "match": "\"[^\"]*\""
+    },
+    "color-literal": {
+      "name": "constant.other.color.stablestate",
+      "match": "#[0-9A-Fa-f]{6}\\b"
+    },
+    "numeric": {
+      "name": "constant.numeric.stablestate",
+      "match": "\\b[0-9]+(\\s*[,x]\\s*[0-9]+)*\\b"
+    },
+    "arrow": {
+      "name": "keyword.operator.arrow.stablestate",
+      "match": "->"
+    },
+    "property": {
+      "name": "support.other.property.stablestate",
+      "match": "\\b(entry|do|exit|color|text|border|round|style|width|height|grid|transition|orthogonal|history)="
+    },
+    "kind-keyword": {
+      "patterns": [
+        {
+          "name": "keyword.other.kind.stablestate",
+          "match": "@local\\b"
+        },
+        {
+          "name": "keyword.other.kind.stablestate",
+          "match": "@external\\b"
+        },
+        {
+          "name": "keyword.other.kind.stablestate",
+          "match": "@internal\\b"
+        },
+        {
+          "name": "keyword.other.at.stablestate",
+          "match": "\\bat\\b"
+        },
+        {
+          "name": "keyword.other.size.stablestate",
+          "match": "\\bsize\\b"
+        }
+      ]
+    }
+  }
+}

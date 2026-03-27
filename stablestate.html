@@ -357,11 +357,10 @@ document.getElementById('config-orthogonal').addEventListener('change', function
 });
 
 // ═══════════════════════════════════════════════
-// Parser (stub)
+// Parser
 // ═══════════════════════════════════════════════
 function parseDSL(text) {
-  // TODO: Implement full DSL parser
-  return {
+  const result = {
     canvas: { width: 960, height: 600, grid: 20 },
     config: { transition: 'local', orthogonal: false, history: false },
     states: [],
@@ -377,6 +376,301 @@ function parseDSL(text) {
     groupMap: {},
     noteMap: {}
   };
+
+  const lines = text.split('\n');
+  const nestingStack = []; // stack of parent state IDs
+
+  for (let i = 0; i < lines.length; i++) {
+    const lineNum = i + 1;
+    const raw = lines[i];
+    const trimmed = raw.trim();
+
+    // Skip empty lines and comments
+    if (trimmed === '' || trimmed.startsWith('#')) continue;
+
+    // ─── Closing brace ───
+    if (/^\}/.test(trimmed)) {
+      if (nestingStack.length === 0) {
+        result.errors.push({ line: lineNum, msg: 'Unexpected closing brace }' });
+        continue;
+      }
+      const parentId = nestingStack.pop();
+      // Parse trailing props on the closing brace line: } entry=Foo exit=Bar
+      const afterBrace = trimmed.slice(1).trim();
+      if (afterBrace && result.stateMap[parentId]) {
+        const parentState = result.stateMap[parentId];
+        parseProps(afterBrace, parentState);
+      }
+      continue;
+    }
+
+    // ─── @canvas ───
+    const canvasMatch = trimmed.match(/^@canvas\s+(.+)$/);
+    if (canvasMatch) {
+      const propsStr = canvasMatch[1];
+      const wm = propsStr.match(/width=(\d+)/);
+      const hm = propsStr.match(/height=(\d+)/);
+      const gm = propsStr.match(/grid=(\d+)/);
+      if (wm) result.canvas.width = parseInt(wm[1], 10);
+      if (hm) result.canvas.height = parseInt(hm[1], 10);
+      if (gm) result.canvas.grid = parseInt(gm[1], 10);
+      continue;
+    }
+
+    // ─── @config ───
+    const configMatch = trimmed.match(/^@config\s+(\w+)=(\S+)$/);
+    if (configMatch) {
+      const key = configMatch[1];
+      const val = configMatch[2];
+      if (key === 'transition') {
+        result.config.transition = val;
+      } else if (key === 'orthogonal') {
+        result.config.orthogonal = val === 'true';
+      } else if (key === 'history') {
+        result.config.history = val === 'true';
+      }
+      continue;
+    }
+
+    // ─── Pseudo-states ───
+    const pseudoTypes = ['initial', 'final', 'choice', 'history', 'deephistory', 'fork', 'join'];
+    const pseudoMatch = trimmed.match(/^(initial|final|choice|history|deephistory|fork|join)\s+(\S+)\s+at\s+(-?[\d.]+)\s*,\s*(-?[\d.]+)(?:\s+size\s+(-?[\d.]+)\s*x\s*(-?[\d.]+))?/);
+    if (pseudoMatch) {
+      const id = pseudoMatch[2];
+      // Duplicate ID check across all maps
+      if (checkDuplicate(id, lineNum, result)) continue;
+      const ps = {
+        type: pseudoMatch[1],
+        id: id,
+        x: parseFloat(pseudoMatch[3]),
+        y: parseFloat(pseudoMatch[4]),
+        w: pseudoMatch[5] ? parseFloat(pseudoMatch[5]) : null,
+        h: pseudoMatch[6] ? parseFloat(pseudoMatch[6]) : null,
+        parent: nestingStack.length > 0 ? nestingStack[nestingStack.length - 1] : null,
+        line: lineNum
+      };
+      result.pseudoStates.push(ps);
+      result.pseudoMap[id] = ps;
+      continue;
+    }
+
+    // ─── state ───
+    const stateMatch = trimmed.match(/^state\s+(\S+)\s+"([^"]*)"\s+at\s+(-?[\d.]+)\s*,\s*(-?[\d.]+)\s+size\s+(-?[\d.]+)\s*x\s*(-?[\d.]+)(.*)$/);
+    if (stateMatch) {
+      const id = stateMatch[1];
+      if (checkDuplicate(id, lineNum, result)) continue;
+      const rest = stateMatch[7].trim();
+      // Check if composite (ends with {)
+      const isComposite = rest.endsWith('{');
+      const propsStr = isComposite ? rest.slice(0, -1).trim() : rest;
+
+      const st = {
+        type: 'state',
+        id: id,
+        label: stateMatch[2],
+        x: parseFloat(stateMatch[3]),
+        y: parseFloat(stateMatch[4]),
+        w: parseFloat(stateMatch[5]),
+        h: parseFloat(stateMatch[6]),
+        color: null,
+        textColor: null,
+        borderColor: null,
+        round: null,
+        style: null,
+        entry: null,
+        do: null,
+        exit: null,
+        parent: nestingStack.length > 0 ? nestingStack[nestingStack.length - 1] : null,
+        children: [],
+        isInitial: false,
+        line: lineNum
+      };
+
+      // Parse props
+      if (propsStr) parseProps(propsStr, st);
+
+      result.states.push(st);
+      result.stateMap[id] = st;
+
+      // Add to parent's children
+      if (st.parent && result.stateMap[st.parent]) {
+        result.stateMap[st.parent].children.push(id);
+      }
+
+      // Push onto nesting stack if composite
+      if (isComposite) {
+        nestingStack.push(id);
+      }
+      continue;
+    }
+
+    // ─── group ───
+    const groupMatch = trimmed.match(/^group\s+(\S+)\s+"([^"]*)"\s+at\s+(-?[\d.]+)\s*,\s*(-?[\d.]+)\s+size\s+(-?[\d.]+)\s*x\s*(-?[\d.]+)(.*)$/);
+    if (groupMatch) {
+      const id = groupMatch[1];
+      if (checkDuplicate(id, lineNum, result)) continue;
+      const rest = groupMatch[7].trim();
+      const g = {
+        type: 'group',
+        id: id,
+        label: groupMatch[2],
+        x: parseFloat(groupMatch[3]),
+        y: parseFloat(groupMatch[4]),
+        w: parseFloat(groupMatch[5]),
+        h: parseFloat(groupMatch[6]),
+        color: null,
+        borderColor: null,
+        textColor: null,
+        style: null,
+        line: lineNum
+      };
+      if (rest) parseProps(rest, g);
+      result.groups.push(g);
+      result.groupMap[id] = g;
+      continue;
+    }
+
+    // ─── note ───
+    const noteMatch = trimmed.match(/^note\s+(\S+)\s+"([^"]*)"\s+at\s+(-?[\d.]+)\s*,\s*(-?[\d.]+)\s+size\s+(-?[\d.]+)\s*x\s*(-?[\d.]+)(.*)$/);
+    if (noteMatch) {
+      const id = noteMatch[1];
+      if (checkDuplicate(id, lineNum, result)) continue;
+      const rest = noteMatch[7].trim();
+      const n = {
+        type: 'note',
+        id: id,
+        label: noteMatch[2],
+        x: parseFloat(noteMatch[3]),
+        y: parseFloat(noteMatch[4]),
+        w: parseFloat(noteMatch[5]),
+        h: parseFloat(noteMatch[6]),
+        color: null,
+        textColor: null,
+        line: lineNum
+      };
+      if (rest) parseProps(rest, n);
+      result.notes.push(n);
+      result.noteMap[id] = n;
+      continue;
+    }
+
+    // ─── Transition / Note connection ───
+    const transMatch = trimmed.match(/^(\S+)\s*->\s*(\S+)(.*)$/);
+    if (transMatch) {
+      const from = transMatch[1];
+      const to = transMatch[2];
+      const rest = transMatch[3].trim();
+
+      // If source is in noteMap, it's a note connection
+      if (result.noteMap[from]) {
+        result.noteConnections.push({
+          noteId: from,
+          targetId: to,
+          line: lineNum
+        });
+        continue;
+      }
+
+      // Parse optional : Event [Guard] / Action @kind
+      let event = null, guard = null, action = null, kind = null;
+      if (rest.startsWith(':')) {
+        const detail = rest.slice(1).trim();
+        // Parse @kind from the end
+        const kindMatch = detail.match(/@(local|external|internal)\s*$/);
+        let remaining = detail;
+        if (kindMatch) {
+          kind = kindMatch[1];
+          remaining = detail.slice(0, detail.lastIndexOf('@' + kind)).trim();
+        }
+        // Parse / Action
+        const slashIdx = remaining.indexOf('/');
+        if (slashIdx !== -1) {
+          action = remaining.slice(slashIdx + 1).trim() || null;
+          remaining = remaining.slice(0, slashIdx).trim();
+        }
+        // Parse [Guard]
+        const guardMatch = remaining.match(/\[([^\]]*)\]/);
+        if (guardMatch) {
+          guard = guardMatch[1].trim() || null;
+          remaining = remaining.slice(0, remaining.indexOf('[')).trim();
+        }
+        // Remaining is the event
+        event = remaining.trim() || null;
+      }
+
+      result.transitions.push({
+        from: from,
+        to: to,
+        event: event,
+        guard: guard,
+        action: action,
+        kind: kind || result.config.transition,
+        label: rest.startsWith(':') ? rest.slice(1).trim() : null,
+        line: lineNum
+      });
+      continue;
+    }
+
+    // ─── Unrecognized line ───
+    result.errors.push({ line: lineNum, msg: 'Unrecognized syntax: ' + trimmed });
+  }
+
+  // Check for unclosed braces
+  if (nestingStack.length > 0) {
+    result.errors.push({ line: lines.length, msg: 'Unclosed composite state: ' + nestingStack.join(', ') });
+  }
+
+  return result;
+}
+
+/** Parse key=value props and apply them to target object */
+function parseProps(propsStr, target) {
+  // Match key=value pairs where value can be #HEX, word, or quoted
+  const propRe = /(\w+)=(\S+)/g;
+  let m;
+  while ((m = propRe.exec(propsStr)) !== null) {
+    const key = m[1];
+    const val = m[2];
+    switch (key) {
+      case 'entry': target.entry = val; break;
+      case 'do': target.do = val; break;
+      case 'exit': target.exit = val; break;
+      case 'color': target.color = val; break;
+      case 'text': target.textColor = val; break;
+      case 'border': target.borderColor = val; break;
+      case 'round': target.round = parseFloat(val); break;
+      case 'style': target.style = val; break;
+    }
+  }
+}
+
+/** Check if an ID already exists in any map; push error if duplicate */
+function checkDuplicate(id, lineNum, result) {
+  if (result.stateMap[id] || result.pseudoMap[id] || result.groupMap[id] || result.noteMap[id]) {
+    result.errors.push({ line: lineNum, msg: 'Duplicate ID: ' + id });
+    return true;
+  }
+  return false;
+}
+
+// ═══════════════════════════════════════════════
+// Resolve dot-path state references
+// ═══════════════════════════════════════════════
+function resolveStateRef(dotPath, parsed) {
+  if (parsed.stateMap[dotPath]) return parsed.stateMap[dotPath];
+  if (parsed.pseudoMap[dotPath]) return parsed.pseudoMap[dotPath];
+  const parts = dotPath.split('.');
+  const leafId = parts[parts.length - 1];
+  const candidates = parsed.states.filter(s => s.id === leafId);
+  for (const c of candidates) {
+    let match = true, cur = c;
+    for (let i = parts.length - 2; i >= 0; i--) {
+      if (!cur.parent || cur.parent !== parts[i]) { match = false; break; }
+      cur = parsed.stateMap[cur.parent];
+    }
+    if (match) return c;
+  }
+  return null;
 }
 
 // ═══════════════════════════════════════════════

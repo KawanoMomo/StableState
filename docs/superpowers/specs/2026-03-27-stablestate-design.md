@@ -117,6 +117,21 @@ state active "Active" at 5,3 size 24x14 {
 }
 ```
 
+### グループ（視覚グルーピング、UML外の独自機能）
+
+```
+# 状態を視覚的にグループ分けする背景矩形（StableBlockのgroup踏襲）
+group power "Power Management" at 1,1 size 30x14 color=#EEF2FF border=#818CF8
+group comm "Communication" at 1,16 size 30x10 color=#FFF7ED border=#F59E0B
+```
+
+- UMLの意味論的な要素ではなく、純粋に視覚的なグルーピング（レイアウト補助）
+- 複合状態（`state { }`）とは異なり、状態遷移のセマンティクスに影響しない
+- 状態遷移表にも影響しない（グループは表に現れない）
+- 描画はz-orderで複合状態の外枠と同じ層（半透明背景 + ボーダー + ラベル）
+- グループをドラッグすると内包する状態も一緒に移動（StableBlock方式: `isInside()` でバウンディングボックス判定）
+- プロパティ: `color`（背景色）、`border`（ボーダー色）、`text`（ラベル色）、`style`（solid/dashed）
+
 ### 遷移
 
 ```
@@ -188,6 +203,9 @@ noteからstateへの接続は通常の遷移構文 `->` を使用する。パ�
     { type:"initial"|"final"|"history"|"deephistory"|"choice"|"fork"|"join",
       id, x, y, w?, h?, line }
   ],
+  groups: [
+    { type:"group", id, label, x, y, w, h, color, borderColor, textColor, style, line }
+  ],
   regions: [
     { id, label, parentId, x, y, w, h, line }
   ],
@@ -204,6 +222,7 @@ noteからstateへの接続は通常の遷移構文 `->` を使用する。パ�
   errors: [{ line, msg }],
   stateMap: {},
   pseudoMap: {},
+  groupMap: {},
   noteMap: {}
 }
 ```
@@ -216,6 +235,7 @@ noteからstateへの接続は通常の遷移構文 `->` を使用する。パ�
 | `@config` | `@config transition=local` |
 | `state` | `state idle "Idle" at 2,3 size 8x5 entry=IdleEntry color=#6366F1` |
 | `state { }` | 複合状態（ネスト、子の座標は親からの相対） |
+| `group` | `group power "Power" at 1,1 size 30x14 color=#EEF2FF` |
 | `region` | `region motor "Motor" at 0,0 size 24x6 { }` |
 | `initial/final` | `initial ini at 1,4` |
 | `history/deephistory` | `history h1 at 14,2` |
@@ -259,14 +279,15 @@ StableBlockと同じ正規表現ベースの in-place 置換:
 ### 描画順序（z-order）
 
 1. グリッド背景（ドットパターン）
-2. 複合状態の外枠（半透明背景 + ボーダー）
-3. 直交領域の区切り線（点線、orthogonal=true時のみ）
-4. 遷移線（直線 + 直角折れ線、交差時にブリッジホップ）
-5. 単純状態（角丸矩形 + ラベル、Actionsモード時はentry/do/exit表示）
-6. 擬似状態（●開始、◎終了、H履歴、◇選択、■フォーク/ジョイン）
-7. 注釈レイヤー（トグルON時のみ、notes + 点線接続）
-8. 選択ハンドル（選択中の要素に8点リサイズハンドル）
-9. スナップガイド（ドラッグ中のアラインメント補助線）
+2. グループ（視覚グルーピングの背景矩形）
+3. 複合状態の外枠（半透明背景 + ボーダー）
+4. 直交領域の区切り線（点線、orthogonal=true時のみ）
+5. 遷移線（直線 + 直角折れ線、交差時にブリッジホップ）
+6. 単純状態（角丸矩形 + ラベル、Actionsモード時はentry/do/exit表示）
+7. 擬似状態（●開始、◎終了、H履歴、◇選択、■フォーク/ジョイン）
+8. 注釈レイヤー（トグルON時のみ、notes + 点線接続）
+9. 選択ハンドル（選択中の要素に8点リサイズハンドル）
+10. スナップガイド（ドラッグ中のアラインメント補助線）
 
 ### 遷移線のルーティング（直角折れ線ルーティング）
 
@@ -495,7 +516,7 @@ final fin   → active --> [*]
 
 | スコープ | 対象 |
 |---|---|
-| `keyword.control` | `@canvas`, `@config`, `state`, `initial`, `final`, `history`, `deephistory`, `choice`, `fork`, `join`, `region`, `note` |
+| `keyword.control` | `@canvas`, `@config`, `state`, `initial`, `final`, `history`, `deephistory`, `choice`, `fork`, `join`, `region`, `group`, `note` |
 | `entity.name.tag` | 要素ID |
 | `string.quoted.double` | `"ラベル"` |
 | `constant.numeric` | 座標、サイズ |
@@ -510,7 +531,7 @@ final fin   → active --> [*]
 
 - 左: DSLテキストエディタ（シンタックスハイライト付き）
 - 中央: Diagram / Table タブ切替
-  - Diagramタブ: 状態遷移図（SVG）、ツールバー（Select, +State, ●Initial, ◎Final, ↗Connect, Actions トグル）
+  - Diagramタブ: 状態遷移図（SVG）、ツールバー（Select, +State, +Group, ●Initial, ◎Final, ↗Connect, Actions トグル）
   - Tableタブ: 状態遷移表（フルスクリーン）、ツールバー（+Event）
 - 右: プロパティパネル（選択要素の編集 + Config設定）
 

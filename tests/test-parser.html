@@ -637,6 +637,236 @@ function test_validate_no_errors_clean() {
 }
 
 // ═══════════════════════════════════════════════
+// DSL Updaters (copied from stablestate.html)
+// ═══════════════════════════════════════════════
+
+function updatePos(type, id, nx, ny, dsl) {
+  const re = new RegExp(`^(\\s*${type}\\s+${id}\\s+(?:"[^"]*"\\s+)?at\\s+)[\\d.]+,[\\d.]+(.*$)`, 'm');
+  return dsl.replace(re, `$1${nx},${ny}$2`);
+}
+
+function updateSize(type, id, nw, nh, dsl) {
+  const re = new RegExp(`^(\\s*${type}\\s+${id}\\s+.*\\bsize\\s+)[\\d.]+x[\\d.]+(.*$)`, 'm');
+  return dsl.replace(re, `$1${nw}x${nh}$2`);
+}
+
+function updateProp(type, id, prop, val, dsl) {
+  const reExist = new RegExp(`^(\\s*${type}\\s+${id}\\s+.*)\\b${prop}=\\S+(.*$)`, 'm');
+  if (reExist.test(dsl)) {
+    return dsl.replace(reExist, `$1${prop}=${val}$2`);
+  }
+  const reLine = new RegExp(`^(\\s*${type}\\s+${id}\\s+.+)$`, 'm');
+  return dsl.replace(reLine, function(wholeLine) {
+    const trimEnd = wholeLine.trimEnd();
+    if (trimEnd.endsWith('{')) {
+      return trimEnd.slice(0, -1).trimEnd() + ` ${prop}=${val} {`;
+    }
+    return trimEnd + ` ${prop}=${val}`;
+  });
+}
+
+function updateLabel(type, id, newLabel, dsl) {
+  const re = new RegExp(`^(\\s*${type}\\s+${id}\\s+)"[^"]*"(.*)$`, 'm');
+  return dsl.replace(re, `$1"${newLabel}"$2`);
+}
+
+function addTransition(from, to, event, guard, action, kind, dsl) {
+  let defaultKind = 'local';
+  const configMatch = dsl.match(/^@config\s+transition=(\S+)/m);
+  if (configMatch) defaultKind = configMatch[1];
+
+  let line = `${from} -> ${to}`;
+  const hasEvent = event != null && event !== '';
+  const hasGuard = guard != null && guard !== '';
+  const hasAction = action != null && action !== '';
+  const hasKind = kind != null && kind !== '' && kind !== defaultKind;
+
+  if (hasEvent || hasGuard || hasAction || hasKind) {
+    line += ' :';
+    if (hasEvent) line += ` ${event}`;
+    if (hasGuard) line += ` [${guard}]`;
+    if (hasAction) line += ` / ${action}`;
+    if (hasKind) line += ` @${kind}`;
+  }
+
+  return dsl + '\n' + line;
+}
+
+function removeTransition(from, to, event, guard, dsl) {
+  const lines = dsl.split('\n');
+  const result = [];
+  for (const line of lines) {
+    const trimmed = line.trim();
+    const m = trimmed.match(/^(\S+)\s*->\s*(\S+)(.*)$/);
+    if (m && m[1] === from && m[2] === to) {
+      const rest = m[3].trim();
+      let lineEvent = null, lineGuard = null;
+      if (rest.startsWith(':')) {
+        let detail = rest.slice(1).trim();
+        detail = detail.replace(/@(local|external|internal)\s*$/, '').trim();
+        const slashIdx = detail.indexOf('/');
+        if (slashIdx !== -1) detail = detail.slice(0, slashIdx).trim();
+        const gm = detail.match(/\[([^\]]*)\]/);
+        if (gm) {
+          lineGuard = gm[1].trim() || null;
+          detail = detail.slice(0, detail.indexOf('[')).trim();
+        }
+        lineEvent = detail || null;
+      }
+      const eMatch = (event == null || event === '') ? (lineEvent == null || lineEvent === '') : lineEvent === event;
+      const gMatch = (guard == null || guard === '') ? (lineGuard == null || lineGuard === '') : lineGuard === guard;
+      if (eMatch && gMatch) continue;
+    }
+    result.push(line);
+  }
+  return result.join('\n');
+}
+
+function updateTransition(from, to, event, guard, field, val, dsl) {
+  const lines = dsl.split('\n');
+  for (let i = 0; i < lines.length; i++) {
+    const trimmed = lines[i].trim();
+    const m = trimmed.match(/^(\S+)\s*->\s*(\S+)(.*)$/);
+    if (!m || m[1] !== from || m[2] !== to) continue;
+
+    const rest = m[3].trim();
+    let lineEvent = null, lineGuard = null, lineAction = null, lineKind = null;
+    if (rest.startsWith(':')) {
+      let detail = rest.slice(1).trim();
+      const km = detail.match(/@(local|external|internal)\s*$/);
+      if (km) {
+        lineKind = km[1];
+        detail = detail.slice(0, detail.lastIndexOf('@' + lineKind)).trim();
+      }
+      const slashIdx = detail.indexOf('/');
+      if (slashIdx !== -1) {
+        lineAction = detail.slice(slashIdx + 1).trim() || null;
+        detail = detail.slice(0, slashIdx).trim();
+      }
+      const gm = detail.match(/\[([^\]]*)\]/);
+      if (gm) {
+        lineGuard = gm[1].trim() || null;
+        detail = detail.slice(0, detail.indexOf('[')).trim();
+      }
+      lineEvent = detail || null;
+    }
+
+    const eMatch = (event == null || event === '') ? (lineEvent == null || lineEvent === '') : lineEvent === event;
+    const gMatch = (guard == null || guard === '') ? (lineGuard == null || lineGuard === '') : lineGuard === guard;
+    if (!eMatch || !gMatch) continue;
+
+    if (field === 'guard') lineGuard = val;
+    else if (field === 'action') lineAction = val;
+    else if (field === 'kind') lineKind = val;
+    else continue;
+
+    let defaultKind = 'local';
+    const cfgM = dsl.match(/^@config\s+transition=(\S+)/m);
+    if (cfgM) defaultKind = cfgM[1];
+
+    let rebuilt = `${from} -> ${to}`;
+    const hasEvent = lineEvent != null && lineEvent !== '';
+    const hasGuard = lineGuard != null && lineGuard !== '';
+    const hasAction = lineAction != null && lineAction !== '';
+    const hasKind = lineKind != null && lineKind !== '' && lineKind !== defaultKind;
+
+    if (hasEvent || hasGuard || hasAction || hasKind) {
+      rebuilt += ' :';
+      if (hasEvent) rebuilt += ` ${lineEvent}`;
+      if (hasGuard) rebuilt += ` [${lineGuard}]`;
+      if (hasAction) rebuilt += ` / ${lineAction}`;
+      if (hasKind) rebuilt += ` @${lineKind}`;
+    }
+
+    const leadingWs = lines[i].match(/^(\s*)/)[1];
+    lines[i] = leadingWs + rebuilt;
+    break;
+  }
+  return lines.join('\n');
+}
+
+// ═══════════════════════════════════════════════
+// DSL Updater Test Cases
+// ═══════════════════════════════════════════════
+
+function test_updatePos() {
+  let dsl = 'state idle "Idle" at 2,3 size 8x4';
+  dsl = updatePos('state', 'idle', 5, 7, dsl);
+  assert(dsl.includes('at 5,7'), 'position updated');
+  assert(dsl.includes('size 8x4'), 'size preserved');
+}
+
+function test_updatePos_pseudo() {
+  let dsl = 'initial ini at 1,4';
+  dsl = updatePos('initial', 'ini', 3, 6, dsl);
+  assert(dsl.includes('at 3,6'), 'pseudo position updated');
+}
+
+function test_updateSize() {
+  let dsl = 'state idle "Idle" at 2,3 size 8x4';
+  dsl = updateSize('state', 'idle', 10, 6, dsl);
+  assert(dsl.includes('size 10x6'), 'size updated');
+}
+
+function test_updateProp_existing() {
+  let dsl = 'state idle "Idle" at 2,3 size 8x4 entry=OldEntry';
+  dsl = updateProp('state', 'idle', 'entry', 'NewEntry', dsl);
+  assert(dsl.includes('entry=NewEntry'), 'prop updated');
+  assert(!dsl.includes('OldEntry'), 'old prop removed');
+}
+
+function test_updateProp_new() {
+  let dsl = 'state idle "Idle" at 2,3 size 8x4';
+  dsl = updateProp('state', 'idle', 'entry', 'IdleEntry', dsl);
+  assert(dsl.includes('entry=IdleEntry'), 'new prop added');
+}
+
+function test_updateLabel() {
+  let dsl = 'state idle "Idle" at 2,3 size 8x4';
+  dsl = updateLabel('state', 'idle', 'New Label', dsl);
+  assert(dsl.includes('"New Label"'), 'label updated');
+}
+
+function test_addTransition() {
+  let dsl = 'state a "A" at 1,1 size 4x3\nstate b "B" at 8,1 size 4x3';
+  dsl = addTransition('a', 'b', 'EvGo', null, 'ActGo', null, dsl);
+  assert(dsl.includes('a -> b : EvGo / ActGo'), 'transition added');
+}
+
+function test_addTransition_minimal() {
+  let dsl = 'state a "A" at 1,1 size 4x3\nstate b "B" at 8,1 size 4x3';
+  dsl = addTransition('a', 'b', null, null, null, null, dsl);
+  assert(dsl.includes('a -> b'), 'minimal transition added');
+  assert(!dsl.includes(':'), 'no colon for empty transition');
+}
+
+function test_removeTransition() {
+  let dsl = 'state a "A" at 1,1 size 4x3\nstate b "B" at 8,1 size 4x3\na -> b : EvGo';
+  dsl = removeTransition('a', 'b', 'EvGo', null, dsl);
+  assert(!dsl.includes('a -> b'), 'transition removed');
+}
+
+function test_addTransition_with_kind() {
+  let dsl = '@config transition=local\nstate a "A" at 1,1 size 4x3\nstate b "B" at 8,1 size 4x3';
+  dsl = addTransition('a', 'b', 'EvGo', null, null, 'external', dsl);
+  assert(dsl.includes('@external'), 'kind added');
+}
+
+function test_updateTransition_guard() {
+  let dsl = 'state a "A" at 1,1 size 4x3\nstate b "B" at 8,1 size 4x3\na -> b : EvGo';
+  dsl = updateTransition('a', 'b', 'EvGo', null, 'guard', 'IsReady', dsl);
+  assert(dsl.includes('[IsReady]'), 'guard added to transition');
+  assert(dsl.includes('EvGo'), 'event preserved');
+}
+
+function test_updateTransition_action() {
+  let dsl = 'state a "A" at 1,1 size 4x3\nstate b "B" at 8,1 size 4x3\na -> b : EvGo [IsReady]';
+  dsl = updateTransition('a', 'b', 'EvGo', 'IsReady', 'action', 'DoGo', dsl);
+  assert(dsl.includes('/ DoGo'), 'action added to transition');
+  assert(dsl.includes('[IsReady]'), 'guard preserved');
+}
+
+// ═══════════════════════════════════════════════
 // Run All Tests
 // ═══════════════════════════════════════════════
 runTest('test_canvas', test_canvas);
@@ -662,6 +892,20 @@ runTest('test_validate_initial_one_transition', test_validate_initial_one_transi
 runTest('test_validate_choice_no_event', test_validate_choice_no_event);
 runTest('test_validate_dot_notation_ok', test_validate_dot_notation_ok);
 runTest('test_validate_no_errors_clean', test_validate_no_errors_clean);
+
+// DSL Updater tests
+runTest('test_updatePos', test_updatePos);
+runTest('test_updatePos_pseudo', test_updatePos_pseudo);
+runTest('test_updateSize', test_updateSize);
+runTest('test_updateProp_existing', test_updateProp_existing);
+runTest('test_updateProp_new', test_updateProp_new);
+runTest('test_updateLabel', test_updateLabel);
+runTest('test_addTransition', test_addTransition);
+runTest('test_addTransition_minimal', test_addTransition_minimal);
+runTest('test_removeTransition', test_removeTransition);
+runTest('test_addTransition_with_kind', test_addTransition_with_kind);
+runTest('test_updateTransition_guard', test_updateTransition_guard);
+runTest('test_updateTransition_action', test_updateTransition_action);
 
 // Summary
 const summaryClass = failedTests === 0 ? 'all-pass' : 'has-fail';

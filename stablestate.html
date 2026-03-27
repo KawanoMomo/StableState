@@ -804,6 +804,175 @@ function validate(result) {
 }
 
 // ═══════════════════════════════════════════════
+// DSL Updaters (Bidirectional Sync Foundation)
+// ═══════════════════════════════════════════════
+
+// Update position (at X,Y) for a given element type and id
+function updatePos(type, id, nx, ny, dsl) {
+  const re = new RegExp(`^(\\s*${type}\\s+${id}\\s+(?:"[^"]*"\\s+)?at\\s+)[\\d.]+,[\\d.]+(.*$)`, 'm');
+  return dsl.replace(re, `$1${nx},${ny}$2`);
+}
+
+// Update size (size WxH) for a given element type and id
+function updateSize(type, id, nw, nh, dsl) {
+  const re = new RegExp(`^(\\s*${type}\\s+${id}\\s+.*\\bsize\\s+)[\\d.]+x[\\d.]+(.*$)`, 'm');
+  return dsl.replace(re, `$1${nw}x${nh}$2`);
+}
+
+// Add or replace a property (key=value) on an element line
+function updateProp(type, id, prop, val, dsl) {
+  // First try to replace existing prop
+  const reExist = new RegExp(`^(\\s*${type}\\s+${id}\\s+.*)\\b${prop}=\\S+(.*$)`, 'm');
+  if (reExist.test(dsl)) {
+    return dsl.replace(reExist, `$1${prop}=${val}$2`);
+  }
+  // Prop doesn't exist — append before trailing { or at end of line
+  const reLine = new RegExp(`^(\\s*${type}\\s+${id}\\s+.+)$`, 'm');
+  return dsl.replace(reLine, function(wholeLine) {
+    const trimEnd = wholeLine.trimEnd();
+    if (trimEnd.endsWith('{')) {
+      return trimEnd.slice(0, -1).trimEnd() + ` ${prop}=${val} {`;
+    }
+    return trimEnd + ` ${prop}=${val}`;
+  });
+}
+
+// Change the quoted label for an element
+function updateLabel(type, id, newLabel, dsl) {
+  const re = new RegExp(`^(\\s*${type}\\s+${id}\\s+)"[^"]*"(.*)$`, 'm');
+  return dsl.replace(re, `$1"${newLabel}"$2`);
+}
+
+// Append a new transition line to the DSL
+function addTransition(from, to, event, guard, action, kind, dsl) {
+  // Determine default transition kind from @config
+  let defaultKind = 'local';
+  const configMatch = dsl.match(/^@config\s+transition=(\S+)/m);
+  if (configMatch) defaultKind = configMatch[1];
+
+  let line = `${from} -> ${to}`;
+  const hasEvent = event != null && event !== '';
+  const hasGuard = guard != null && guard !== '';
+  const hasAction = action != null && action !== '';
+  const hasKind = kind != null && kind !== '' && kind !== defaultKind;
+
+  if (hasEvent || hasGuard || hasAction || hasKind) {
+    line += ' :';
+    if (hasEvent) line += ` ${event}`;
+    if (hasGuard) line += ` [${guard}]`;
+    if (hasAction) line += ` / ${action}`;
+    if (hasKind) line += ` @${kind}`;
+  }
+
+  return dsl + '\n' + line;
+}
+
+// Remove a matching transition line (match by from, to, event, guard)
+function removeTransition(from, to, event, guard, dsl) {
+  const lines = dsl.split('\n');
+  const result = [];
+  for (const line of lines) {
+    const trimmed = line.trim();
+    const m = trimmed.match(/^(\S+)\s*->\s*(\S+)(.*)$/);
+    if (m && m[1] === from && m[2] === to) {
+      // Parse the rest to extract event and guard
+      const rest = m[3].trim();
+      let lineEvent = null, lineGuard = null;
+      if (rest.startsWith(':')) {
+        let detail = rest.slice(1).trim();
+        // Remove @kind
+        detail = detail.replace(/@(local|external|internal)\s*$/, '').trim();
+        // Remove action
+        const slashIdx = detail.indexOf('/');
+        if (slashIdx !== -1) detail = detail.slice(0, slashIdx).trim();
+        // Extract guard
+        const gm = detail.match(/\[([^\]]*)\]/);
+        if (gm) {
+          lineGuard = gm[1].trim() || null;
+          detail = detail.slice(0, detail.indexOf('[')).trim();
+        }
+        lineEvent = detail || null;
+      }
+      // Match event and guard
+      const eMatch = (event == null || event === '') ? (lineEvent == null || lineEvent === '') : lineEvent === event;
+      const gMatch = (guard == null || guard === '') ? (lineGuard == null || lineGuard === '') : lineGuard === guard;
+      if (eMatch && gMatch) continue; // skip this line (remove it)
+    }
+    result.push(line);
+  }
+  return result.join('\n');
+}
+
+// Update a specific field of a matching transition line
+function updateTransition(from, to, event, guard, field, val, dsl) {
+  const lines = dsl.split('\n');
+  for (let i = 0; i < lines.length; i++) {
+    const trimmed = lines[i].trim();
+    const m = trimmed.match(/^(\S+)\s*->\s*(\S+)(.*)$/);
+    if (!m || m[1] !== from || m[2] !== to) continue;
+
+    const rest = m[3].trim();
+    let lineEvent = null, lineGuard = null, lineAction = null, lineKind = null;
+    if (rest.startsWith(':')) {
+      let detail = rest.slice(1).trim();
+      const km = detail.match(/@(local|external|internal)\s*$/);
+      if (km) {
+        lineKind = km[1];
+        detail = detail.slice(0, detail.lastIndexOf('@' + lineKind)).trim();
+      }
+      const slashIdx = detail.indexOf('/');
+      if (slashIdx !== -1) {
+        lineAction = detail.slice(slashIdx + 1).trim() || null;
+        detail = detail.slice(0, slashIdx).trim();
+      }
+      const gm = detail.match(/\[([^\]]*)\]/);
+      if (gm) {
+        lineGuard = gm[1].trim() || null;
+        detail = detail.slice(0, detail.indexOf('[')).trim();
+      }
+      lineEvent = detail || null;
+    }
+
+    // Match by event and guard
+    const eMatch = (event == null || event === '') ? (lineEvent == null || lineEvent === '') : lineEvent === event;
+    const gMatch = (guard == null || guard === '') ? (lineGuard == null || lineGuard === '') : lineGuard === guard;
+    if (!eMatch || !gMatch) continue;
+
+    // Apply the field update
+    if (field === 'guard') lineGuard = val;
+    else if (field === 'action') lineAction = val;
+    else if (field === 'kind') lineKind = val;
+    else continue;
+
+    // Determine default kind
+    let defaultKind = 'local';
+    const cfgM = dsl.match(/^@config\s+transition=(\S+)/m);
+    if (cfgM) defaultKind = cfgM[1];
+
+    // Rebuild the line
+    let rebuilt = `${from} -> ${to}`;
+    const hasEvent = lineEvent != null && lineEvent !== '';
+    const hasGuard = lineGuard != null && lineGuard !== '';
+    const hasAction = lineAction != null && lineAction !== '';
+    const hasKind = lineKind != null && lineKind !== '' && lineKind !== defaultKind;
+
+    if (hasEvent || hasGuard || hasAction || hasKind) {
+      rebuilt += ' :';
+      if (hasEvent) rebuilt += ` ${lineEvent}`;
+      if (hasGuard) rebuilt += ` [${lineGuard}]`;
+      if (hasAction) rebuilt += ` / ${lineAction}`;
+      if (hasKind) rebuilt += ` @${lineKind}`;
+    }
+
+    // Preserve leading whitespace
+    const leadingWs = lines[i].match(/^(\s*)/)[1];
+    lines[i] = leadingWs + rebuilt;
+    break;
+  }
+  return lines.join('\n');
+}
+
+// ═══════════════════════════════════════════════
 // Error Bar Display
 // ═══════════════════════════════════════════════
 function updateErrorBar(result) {

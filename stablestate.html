@@ -990,6 +990,370 @@ function renderSVG(parsed) {
     }
   }
 
+  // ─── 6. Transitions ───
+  // Arrow marker definition
+  svg += `<defs>`;
+  svg += `<marker id="arrowHead" markerWidth="10" markerHeight="8" refX="10" refY="4" orient="auto">`;
+  svg += `<path d="M0,0 L10,4 L0,8 Z" fill="#89DDFF"/></marker>`;
+  svg += `</defs>`;
+
+  // Helper: get bounding box {x, y, w, h} in pixels for a state or pseudo-state
+  function getBox(ref) {
+    const el = resolveStateRef(ref, parsed);
+    if (!el) return null;
+    const pos = getAbsolutePos(el, parsed);
+    if (el.type === 'state') {
+      return { x: pos.x, y: pos.y, w: el.w * g, h: el.h * g };
+    }
+    // Pseudo-states
+    switch (el.type) {
+      case 'initial':
+        return { x: pos.x - 10, y: pos.y - 10, w: 20, h: 20 };
+      case 'final':
+        return { x: pos.x - 12, y: pos.y - 12, w: 24, h: 24 };
+      case 'choice':
+        return { x: pos.x - 12, y: pos.y - 12, w: 24, h: 24 };
+      case 'history':
+      case 'deephistory':
+        return { x: pos.x - 16, y: pos.y - 16, w: 32, h: 32 };
+      case 'fork':
+      case 'join': {
+        const pw = el.w != null ? el.w * g : 6;
+        const ph = el.h != null ? el.h * g : 40;
+        return { x: pos.x - pw / 2, y: pos.y - ph / 2, w: pw, h: ph };
+      }
+      default:
+        return { x: pos.x - 10, y: pos.y - 10, w: 20, h: 20 };
+    }
+  }
+
+  // Helper: determine which side of source/target to connect
+  function computePortSide(srcBox, tgtBox) {
+    const dx = (tgtBox.x + tgtBox.w / 2) - (srcBox.x + srcBox.w / 2);
+    const dy = (tgtBox.y + tgtBox.h / 2) - (srcBox.y + srcBox.h / 2);
+    let srcSide, tgtSide;
+    if (Math.abs(dx) > Math.abs(dy)) {
+      srcSide = dx > 0 ? 'right' : 'left';
+      tgtSide = dx > 0 ? 'left' : 'right';
+    } else {
+      srcSide = dy > 0 ? 'bottom' : 'top';
+      tgtSide = dy > 0 ? 'top' : 'bottom';
+    }
+    return { srcSide, tgtSide };
+  }
+
+  // Helper: get port point on a box edge, distributed for multiple ports
+  function getPortPoint(box, side, portIndex, portCount) {
+    const pad = 0.2;
+    const t = portCount <= 1 ? 0.5 : pad + (1 - 2 * pad) * portIndex / (portCount - 1);
+    switch (side) {
+      case 'top': return { x: box.x + box.w * t, y: box.y };
+      case 'bottom': return { x: box.x + box.w * t, y: box.y + box.h };
+      case 'left': return { x: box.x, y: box.y + box.h * t };
+      case 'right': return { x: box.x + box.w, y: box.y + box.h * t };
+    }
+    return { x: box.x + box.w / 2, y: box.y + box.h / 2 };
+  }
+
+  // Helper: build orthogonal route between two points
+  function buildRoute(fromPt, toPt, fromSide, toSide) {
+    const points = [fromPt];
+    const margin = 20;
+
+    // same-axis opposite sides
+    if (fromSide === 'right' && toSide === 'left') {
+      if (Math.abs(fromPt.y - toPt.y) < 2) {
+        points.push(toPt);
+      } else {
+        const midX = (fromPt.x + toPt.x) / 2;
+        points.push({ x: midX, y: fromPt.y });
+        points.push({ x: midX, y: toPt.y });
+        points.push(toPt);
+      }
+    } else if (fromSide === 'left' && toSide === 'right') {
+      if (Math.abs(fromPt.y - toPt.y) < 2) {
+        points.push(toPt);
+      } else {
+        const midX = (fromPt.x + toPt.x) / 2;
+        points.push({ x: midX, y: fromPt.y });
+        points.push({ x: midX, y: toPt.y });
+        points.push(toPt);
+      }
+    } else if (fromSide === 'bottom' && toSide === 'top') {
+      if (Math.abs(fromPt.x - toPt.x) < 2) {
+        points.push(toPt);
+      } else {
+        const midY = (fromPt.y + toPt.y) / 2;
+        points.push({ x: fromPt.x, y: midY });
+        points.push({ x: toPt.x, y: midY });
+        points.push(toPt);
+      }
+    } else if (fromSide === 'top' && toSide === 'bottom') {
+      if (Math.abs(fromPt.x - toPt.x) < 2) {
+        points.push(toPt);
+      } else {
+        const midY = (fromPt.y + toPt.y) / 2;
+        points.push({ x: fromPt.x, y: midY });
+        points.push({ x: toPt.x, y: midY });
+        points.push(toPt);
+      }
+    }
+    // same sides — U-shape
+    else if (fromSide === 'right' && toSide === 'right') {
+      const outX = Math.max(fromPt.x, toPt.x) + margin;
+      points.push({ x: outX, y: fromPt.y });
+      points.push({ x: outX, y: toPt.y });
+      points.push(toPt);
+    } else if (fromSide === 'left' && toSide === 'left') {
+      const outX = Math.min(fromPt.x, toPt.x) - margin;
+      points.push({ x: outX, y: fromPt.y });
+      points.push({ x: outX, y: toPt.y });
+      points.push(toPt);
+    } else if (fromSide === 'top' && toSide === 'top') {
+      const outY = Math.min(fromPt.y, toPt.y) - margin;
+      points.push({ x: fromPt.x, y: outY });
+      points.push({ x: toPt.x, y: outY });
+      points.push(toPt);
+    } else if (fromSide === 'bottom' && toSide === 'bottom') {
+      const outY = Math.max(fromPt.y, toPt.y) + margin;
+      points.push({ x: fromPt.x, y: outY });
+      points.push({ x: toPt.x, y: outY });
+      points.push(toPt);
+    }
+    // adjacent sides — L-shape
+    else if (fromSide === 'right' && toSide === 'top') {
+      points.push({ x: toPt.x, y: fromPt.y });
+      points.push(toPt);
+    } else if (fromSide === 'right' && toSide === 'bottom') {
+      points.push({ x: toPt.x, y: fromPt.y });
+      points.push(toPt);
+    } else if (fromSide === 'left' && toSide === 'top') {
+      points.push({ x: toPt.x, y: fromPt.y });
+      points.push(toPt);
+    } else if (fromSide === 'left' && toSide === 'bottom') {
+      points.push({ x: toPt.x, y: fromPt.y });
+      points.push(toPt);
+    } else if (fromSide === 'top' && toSide === 'right') {
+      points.push({ x: fromPt.x, y: toPt.y });
+      points.push(toPt);
+    } else if (fromSide === 'top' && toSide === 'left') {
+      points.push({ x: fromPt.x, y: toPt.y });
+      points.push(toPt);
+    } else if (fromSide === 'bottom' && toSide === 'right') {
+      points.push({ x: fromPt.x, y: toPt.y });
+      points.push(toPt);
+    } else if (fromSide === 'bottom' && toSide === 'left') {
+      points.push({ x: fromPt.x, y: toPt.y });
+      points.push(toPt);
+    } else {
+      // fallback: simple L
+      points.push({ x: toPt.x, y: fromPt.y });
+      points.push(toPt);
+    }
+    return points;
+  }
+
+  // Helper: build self-transition loop
+  function buildSelfRoute(box) {
+    const margin = 30;
+    return [
+      { x: box.x + box.w, y: box.y + box.h / 2 },
+      { x: box.x + box.w + margin, y: box.y + box.h / 2 },
+      { x: box.x + box.w + margin, y: box.y - margin },
+      { x: box.x + box.w / 2, y: box.y - margin },
+      { x: box.x + box.w / 2, y: box.y }
+    ];
+  }
+
+  // Helper: segment intersection
+  function segmentIntersection(a1, a2, b1, b2) {
+    const d1x = a2.x - a1.x, d1y = a2.y - a1.y;
+    const d2x = b2.x - b1.x, d2y = b2.y - b1.y;
+    const cross = d1x * d2y - d1y * d2x;
+    if (Math.abs(cross) < 0.001) return null;
+    const t = ((b1.x - a1.x) * d2y - (b1.y - a1.y) * d2x) / cross;
+    const u = ((b1.x - a1.x) * d1y - (b1.y - a1.y) * d1x) / cross;
+    if (t >= 0.01 && t <= 0.99 && u >= 0.01 && u <= 0.99) {
+      return { x: a1.x + t * d1x, y: a1.y + t * d1y };
+    }
+    return null;
+  }
+
+  // Helper: find midpoint along a polyline route
+  function routeMidpoint(points) {
+    let totalLen = 0;
+    for (let i = 1; i < points.length; i++)
+      totalLen += Math.hypot(points[i].x - points[i - 1].x, points[i].y - points[i - 1].y);
+    let target = totalLen / 2, acc = 0;
+    for (let i = 1; i < points.length; i++) {
+      const segLen = Math.hypot(points[i].x - points[i - 1].x, points[i].y - points[i - 1].y);
+      if (acc + segLen >= target) {
+        const t = segLen > 0 ? (target - acc) / segLen : 0;
+        return {
+          x: points[i - 1].x + t * (points[i].x - points[i - 1].x),
+          y: points[i - 1].y + t * (points[i].y - points[i - 1].y)
+        };
+      }
+      acc += segLen;
+    }
+    return points[Math.floor(points.length / 2)];
+  }
+
+  // Collect all polyline routes for crossing detection
+  const allRoutes = [];
+
+  // Pre-compute port distribution: group transitions by (sourceId, side) and (targetId, side)
+  const srcPortGroups = {}; // key: "srcId:side" -> array of transition indices
+  const tgtPortGroups = {}; // key: "tgtId:side" -> array of transition indices
+  const transitionSides = []; // per-transition: {srcSide, tgtSide, srcBox, tgtBox, isSelf}
+
+  // First pass: compute sides for all transitions
+  for (let ti = 0; ti < parsed.transitions.length; ti++) {
+    const tr = parsed.transitions[ti];
+    const srcBox = getBox(tr.from);
+    const tgtBox = getBox(tr.to);
+    if (!srcBox || !tgtBox) {
+      transitionSides.push(null);
+      continue;
+    }
+    const isSelf = tr.from === tr.to;
+    let srcSide, tgtSide;
+    if (isSelf) {
+      srcSide = 'right';
+      tgtSide = 'top';
+    } else {
+      const sides = computePortSide(srcBox, tgtBox);
+      srcSide = sides.srcSide;
+      tgtSide = sides.tgtSide;
+    }
+    transitionSides.push({ srcSide, tgtSide, srcBox, tgtBox, isSelf });
+
+    const srcKey = tr.from + ':' + srcSide;
+    const tgtKey = tr.to + ':' + tgtSide;
+    if (!srcPortGroups[srcKey]) srcPortGroups[srcKey] = [];
+    srcPortGroups[srcKey].push(ti);
+    if (!tgtPortGroups[tgtKey]) tgtPortGroups[tgtKey] = [];
+    tgtPortGroups[tgtKey].push(ti);
+  }
+
+  // Second pass: compute routes and render
+  for (let ti = 0; ti < parsed.transitions.length; ti++) {
+    const tr = parsed.transitions[ti];
+    const info = transitionSides[ti];
+    if (!info) continue;
+
+    const { srcSide, tgtSide, srcBox, tgtBox, isSelf } = info;
+    let route;
+
+    if (isSelf) {
+      route = buildSelfRoute(srcBox);
+    } else {
+      const srcKey = tr.from + ':' + srcSide;
+      const tgtKey = tr.to + ':' + tgtSide;
+      const srcGroup = srcPortGroups[srcKey];
+      const tgtGroup = tgtPortGroups[tgtKey];
+      const srcIdx = srcGroup.indexOf(ti);
+      const tgtIdx = tgtGroup.indexOf(ti);
+      const fromPt = getPortPoint(srcBox, srcSide, srcIdx, srcGroup.length);
+      const toPt = getPortPoint(tgtBox, tgtSide, tgtIdx, tgtGroup.length);
+      route = buildRoute(fromPt, toPt, srcSide, tgtSide);
+    }
+
+    // Crossing detection: check this route against all previously rendered routes
+    const bridgeR = 6;
+    const crossings = []; // {segIdx, x, y, t} for this route's segments
+    for (let si = 0; si < route.length - 1; si++) {
+      const a1 = route[si], a2 = route[si + 1];
+      for (const prevRoute of allRoutes) {
+        for (let pi = 0; pi < prevRoute.length - 1; pi++) {
+          const b1 = prevRoute[pi], b2 = prevRoute[pi + 1];
+          const hit = segmentIntersection(a1, a2, b1, b2);
+          if (hit) {
+            // Determine if this segment is horizontal
+            const isHoriz = Math.abs(a2.y - a1.y) < Math.abs(a2.x - a1.x);
+            if (isHoriz) {
+              const segLen = Math.hypot(a2.x - a1.x, a2.y - a1.y);
+              const t = segLen > 0 ? Math.hypot(hit.x - a1.x, hit.y - a1.y) / segLen : 0;
+              crossings.push({ segIdx: si, x: hit.x, y: hit.y, t: t });
+            }
+          }
+        }
+      }
+    }
+
+    // Sort crossings by segment index, then by t within segment
+    crossings.sort((a, b) => a.segIdx !== b.segIdx ? a.segIdx - b.segIdx : a.t - b.t);
+
+    // Build SVG path
+    if (crossings.length === 0) {
+      // Simple polyline
+      const pts = route.map(p => `${p.x},${p.y}`).join(' ');
+      svg += `<polyline points="${pts}" fill="none" stroke="#89DDFF" stroke-width="1.5" marker-end="url(#arrowHead)"/>`;
+    } else {
+      // Path with bridge arcs
+      let d = `M ${route[0].x},${route[0].y}`;
+      for (let si = 0; si < route.length - 1; si++) {
+        const a1 = route[si], a2 = route[si + 1];
+        const segCrossings = crossings.filter(c => c.segIdx === si);
+        if (segCrossings.length === 0) {
+          d += ` L ${a2.x},${a2.y}`;
+        } else {
+          // Walk along segment, inserting arcs at crossing points
+          let prevX = a1.x, prevY = a1.y;
+          for (const cr of segCrossings) {
+            // Line to just before the crossing
+            const bx1 = cr.x - bridgeR;
+            const bx2 = cr.x + bridgeR;
+            d += ` L ${bx1},${cr.y}`;
+            // Arc over
+            d += ` A ${bridgeR},${bridgeR} 0 0,1 ${bx2},${cr.y}`;
+            prevX = bx2;
+            prevY = cr.y;
+          }
+          // Line to end of segment
+          d += ` L ${a2.x},${a2.y}`;
+        }
+      }
+      svg += `<path d="${d}" fill="none" stroke="#89DDFF" stroke-width="1.5" marker-end="url(#arrowHead)"/>`;
+    }
+
+    // Store route for future crossing detection
+    allRoutes.push(route);
+
+    // Labels
+    const hasLabel = tr.event || tr.guard || tr.action;
+    if (hasLabel) {
+      const mid = routeMidpoint(route);
+      if (tr.event) {
+        svg += `<text x="${mid.x}" y="${mid.y - 8}" text-anchor="middle" font-family="${sans}" font-size="10" fill="#FFCB6B">${esc(tr.event)}</text>`;
+      }
+      const guardAction = [];
+      if (tr.guard) guardAction.push('[' + tr.guard + ']');
+      if (tr.action) guardAction.push('/ ' + tr.action);
+      if (guardAction.length > 0) {
+        const gaText = guardAction.join(' ');
+        const gaY = tr.event ? mid.y - 20 : mid.y - 8;
+        svg += `<text x="${mid.x}" y="${gaY}" text-anchor="middle" font-family="${sans}" font-size="9" fill="#C3E88D">${esc(gaText)}</text>`;
+      }
+    }
+  }
+
+  // ─── 7. Note connections (dashed lines, no arrowheads) ───
+  for (const nc of parsed.noteConnections) {
+    const noteEl = parsed.noteMap[nc.noteId];
+    if (!noteEl) continue;
+    const tgtBox = getBox(nc.targetId);
+    if (!tgtBox) continue;
+    const notePos = getAbsolutePos(noteEl, parsed);
+    const noteBox = { x: notePos.x, y: notePos.y, w: noteEl.w * g, h: noteEl.h * g };
+    const sides = computePortSide(noteBox, tgtBox);
+    const fromPt = getPortPoint(noteBox, sides.srcSide, 0, 1);
+    const toPt = getPortPoint(tgtBox, sides.tgtSide, 0, 1);
+    const route = buildRoute(fromPt, toPt, sides.srcSide, sides.tgtSide);
+    const pts = route.map(p => `${p.x},${p.y}`).join(' ');
+    svg += `<polyline points="${pts}" fill="none" stroke="#89DDFF" stroke-width="1" stroke-dasharray="6,3"/>`;
+  }
+
   svg += '</svg>';
   return svg;
 }

@@ -1364,7 +1364,31 @@ function renderSVG(parsed) {
   // Pre-compute port distribution: group transitions by (sourceId, side) and (targetId, side)
   const srcPortGroups = {}; // key: "srcId:side" -> array of transition indices
   const tgtPortGroups = {}; // key: "tgtId:side" -> array of transition indices
-  const transitionSides = []; // per-transition: {srcSide, tgtSide, srcBox, tgtBox, isSelf}
+  const transitionSides = []; // per-transition: {srcSide, tgtSide, srcBox, tgtBox, isSelf, isReverse}
+
+  // Build bidirectional pair lookup: detect A→B / B→A pairs
+  const pairKey = (a, b) => [a, b].sort().join('↔');
+  const pairMap = {}; // pairKey → [ti, ...]
+  for (let ti = 0; ti < parsed.transitions.length; ti++) {
+    const tr = parsed.transitions[ti];
+    const pk = pairKey(tr.from, tr.to);
+    if (!pairMap[pk]) pairMap[pk] = [];
+    pairMap[pk].push(ti);
+  }
+  // Mark the second transition in each bidirectional pair for alternate routing
+  const reverseSet = new Set();
+  for (const pk of Object.keys(pairMap)) {
+    const indices = pairMap[pk];
+    if (indices.length < 2) continue;
+    // Find transitions that go in opposite directions
+    for (let i = 1; i < indices.length; i++) {
+      const t0 = parsed.transitions[indices[0]];
+      const ti2 = parsed.transitions[indices[i]];
+      if (t0.from === ti2.to && t0.to === ti2.from) {
+        reverseSet.add(indices[i]); // mark the later one as "reverse"
+      }
+    }
+  }
 
   // First pass: compute sides for all transitions
   for (let ti = 0; ti < parsed.transitions.length; ti++) {
@@ -1376,16 +1400,30 @@ function renderSVG(parsed) {
       continue;
     }
     const isSelf = tr.from === tr.to;
+    const isReverse = reverseSet.has(ti);
     let srcSide, tgtSide;
     if (isSelf) {
       srcSide = 'right';
       tgtSide = 'top';
+    } else if (isReverse) {
+      // Reverse transitions use alternate sides to avoid overlap
+      // If forward goes right→left, reverse goes bottom→top (or top→bottom)
+      const fwdSides = computePortSide(srcBox, tgtBox);
+      if (fwdSides.srcSide === 'right' || fwdSides.srcSide === 'left') {
+        // Forward is horizontal, reverse goes via bottom
+        srcSide = 'bottom';
+        tgtSide = 'bottom';
+      } else {
+        // Forward is vertical, reverse goes via right
+        srcSide = 'right';
+        tgtSide = 'right';
+      }
     } else {
       const sides = computePortSide(srcBox, tgtBox);
       srcSide = sides.srcSide;
       tgtSide = sides.tgtSide;
     }
-    transitionSides.push({ srcSide, tgtSide, srcBox, tgtBox, isSelf });
+    transitionSides.push({ srcSide, tgtSide, srcBox, tgtBox, isSelf, isReverse });
 
     const srcKey = tr.from + ':' + srcSide;
     const tgtKey = tr.to + ':' + tgtSide;
@@ -1485,20 +1523,46 @@ function renderSVG(parsed) {
     // Store route for future crossing detection
     allRoutes.push(route);
 
-    // Labels
+    // Labels — position along route with direction-aware offset
     const hasLabel = tr.event || tr.guard || tr.action;
     if (hasLabel) {
       const mid = routeMidpoint(route);
-      if (tr.event) {
-        svg += `<text x="${mid.x}" y="${mid.y - 8}" text-anchor="middle" font-family="${sans}" font-size="10" fill="#FFCB6B">${esc(tr.event)}</text>`;
+      // Determine if the segment at midpoint is horizontal or vertical
+      let midSegHoriz = true;
+      for (let si = 1; si < route.length; si++) {
+        const a = route[si - 1], b = route[si];
+        const segLen = Math.hypot(b.x - a.x, b.y - a.y);
+        const distToA = Math.hypot(mid.x - a.x, mid.y - a.y);
+        const distToB = Math.hypot(mid.x - b.x, mid.y - b.y);
+        if (distToA + distToB < segLen + 2) {
+          midSegHoriz = Math.abs(b.y - a.y) < Math.abs(b.x - a.x);
+          break;
+        }
       }
+      // For horizontal segments: label above/below the line
+      // For vertical segments: label to the left/right of the line
+      const labelLines = [];
+      if (tr.event) labelLines.push({ text: tr.event, color: '#FFCB6B', size: 10 });
       const guardAction = [];
       if (tr.guard) guardAction.push('[' + tr.guard + ']');
       if (tr.action) guardAction.push('/ ' + tr.action);
       if (guardAction.length > 0) {
-        const gaText = guardAction.join(' ');
-        const gaY = tr.event ? mid.y - 20 : mid.y - 8;
-        svg += `<text x="${mid.x}" y="${gaY}" text-anchor="middle" font-family="${sans}" font-size="9" fill="#C3E88D">${esc(gaText)}</text>`;
+        labelLines.push({ text: guardAction.join(' '), color: '#C3E88D', size: 9 });
+      }
+      if (midSegHoriz) {
+        // Stack labels above the line
+        for (let li = 0; li < labelLines.length; li++) {
+          const ll = labelLines[li];
+          const ly = mid.y - 6 - (labelLines.length - 1 - li) * 13;
+          svg += `<text x="${mid.x}" y="${ly}" text-anchor="middle" font-family="${sans}" font-size="${ll.size}" fill="${ll.color}">${esc(ll.text)}</text>`;
+        }
+      } else {
+        // Place labels to the right of the line for vertical segments
+        for (let li = 0; li < labelLines.length; li++) {
+          const ll = labelLines[li];
+          const ly = mid.y + li * 13;
+          svg += `<text x="${mid.x + 8}" y="${ly}" text-anchor="start" font-family="${sans}" font-size="${ll.size}" fill="${ll.color}">${esc(ll.text)}</text>`;
+        }
       }
     }
   }

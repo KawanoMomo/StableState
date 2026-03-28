@@ -1838,77 +1838,75 @@ function renderTable(parsed) {
   }
   emptyEl.style.display = 'none';
 
-  // ─── Build parent span data for multi-level headers ───
-  // Find maximum depth
+  // ─── Build multi-level header with rowspan for shallow leaves ───
   let maxDepth = 0;
   for (const lc of leafColumns) {
     if (lc.depth > maxDepth) maxDepth = lc.depth;
   }
+  const totalHeaderRows = maxDepth + 1; // depth 0..maxDepth
 
-  // Build header rows: one row per depth level (0..maxDepth-1) for parent grouping, then leaf row
-  // For each depth, determine colspan groups
-  function buildHeaderRows() {
-    const rows = []; // rows[depth] = [{label, colspan, stateId}]
-    for (let d = 0; d <= maxDepth; d++) {
-      rows.push([]);
+  // For each leaf, compute full ancestry chain (length = depth)
+  const ancestries = leafColumns.map(function(lc) {
+    const chain = [];
+    let cur = lc.state;
+    while (cur.parent) {
+      const p = parsed.stateMap[cur.parent];
+      if (p) { chain.unshift(p); cur = p; }
+      else break;
     }
+    return chain; // length = lc.depth
+  });
 
-    // For each leaf, compute ancestry chain
-    const ancestries = leafColumns.map(function(lc) {
-      const chain = [];
-      let cur = lc.state;
-      while (cur.parent) {
-        const p = parsed.stateMap[cur.parent];
-        if (p) { chain.unshift(p); cur = p; }
-        else break;
-      }
-      // Pad chain to maxDepth levels (root=0)
-      while (chain.length < maxDepth) chain.push(null);
-      return chain;
-    });
-
-    // For each depth level (parent row), merge consecutive identical ancestors
-    for (let d = 0; d < maxDepth; d++) {
-      let cur = null, span = 0;
-      for (let ci = 0; ci < leafColumns.length; ci++) {
-        const anc = ancestries[ci][d];
-        const ancId = anc ? anc.id : null;
-        if (ancId === cur) {
-          span++;
-        } else {
-          if (span > 0) {
-            const prevAnc = ci > 0 ? ancestries[ci - 1][d] : null;
-            rows[d].push({
-              label: prevAnc ? prevAnc.label : '',
-              colspan: span,
-              stateId: prevAnc ? prevAnc.id : null
-            });
-          }
-          cur = ancId;
-          span = 1;
-        }
-      }
-      // Push last group
-      if (span > 0) {
-        const lastAnc = ancestries[leafColumns.length - 1][d];
-        rows[d].push({
-          label: lastAnc ? lastAnc.label : '',
-          colspan: span,
-          stateId: lastAnc ? lastAnc.id : null
-        });
-      }
-    }
-
-    // Leaf row (always the last header row)
-    rows[maxDepth] = leafColumns.map(function(lc) {
-      const prefix = lc.isInitial ? '>' : '';
-      return { label: prefix + lc.state.label, colspan: 1, stateId: lc.id };
-    });
-
-    return rows;
+  // Build a cell grid: headerCells[row][col] = {label, colspan, rowspan, stateId} or null (covered by span)
+  const numCols = leafColumns.length;
+  const headerCells = [];
+  for (let r = 0; r < totalHeaderRows; r++) {
+    headerCells.push(new Array(numCols).fill(null));
   }
 
-  const headerRows = buildHeaderRows();
+  // Fill ancestry cells (parent grouping) then leaf cells
+  // Process column by column
+  for (let ci = 0; ci < numCols; ci++) {
+    const chain = ancestries[ci]; // length = leafColumns[ci].depth
+    const lc = leafColumns[ci];
+
+    // Place ancestors at their depth rows
+    for (let ai = 0; ai < chain.length; ai++) {
+      headerCells[ai][ci] = { label: chain[ai].label, stateId: chain[ai].id, colspan: 1, rowspan: 1, placed: false };
+    }
+
+    // Place leaf at its depth row, spanning down to the last header row
+    const leafRow = lc.depth;
+    const prefix = lc.isInitial ? '>' : '';
+    headerCells[leafRow][ci] = {
+      label: prefix + lc.state.label,
+      stateId: lc.id,
+      colspan: 1,
+      rowspan: totalHeaderRows - leafRow,
+      placed: false
+    };
+    // Mark rows below as covered
+    for (let r = leafRow + 1; r < totalHeaderRows; r++) {
+      headerCells[r][ci] = 'covered';
+    }
+  }
+
+  // Merge consecutive identical parent cells horizontally (colspan)
+  for (let r = 0; r < totalHeaderRows; r++) {
+    for (let ci = 0; ci < numCols; ci++) {
+      const cell = headerCells[r][ci];
+      if (!cell || cell === 'covered' || cell.placed) continue;
+      let span = 1;
+      while (ci + span < numCols) {
+        const next = headerCells[r][ci + span];
+        if (next && next !== 'covered' && !next.placed && next.stateId === cell.stateId && next.rowspan === cell.rowspan) {
+          headerCells[r][ci + span] = 'covered';
+          span++;
+        } else break;
+      }
+      cell.colspan = span;
+    }
+  }
 
   // ─── Collect events ───
   // Events are all unique event names from transitions (excluding initial pseudo-state transitions)
@@ -1929,25 +1927,24 @@ function renderTable(parsed) {
 
   // ─── Build HTML ───
   let thtml = '<thead>';
-
-  // Parent header rows (depth 0 to maxDepth-1, skip if maxDepth=0)
-  const rowH = 28; // approximate header row height in px
-  for (let d = 0; d < maxDepth; d++) {
-    thtml += `<tr><th style="top:${d * rowH}px"></th>`;
-    for (const cell of headerRows[d]) {
-      thtml += `<th colspan="${cell.colspan}" style="top:${d * rowH}px">${esc(cell.label)}</th>`;
+  const rowH = 28;
+  for (let r = 0; r < totalHeaderRows; r++) {
+    thtml += `<tr>`;
+    // Left corner cell: only in first row, spanning all header rows
+    if (r === 0) {
+      thtml += `<th rowspan="${totalHeaderRows}" style="top:0"></th>`;
+    }
+    for (let ci = 0; ci < numCols; ci++) {
+      const cell = headerCells[r][ci];
+      if (!cell || cell === 'covered') continue;
+      const mw = cell.rowspan >= totalHeaderRows - r ? calcMinWidth(cell.label) : 0;
+      const styles = [`top:${r * rowH}px`];
+      if (mw > 0) styles.push(`min-width:${mw}px`);
+      thtml += `<th colspan="${cell.colspan}" rowspan="${cell.rowspan}" style="${styles.join(';')}">${esc(cell.label)}</th>`;
     }
     thtml += '</tr>';
   }
-
-  // Leaf header row
-  const leafTop = maxDepth * rowH;
-  thtml += `<tr><th style="top:${leafTop}px"></th>`;
-  for (const cell of headerRows[maxDepth]) {
-    const mw = calcMinWidth(cell.label);
-    thtml += `<th style="min-width:${mw}px;top:${leafTop}px">${esc(cell.label)}</th>`;
-  }
-  thtml += '</tr></thead><tbody>';
+  thtml += '</thead><tbody>';
 
   // ─── Entry / Do / Exit rows ───
   ['entry', 'do', 'exit'].forEach(function(field) {

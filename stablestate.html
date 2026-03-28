@@ -3549,11 +3549,25 @@ function addNewElement(type) {
   let dsl = getDsl();
   let line = '';
 
+  // Check if a composite state is selected — new element goes inside it
+  let parentState = null;
+  if (parsed && selection.size === 1) {
+    const selId = [...selection][0];
+    const st = parsed.stateMap[selId];
+    if (st && st.children.length > 0) {
+      parentState = st;
+    }
+  }
+
+  // Default position: inside parent (relative) or root
+  const defX = parentState ? 1 : 10;
+  const defY = parentState ? 2 : 10;
+
   switch (type) {
     case 'state': {
       addCounter.state++;
       const id = 'state_' + addCounter.state;
-      line = `state ${id} "New State" at 10,10 size 8x4`;
+      line = `state ${id} "New State" at ${defX},${defY} size 8x4`;
       break;
     }
     case 'group': {
@@ -3565,13 +3579,13 @@ function addNewElement(type) {
     case 'initial': {
       addCounter.initial++;
       const id = 'ini_' + addCounter.initial;
-      line = `initial ${id} at 5,5`;
+      line = `initial ${id} at ${parentState ? 0.5 : 5},${parentState ? defY : 5}`;
       break;
     }
     case 'final': {
       addCounter.final++;
       const id = 'fin_' + addCounter.final;
-      line = `final ${id} at 30,5`;
+      line = `final ${id} at ${parentState ? parentState.w - 1 : 30},${parentState ? defY : 5}`;
       break;
     }
     case 'note': {
@@ -3583,7 +3597,36 @@ function addNewElement(type) {
   }
 
   if (line) {
-    dsl = dsl + '\n' + line;
+    if (parentState && type !== 'group' && type !== 'note') {
+      // Insert inside the composite state's { } block
+      const indent = '  ';
+      const lines = dsl.split('\n');
+      // Find the closing } for this composite state by tracking nesting
+      let depth = 0;
+      let insertIdx = -1;
+      for (let i = 0; i < lines.length; i++) {
+        const t = lines[i].trim();
+        if (t.match(new RegExp('^state\\s+' + parentState.id + '\\s+')) && t.endsWith('{')) {
+          depth = 1;
+          continue;
+        }
+        if (depth > 0) {
+          if (t.endsWith('{')) depth++;
+          if (t.startsWith('}')) {
+            depth--;
+            if (depth === 0) { insertIdx = i; break; }
+          }
+        }
+      }
+      if (insertIdx >= 0) {
+        lines.splice(insertIdx, 0, indent + line);
+        dsl = lines.join('\n');
+      } else {
+        dsl = dsl + '\n' + line;
+      }
+    } else {
+      dsl = dsl + '\n' + line;
+    }
     setDsl(dsl);
     // Auto-enable annotation mode when adding a note
     if (type === 'note' && !annotationMode) {

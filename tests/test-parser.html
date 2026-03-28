@@ -31,6 +31,7 @@ function parseDSL(text) {
     pseudoStates: [],
     groups: [],
     regions: [],
+    regionMap: {},
     transitions: [],
     notes: [],
     noteConnections: [],
@@ -43,6 +44,7 @@ function parseDSL(text) {
 
   const lines = text.split('\n');
   const nestingStack = [];
+  let currentRegion = null;
 
   for (let i = 0; i < lines.length; i++) {
     const lineNum = i + 1;
@@ -57,11 +59,14 @@ function parseDSL(text) {
         result.errors.push({ line: lineNum, msg: 'Unexpected closing brace }' });
         continue;
       }
-      const parentId = nestingStack.pop();
-      const afterBrace = trimmed.slice(1).trim();
-      if (afterBrace && result.stateMap[parentId]) {
-        const parentState = result.stateMap[parentId];
-        parseProps(afterBrace, parentState);
+      const popped = nestingStack.pop();
+      if (popped.type === 'region') {
+        currentRegion = null;
+      } else {
+        const afterBrace = trimmed.slice(1).trim();
+        if (afterBrace && result.stateMap[popped.id]) {
+          parseProps(afterBrace, result.stateMap[popped.id]);
+        }
       }
       continue;
     }
@@ -113,11 +118,26 @@ function parseDSL(text) {
         y: parseFloat(pseudoMatch[4]),
         w: pseudoMatch[5] ? parseFloat(pseudoMatch[5]) : null,
         h: pseudoMatch[6] ? parseFloat(pseudoMatch[6]) : null,
-        parent: nestingStack.length > 0 ? nestingStack[nestingStack.length - 1] : null,
+        parent: nestingStack.length > 0 ? nestingStack.findLast(e => e.type === 'state')?.id || null : null,
         line: lineNum
       };
       result.pseudoStates.push(ps);
       result.pseudoMap[id] = ps;
+      continue;
+    }
+
+    // region
+    const regionMatch = trimmed.match(/^region\s+(\S+)\s+"([^"]*)"\s*\{?\s*$/);
+    if (regionMatch) {
+      const regionId = regionMatch[1];
+      const parentState = nestingStack.length > 0 ? nestingStack.findLast(e => e.type === 'state')?.id || null : null;
+      const region = { id: regionId, label: regionMatch[2], parent: parentState, line: lineNum };
+      result.regions.push(region);
+      result.regionMap[regionId] = region;
+      currentRegion = regionId;
+      if (trimmed.endsWith('{')) {
+        nestingStack.push({ type: 'region', id: regionId });
+      }
       continue;
     }
 
@@ -146,7 +166,8 @@ function parseDSL(text) {
         entry: null,
         do: null,
         exit: null,
-        parent: nestingStack.length > 0 ? nestingStack[nestingStack.length - 1] : null,
+        parent: nestingStack.length > 0 ? nestingStack.findLast(e => e.type === 'state')?.id || null : null,
+        region: currentRegion,
         children: [],
         isInitial: false,
         line: lineNum
@@ -162,7 +183,7 @@ function parseDSL(text) {
       }
 
       if (isComposite) {
-        nestingStack.push(id);
+        nestingStack.push({ type: 'state', id: id });
       }
       continue;
     }
@@ -1038,6 +1059,48 @@ function exportPlantUML(parsed) {
 }
 
 // ═══════════════════════════════════════════════
+// ═══════════════════════════════════════════════
+// Region (orthogonal) tests (TDD)
+// ═══════════════════════════════════════════════
+function test_region_parse() {
+  const dsl = `@canvas width=960 height=600 grid=20
+@config orthogonal=true
+state active "Active" at 5,5 size 30x20 {
+  region r1 "Speed" {
+    state accel "Accel" at 1,2 size 8x3
+  }
+  region r2 "Temp" {
+    state cool "Cool" at 1,2 size 8x3
+  }
+}`;
+  const r = parseDSL(dsl);
+  assert(r.regions.length === 2, 'region_parse: 2 regions parsed');
+  assert(r.regions[0].id === 'r1', 'region_parse: r1 id');
+  assert(r.regions[0].label === 'Speed', 'region_parse: r1 label');
+  assert(r.regions[0].parent === 'active', 'region_parse: r1 parent');
+  assert(r.regions[1].id === 'r2', 'region_parse: r2 id');
+  // Child states should be in their regions
+  const accel = r.stateMap['accel'];
+  assert(accel && accel.region === 'r1', 'region_parse: accel in r1');
+  const cool = r.stateMap['cool'];
+  assert(cool && cool.region === 'r2', 'region_parse: cool in r2');
+}
+
+function test_region_without_config_warning() {
+  const dsl = `@canvas width=960 height=600 grid=20
+state a "A" at 5,5 size 30x20 {
+  region r1 "R1" {
+    state b "B" at 1,2 size 8x3
+  }
+}`;
+  const r = parseDSL(dsl);
+  validate(r);
+  assert(r.errors.some(e => e.msg.includes('orthogonal')), 'region_no_config: warning emitted');
+}
+
+runTest('test_region_parse', test_region_parse);
+runTest('test_region_without_config_warning', test_region_without_config_warning);
+
 // PlantUML Export tests
 // ═══════════════════════════════════════════════
 function test_plantuml_simple() {

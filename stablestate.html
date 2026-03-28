@@ -373,6 +373,7 @@ function parseDSL(text) {
     pseudoStates: [],
     groups: [],
     regions: [],
+    regionMap: {},
     transitions: [],
     notes: [],
     noteConnections: [],
@@ -384,7 +385,8 @@ function parseDSL(text) {
   };
 
   const lines = text.split('\n');
-  const nestingStack = []; // stack of parent state IDs
+  const nestingStack = []; // stack of {type:'state'|'region', id}
+  let currentRegion = null; // current region ID (for assigning states to regions)
 
   for (let i = 0; i < lines.length; i++) {
     const lineNum = i + 1;
@@ -400,12 +402,15 @@ function parseDSL(text) {
         result.errors.push({ line: lineNum, msg: 'Unexpected closing brace }' });
         continue;
       }
-      const parentId = nestingStack.pop();
-      // Parse trailing props on the closing brace line: } entry=Foo exit=Bar
-      const afterBrace = trimmed.slice(1).trim();
-      if (afterBrace && result.stateMap[parentId]) {
-        const parentState = result.stateMap[parentId];
-        parseProps(afterBrace, parentState);
+      const popped = nestingStack.pop();
+      if (popped.type === 'region') {
+        currentRegion = null;
+      } else {
+        // Parse trailing props on the closing brace line: } entry=Foo exit=Bar
+        const afterBrace = trimmed.slice(1).trim();
+        if (afterBrace && result.stateMap[popped.id]) {
+          parseProps(afterBrace, result.stateMap[popped.id]);
+        }
       }
       continue;
     }
@@ -459,11 +464,32 @@ function parseDSL(text) {
         y: parseFloat(pseudoMatch[4]),
         w: pseudoMatch[5] ? parseFloat(pseudoMatch[5]) : null,
         h: pseudoMatch[6] ? parseFloat(pseudoMatch[6]) : null,
-        parent: nestingStack.length > 0 ? nestingStack[nestingStack.length - 1] : null,
+        parent: nestingStack.length > 0 ? nestingStack.findLast(e => e.type === 'state')?.id || null : null,
         line: lineNum
       };
       result.pseudoStates.push(ps);
       result.pseudoMap[id] = ps;
+      continue;
+    }
+
+    // ─── region (orthogonal) ───
+    const regionMatch = trimmed.match(/^region\s+(\S+)\s+"([^"]*)"\s*\{?\s*$/);
+    if (regionMatch) {
+      const regionId = regionMatch[1];
+      const regionLabel = regionMatch[2];
+      const parentState = nestingStack.length > 0 ? nestingStack.findLast(e => e.type === 'state')?.id || null : null;
+      const region = {
+        id: regionId,
+        label: regionLabel,
+        parent: parentState,
+        line: lineNum
+      };
+      result.regions.push(region);
+      result.regionMap[regionId] = region;
+      currentRegion = regionId;
+      if (trimmed.endsWith('{')) {
+        nestingStack.push({ type: 'region', id: regionId });
+      }
       continue;
     }
 
@@ -493,7 +519,8 @@ function parseDSL(text) {
         entry: null,
         do: null,
         exit: null,
-        parent: nestingStack.length > 0 ? nestingStack[nestingStack.length - 1] : null,
+        parent: nestingStack.length > 0 ? nestingStack.findLast(e => e.type === 'state')?.id || null : null,
+        region: currentRegion,
         children: [],
         isInitial: false,
         line: lineNum
@@ -512,7 +539,7 @@ function parseDSL(text) {
 
       // Push onto nesting stack if composite
       if (isComposite) {
-        nestingStack.push(id);
+        nestingStack.push({ type: 'state', id: id });
       }
       continue;
     }
@@ -1087,6 +1114,20 @@ function renderSVG(parsed) {
       }
       if (st.exit) {
         svg += `<text x="${pos.x + 10}" y="${ay}" font-family="${mono}" font-size="10" fill="#888888">exit / ${esc(st.exit)}</text>`;
+      }
+    }
+    // Region separators (dashed horizontal lines between orthogonal regions)
+    const stRegions = parsed.regions.filter(r => r.parent === st.id);
+    if (stRegions.length > 1) {
+      const regionH = ph / stRegions.length;
+      for (let ri = 1; ri < stRegions.length; ri++) {
+        const sepY = pos.y + regionH * ri;
+        svg += `<line x1="${pos.x + 4}" y1="${sepY}" x2="${pos.x + pw - 4}" y2="${sepY}" stroke="${esc(border)}" stroke-width="1" stroke-dasharray="8,4" opacity="0.6"/>`;
+      }
+      // Region labels
+      for (let ri = 0; ri < stRegions.length; ri++) {
+        const ry = pos.y + regionH * ri + 14;
+        svg += `<text x="${pos.x + pw - 6}" y="${ry}" text-anchor="end" font-family="${sans}" font-size="9" font-style="italic" fill="${esc(border)}" opacity="0.7">${esc(stRegions[ri].label)}</text>`;
       }
     }
     svg += `</g>`;

@@ -12,8 +12,8 @@ group server "Server Side" at 30,0 size 28x40 color=#0f172a border=#22C55E
 initial c_ini at 1,3.5
 
 state closed_c "CLOSED" at 3,2 size 8x4 color=#1e293b border=#64748B
-state syn_sent "SYN_SENT" at 14,2 size 10x4 entry=StartTimer do=WaitSynAck exit=StopTimer color=#1e293b border=#3B82F6
-state established_c "ESTABLISHED" at 3,9 size 22x8 entry=NotifyApp do=DataTransfer color=#0f172a border=#22C55E {
+state syn_sent "SYN_SENT" at 3,7 size 10x4 entry=StartTimer do=WaitSynAck exit=StopTimer color=#1e293b border=#3B82F6
+state established_c "ESTABLISHED" at 3,13 size 22x8 entry=NotifyApp do=DataTransfer color=#0f172a border=#22C55E {
   initial ec_ini at 1,3.5
   state sending "Sending" at 3,2 size 8x4 do=SendData
   state receiving "Receiving" at 13,2 size 8x4 do=RecvData
@@ -21,10 +21,10 @@ state established_c "ESTABLISHED" at 3,9 size 22x8 entry=NotifyApp do=DataTransf
   sending -> receiving : EvDataSent / WaitAck
   receiving -> sending : EvAckRcvd / PrepareNext
 }
-state fin_wait1 "FIN_WAIT_1" at 3,20 size 10x4 entry=SendFIN color=#1e293b border=#F59E0B
-state fin_wait2 "FIN_WAIT_2" at 15,20 size 10x4 do=WaitFIN color=#1e293b border=#F59E0B
-state time_wait "TIME_WAIT" at 3,27 size 10x4 entry=Start2MSL do=Wait2MSL color=#1e293b border=#EF4444
-state closed_c2 "CLOSED" at 15,27 size 10x4 color=#1e293b border=#64748B
+state fin_wait1 "FIN_WAIT_1" at 3,24 size 10x4 entry=SendFIN color=#1e293b border=#F59E0B
+state fin_wait2 "FIN_WAIT_2" at 15,24 size 10x4 do=WaitFIN color=#1e293b border=#F59E0B
+state time_wait "TIME_WAIT" at 3,31 size 10x4 entry=Start2MSL do=Wait2MSL color=#1e293b border=#EF4444
+state closed_c2 "CLOSED" at 15,31 size 10x4 color=#1e293b border=#64748B
 
 # ─── Server states ───
 initial s_ini at 31,3.5

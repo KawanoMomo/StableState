@@ -2154,12 +2154,13 @@ function renderProps() {
       }
       html += `</div></div>`;
     }
-  } else if (selArr.length === 2) {
+  } else if (selArr.length >= 2) {
     html += `<div class="prop-section"><div class="prop-label">Selected: ${selArr.length} elements</div>`;
-    html += `<button class="tb tb-accent" style="margin-top:8px;width:100%" onclick="connectSelected()">Connect</button>`;
+    if (selArr.length === 2) {
+      html += `<button class="tb tb-accent" style="margin-top:8px;width:100%" onclick="connectSelected()">Connect</button>`;
+    }
+    html += `<button class="tb" style="margin-top:4px;width:100%" onclick="groupSelected()">Group Selection</button>`;
     html += `</div>`;
-  } else {
-    html += `<div class="prop-section"><div class="prop-label">Selected: ${selArr.length} elements</div></div>`;
   }
 
   // ─── Annotation mode: always show Add Note button ───
@@ -2184,6 +2185,7 @@ function renderProps() {
     html += `<div class="prop-warning">直交領域を有効にすると状態遷移表の自動生成はサポートされません</div>`;
   }
   html += `<div class="prop-checkbox" style="margin-top:4px"><input type="checkbox" id="pp-cfg-history"${cfg.history ? ' checked' : ''}><label for="pp-cfg-history">History States</label></div>`;
+  html += `<button class="tb" style="margin-top:8px;width:100%;font-size:10px" onclick="fixIds()" title="ラベルからIDを自動生成">Fix IDs</button>`;
   html += `</div>`;
 
   panel.innerHTML = html;
@@ -3254,6 +3256,64 @@ function pasteSelection() {
 // Add Element Buttons
 // ═══════════════════════════════════════════════
 let addCounter = { state: 0, group: 0, initial: 0, final: 0, note: 0 };
+
+function groupSelected() {
+  if (!parsed || selection.size < 2) return;
+  const g = parsed.canvas.grid;
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  for (const id of selection) {
+    const el = parsed.stateMap[id] || parsed.pseudoMap[id] || parsed.groupMap[id];
+    if (!el) continue;
+    const abs = getAbsolutePos(el, parsed);
+    const w = (el.w || 1) * g;
+    const h = (el.h || 1) * g;
+    minX = Math.min(minX, abs.x);
+    minY = Math.min(minY, abs.y);
+    maxX = Math.max(maxX, abs.x + w);
+    maxY = Math.max(maxY, abs.y + h);
+  }
+  if (minX === Infinity) return;
+  // Add 1-grid padding
+  const pad = g;
+  const gx = Math.max(0, Math.floor((minX - pad) / g));
+  const gy = Math.max(0, Math.floor((minY - pad) / g));
+  const gw = Math.ceil((maxX + pad) / g) - gx;
+  const gh = Math.ceil((maxY + pad) / g) - gy;
+
+  addCounter.group = (addCounter.group || 0) + 1;
+  const grpId = 'grp_' + addCounter.group;
+  const line = `group ${grpId} "Group" at ${gx},${gy} size ${gw}x${gh}`;
+
+  pushHistory();
+  let dsl = getDsl();
+  // Insert group before the first selected element's line
+  dsl = dsl + '\n' + line;
+  setDsl(dsl);
+  refresh();
+}
+
+function labelToId(label) {
+  if (!label) return '';
+  return label.toLowerCase().replace(/[^a-z0-9_\s]/g, '').trim().replace(/\s+/g, '_').slice(0, 30);
+}
+
+function fixIds() {
+  if (!parsed) return;
+  pushHistory();
+  let dsl = getDsl();
+  const allElements = [...parsed.states, ...parsed.groups, ...parsed.notes];
+  for (const el of allElements) {
+    const newId = labelToId(el.label);
+    if (!newId || newId === el.id) continue;
+    // Check for conflicts
+    if (parsed.stateMap[newId] || parsed.pseudoMap[newId] || parsed.groupMap[newId] || parsed.noteMap[newId]) continue;
+    // Replace ID in DSL (element definition and all transition references)
+    const idRe = new RegExp('\\b' + el.id.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\b', 'g');
+    dsl = dsl.replace(idRe, newId);
+  }
+  setDsl(dsl);
+  refresh();
+}
 
 function addNewElement(type) {
   pushHistory();

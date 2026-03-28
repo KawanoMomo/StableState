@@ -1134,6 +1134,42 @@ idle -> active : EvStart [IsReady] / ActInit`;
 runTest('test_excel_data_simple', test_excel_data_simple);
 
 // ═══════════════════════════════════════════════
+// labelToId tests (TDD)
+// ═══════════════════════════════════════════════
+function labelToId(label) {
+  if (!label) return '';
+  return label
+    .toLowerCase()
+    .replace(/[^a-z0-9_\s]/g, '')
+    .trim()
+    .replace(/\s+/g, '_')
+    .slice(0, 30);
+}
+
+function test_labelToId_simple() {
+  assert(labelToId('Idle') === 'idle', 'labelToId: Idle → idle');
+  assert(labelToId('Active State') === 'active_state', 'labelToId: Active State → active_state');
+  assert(labelToId('My-State!') === 'my-state' || labelToId('My-State!') === 'mystate', 'labelToId: special chars removed');
+}
+
+function test_labelToId_edge_cases() {
+  assert(labelToId('') === '', 'labelToId: empty → empty');
+  assert(labelToId('A'.repeat(50)).length <= 30, 'labelToId: truncated to 30 chars');
+  assert(labelToId('  Spaces  ') === 'spaces', 'labelToId: trimmed');
+  assert(labelToId('123 Start') === '123_start', 'labelToId: numeric start ok');
+}
+
+function test_labelToId_japanese() {
+  // Japanese chars are removed (only a-z0-9_ kept)
+  const result = labelToId('アイドル State');
+  assert(result === 'state', 'labelToId: Japanese chars removed, English kept');
+}
+
+runTest('test_labelToId_simple', test_labelToId_simple);
+runTest('test_labelToId_edge_cases', test_labelToId_edge_cases);
+runTest('test_labelToId_japanese', test_labelToId_japanese);
+
+// ═══════════════════════════════════════════════
 // hitTest function (copied from stablestate.html) + dependencies
 // ═══════════════════════════════════════════════
 let annotationMode = false;

@@ -1,3 +1,7 @@
 *.vsix
 node_modules/
 .superpowers/
+__pycache__/
+*.pyc
+.pytest_cache/
+*.egg-info/

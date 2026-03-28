@@ -86,21 +86,17 @@ body { background: var(--bg); color: var(--text); font-family: 'IBM Plex Sans','
 #svg-wrap { background:#fff; border-radius:8px; display:inline-block; line-height:0; }
 #svg-wrap svg { cursor:default; }
 
-/* Table view */
+/* Table view — freeze-pane: header fixed, body scrolls */
 #table-view { flex:1; display:none; flex-direction:column; overflow:hidden; }
-#table-area { flex:1; overflow:auto; padding:12px; }
-#state-table { width:100%; border-collapse:separate; border-spacing:0; font-size:12px; }
-#state-table th, #state-table td { padding:4px 8px; text-align:left; border:none; box-shadow:inset -1px 0 0 0 var(--border), inset 0 -1px 0 0 var(--border); }
-#state-table thead tr:first-child th { box-shadow:inset -1px 0 0 0 var(--border), inset 0 -1px 0 0 var(--border), inset 0 1px 0 0 var(--border); }
-#state-table th:first-child, #state-table td:first-child { box-shadow:inset 1px 0 0 0 var(--border), inset -1px 0 0 0 var(--border), inset 0 -1px 0 0 var(--border); }
-#state-table thead tr:first-child th:first-child { box-shadow:inset 1px 0 0 0 var(--border), inset -1px 0 0 0 var(--border), inset 0 -1px 0 0 var(--border), inset 0 1px 0 0 var(--border); }
-#state-table th { background:var(--panel); color:var(--accent); font-weight:600; font-size:10px; text-transform:uppercase; position:sticky; z-index:2; }
-#state-table td { background:var(--editor); color:var(--text); }
-#state-table td:first-child { position:sticky; left:0; z-index:1; background:var(--panel); }
-#state-table th:first-child { position:sticky; left:0; z-index:3; background:var(--panel); }
-#state-table .th-cont { box-shadow:inset -1px 0 0 0 var(--border), inset 0 -1px 0 0 var(--border); }
-#state-table .ev-header td { background:#2a2233; box-shadow:inset -1px 0 0 0 var(--border), inset 0 -1px 0 0 var(--border); }
-#state-table .ev-row td:first-child { background:var(--panel); }
+#table-head-wrap { flex-shrink:0; overflow:hidden; }
+#table-body-wrap { flex:1; overflow:auto; }
+.st-table { width:100%; border-collapse:collapse; font-size:12px; table-layout:fixed; }
+.st-table th, .st-table td { border:1px solid var(--border); padding:4px 8px; text-align:left; }
+.st-table th { background:var(--panel); color:var(--accent); font-weight:600; font-size:10px; text-transform:uppercase; }
+.st-table td { background:var(--editor); color:var(--text); }
+.st-table td:first-child { background:var(--panel); }
+.st-table .ev-header td { background:#2a2233; }
+.st-table .ev-row td:first-child { background:var(--panel); }
 #table-empty { display:flex; align-items:center; justify-content:center; height:100%; color:var(--muted); font-size:13px; }
 
 /* ─── Property Panel (Right) ─── */
@@ -246,10 +242,9 @@ error -> fin : EvShutdown</textarea>
         <span class="dot" style="color:var(--green)">&#9679;</span> TABLE
         <span style="margin-left:auto;color:var(--dim);font-weight:400">セルをクリックして編集</span>
       </div>
-      <div id="table-area">
-        <div id="table-empty">DSLをパースして状態遷移表を生成します</div>
-        <table id="state-table"></table>
-      </div>
+      <div id="table-empty">DSLをパースして状態遷移表を生成します</div>
+      <div id="table-head-wrap"><table id="state-table-head" class="st-table"></table></div>
+      <div id="table-body-wrap"><table id="state-table-body" class="st-table"></table></div>
     </div>
   </div>
 
@@ -1787,13 +1782,14 @@ function renderSVG(parsed) {
 // Table Renderer
 // ═══════════════════════════════════════════════
 function renderTable(parsed) {
-  const tableEl = document.getElementById('state-table');
+  const headEl = document.getElementById('state-table-head');
+  const bodyEl = document.getElementById('state-table-body');
   const emptyEl = document.getElementById('table-empty');
-  if (!parsed || !tableEl) return;
+  if (!parsed || !headEl || !bodyEl) return;
 
   // If orthogonal mode, show warning
   if (parsed.config.orthogonal) {
-    tableEl.innerHTML = '';
+    headEl.innerHTML = ''; bodyEl.innerHTML = '';
     emptyEl.style.display = 'flex';
     emptyEl.textContent = '直交領域が有効なため、状態遷移表の自動生成はサポートされません';
     return;
@@ -1835,7 +1831,7 @@ function renderTable(parsed) {
   }
 
   if (leafColumns.length === 0) {
-    tableEl.innerHTML = '';
+    headEl.innerHTML = ''; bodyEl.innerHTML = '';
     emptyEl.style.display = 'flex';
     emptyEl.textContent = 'DSLをパースして状態遷移表を生成します';
     return;
@@ -1929,109 +1925,70 @@ function renderTable(parsed) {
     return Math.max(80, charCount * 8);
   }
 
-  // ─── Build flat header grid (no rowspan — each row has real cells) ───
-  // Expand rowspan cells into each row they cover, marking duplicates.
-  // This avoids the browser bug where sticky + rowspan conflicts.
-  const flatGrid = [];
+  // ─── Build header HTML (separate table, rowspan OK — no sticky needed) ───
+  let headHtml = '';
   for (let r = 0; r < totalHeaderRows; r++) {
-    flatGrid.push(new Array(numCols).fill(null));
-  }
-  // Fill from headerCells: expand rowspan/colspan into flat cells
-  for (let r = 0; r < totalHeaderRows; r++) {
+    headHtml += '<tr>';
+    if (r === 0) headHtml += `<th rowspan="${totalHeaderRows}"></th>`;
     for (let ci = 0; ci < numCols; ci++) {
       const cell = headerCells[r][ci];
       if (!cell || cell === 'covered') continue;
-      for (let dr = 0; dr < cell.rowspan; dr++) {
-        for (let dc = 0; dc < cell.colspan; dc++) {
-          flatGrid[r + dr][ci + dc] = {
-            label: cell.label,
-            stateId: cell.stateId,
-            origRow: r,
-            origCol: ci,
-            isOrigin: dr === 0 && dc === 0,
-            colspan: cell.colspan,
-            rowspan: cell.rowspan,
-          };
-        }
-      }
+      const isLeaf = cell.rowspan >= totalHeaderRows - r;
+      const mw = isLeaf ? calcMinWidth(cell.label) : 0;
+      const style = mw > 0 ? ` style="min-width:${mw}px"` : '';
+      headHtml += `<th colspan="${cell.colspan}" rowspan="${cell.rowspan}"${style}>${esc(cell.label)}</th>`;
     }
+    headHtml += '</tr>';
   }
 
-  // ─── Build HTML — each row emits real cells, colspan only (no rowspan) ───
-  let thtml = '<thead>';
-  for (let r = 0; r < totalHeaderRows; r++) {
-    thtml += '<tr>';
-    thtml += '<th></th>'; // left corner cell per row
-    let ci = 0;
-    while (ci < numCols) {
-      const fc = flatGrid[r][ci];
-      if (!fc) { thtml += '<th></th>'; ci++; continue; }
-      // Merge consecutive cells in this row with same stateId
-      let span = 1;
-      while (ci + span < numCols) {
-        const next = flatGrid[r][ci + span];
-        if (next && next.stateId === fc.stateId) span++;
-        else break;
-      }
-      // Show label only on the first row this cell appears (origRow)
-      const showLabel = fc.origRow === r;
-      const isLeaf = fc.rowspan >= totalHeaderRows - fc.origRow;
-      const mw = isLeaf ? calcMinWidth(fc.label) : 0;
-      // Remove top box-shadow for continuation rows (visually merge vertically)
-      const contClass = !showLabel ? ' class="th-cont"' : '';
-      const style = mw > 0 ? ` style="min-width:${mw}px"` : '';
-      thtml += `<th colspan="${span}"${contClass}${style}>${showLabel ? esc(fc.label) : ''}</th>`;
-      ci += span;
-    }
-    thtml += '</tr>';
-  }
-  thtml += '</thead><tbody>';
+  // ─── Build body HTML (separate table) ───
+  let bodyHtml = '';
 
   // ─── Entry / Do / Exit rows ───
   ['entry', 'do', 'exit'].forEach(function(field) {
-    thtml += `<tr><td style="font-weight:600;color:var(--accent)">${field}</td>`;
+    bodyHtml += `<tr><td style="font-weight:600;color:var(--accent)">${field}</td>`;
     for (const lc of leafColumns) {
       const val = lc.state[field] || '-';
       const mw = calcMinWidth(val);
-      thtml += `<td class="table-editable" data-field="${field}" data-state="${lc.id}" style="min-width:${mw}px;cursor:pointer">${esc(val)}</td>`;
+      bodyHtml += `<td class="table-editable" data-field="${field}" data-state="${lc.id}" style="min-width:${mw}px;cursor:pointer">${esc(val)}</td>`;
     }
-    thtml += '</tr>';
+    bodyHtml += '</tr>';
   });
 
   // Separator
-  thtml += '<tr><td colspan="' + (leafColumns.length + 1) + '" style="border:none;height:4px;background:var(--accent);padding:0"></td></tr>';
+  bodyHtml += '<tr><td colspan="' + (leafColumns.length + 1) + '" style="border:none;height:4px;background:var(--accent);padding:0"></td></tr>';
 
   // ─── Event blocks ───
   for (const [evName, transitions] of eventSet) {
     // Event name row (spans full width)
-    thtml += `<tr class="ev-header"><td colspan="${leafColumns.length + 1}" style="font-weight:600;color:#FFCB6B;padding:4px 10px">${esc(evName)}</td></tr>`;
+    bodyHtml += `<tr class="ev-header"><td colspan="${leafColumns.length + 1}" style="font-weight:600;color:#FFCB6B;padding:4px 10px">${esc(evName)}</td></tr>`;
 
     // Guard row with label
-    thtml += '<tr class="ev-row"><td style="color:#6B7280;padding-left:16px">guard</td>';
+    bodyHtml += '<tr class="ev-row"><td style="color:#6B7280;padding-left:16px">guard</td>';
     for (const lc of leafColumns) {
       const matching = transitions.filter(function(t) {
         const fromEl = resolveStateRef(t.from, parsed);
         return fromEl && fromEl.id === lc.id;
       });
       const val = matching.length > 0 && matching[0].guard ? matching[0].guard : '-';
-      thtml += `<td class="table-editable" data-field="guard" data-state="${lc.id}" data-event="${esc(evName)}" style="cursor:pointer;color:#C3E88D">${esc(val)}</td>`;
+      bodyHtml += `<td class="table-editable" data-field="guard" data-state="${lc.id}" data-event="${esc(evName)}" style="cursor:pointer;color:#C3E88D">${esc(val)}</td>`;
     }
-    thtml += '</tr>';
+    bodyHtml += '</tr>';
 
     // Action row with label
-    thtml += '<tr class="ev-row"><td style="color:#6B7280;padding-left:16px">action</td>';
+    bodyHtml += '<tr class="ev-row"><td style="color:#6B7280;padding-left:16px">action</td>';
     for (const lc of leafColumns) {
       const matching = transitions.filter(function(t) {
         const fromEl = resolveStateRef(t.from, parsed);
         return fromEl && fromEl.id === lc.id;
       });
       const val = matching.length > 0 && matching[0].action ? matching[0].action : '-';
-      thtml += `<td class="table-editable" data-field="action" data-state="${lc.id}" data-event="${esc(evName)}" style="cursor:pointer;color:#C3E88D">${esc(val)}</td>`;
+      bodyHtml += `<td class="table-editable" data-field="action" data-state="${lc.id}" data-event="${esc(evName)}" style="cursor:pointer;color:#C3E88D">${esc(val)}</td>`;
     }
-    thtml += '</tr>';
+    bodyHtml += '</tr>';
 
     // Target row with label
-    thtml += '<tr class="ev-row"><td style="color:#6B7280;padding-left:16px">target</td>';
+    bodyHtml += '<tr class="ev-row"><td style="color:#6B7280;padding-left:16px">target</td>';
     for (const lc of leafColumns) {
       const matching = transitions.filter(function(t) {
         const fromEl = resolveStateRef(t.from, parsed);
@@ -2046,29 +2003,43 @@ function renderTable(parsed) {
           val += ' @' + matching[0].kind;
         }
       }
-      thtml += `<td class="table-editable" data-field="target" data-state="${lc.id}" data-event="${esc(evName)}" style="cursor:pointer">${esc(val)}</td>`;
+      bodyHtml += `<td class="table-editable" data-field="target" data-state="${lc.id}" data-event="${esc(evName)}" style="cursor:pointer">${esc(val)}</td>`;
     }
-    thtml += '</tr>';
+    bodyHtml += '</tr>';
   }
 
-  thtml += '</tbody>';
-  tableEl.innerHTML = thtml;
+  // ─── Render both tables ───
+  headEl.innerHTML = headHtml;
+  bodyEl.innerHTML = '<tbody>' + bodyHtml + '</tbody>';
 
-  // ─── Apply dynamic sticky top offsets ───
+  // ─── Sync column widths: body cols → head cols ───
   requestAnimationFrame(function() {
-    const thead = tableEl.querySelector('thead');
-    if (!thead) return;
-    const rows = thead.querySelectorAll('tr');
-    let cumTop = 0;
-    rows.forEach(function(tr) {
-      const ths = tr.querySelectorAll('th');
-      ths.forEach(function(th) { th.style.top = cumTop + 'px'; });
-      cumTop += tr.getBoundingClientRect().height;
-    });
+    const bodyRows = bodyEl.querySelectorAll('tbody tr');
+    if (bodyRows.length === 0) return;
+    // Find the first data row with per-leaf cells (entry row)
+    const firstDataRow = bodyRows[0];
+    const dataCells = firstDataRow.querySelectorAll('td');
+    // Measure body cell widths and apply to head table via colgroup
+    const widths = [];
+    dataCells.forEach(function(td) { widths.push(td.getBoundingClientRect().width); });
+    // Apply as col widths to head table
+    let colHtml = '<colgroup>';
+    widths.forEach(function(w) { colHtml += `<col style="width:${w}px">`; });
+    colHtml += '</colgroup>';
+    // Prepend colgroup to both tables
+    headEl.insertAdjacentHTML('afterbegin', colHtml);
+    bodyEl.insertAdjacentHTML('afterbegin', colHtml);
+  });
+
+  // ─── Sync horizontal scroll ───
+  const bodyWrap = document.getElementById('table-body-wrap');
+  const headWrap = document.getElementById('table-head-wrap');
+  bodyWrap.addEventListener('scroll', function() {
+    headWrap.scrollLeft = bodyWrap.scrollLeft;
   });
 
   // ─── Wire up double-click editing ───
-  tableEl.querySelectorAll('.table-editable').forEach(function(cell) {
+  bodyEl.querySelectorAll('.table-editable').forEach(function(cell) {
     cell.addEventListener('dblclick', function() {
       const field = this.dataset.field;
       const stateId = this.dataset.state;

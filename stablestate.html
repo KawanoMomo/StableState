@@ -2811,41 +2811,52 @@ function exportExcel() {
   if (!parsed) return;
   function doExport() {
     const { rows, styles } = buildExcelData(parsed);
-    const ws = XLSX.utils.aoa_to_sheet(rows);
+    const wb = new ExcelJS.Workbook();
+    const ws = wb.addWorksheet('Transition');
 
-    // Apply styles (SheetJS Pro has full style support; community edition uses cell.s)
+    const thinBorder = { style: 'thin', color: { argb: 'FF808080' } };
+    const border = { top: thinBorder, bottom: thinBorder, left: thinBorder, right: thinBorder };
+
+    // Set column widths
+    ws.columns = rows[0].map(function(_, ci) { return { width: ci === 0 ? 18 : 16 }; });
+
+    // Write data with styles
     for (let r = 0; r < rows.length; r++) {
+      const xlRow = ws.addRow(rows[r]);
       for (let c = 0; c < rows[r].length; c++) {
-        const addr = XLSX.utils.encode_cell({ r, c });
-        if (!ws[addr]) ws[addr] = { v: rows[r][c] || '', t: 's' };
+        const cell = xlRow.getCell(c + 1);
+        cell.border = border;
+        cell.alignment = { vertical: 'top', horizontal: 'left' };
         const st = styles[r] && styles[r][c];
         if (st) {
-          ws[addr].s = {};
-          if (st.bg) ws[addr].s.fill = { fgColor: { rgb: st.bg } };
-          if (st.bold || st.fg) {
-            ws[addr].s.font = {};
-            if (st.bold) ws[addr].s.font.bold = true;
-            if (st.fg) ws[addr].s.font.color = { rgb: st.fg };
-          }
+          if (st.bg) cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF' + st.bg } };
+          cell.font = {
+            name: 'Meiryo UI',
+            size: 10,
+            bold: !!st.bold,
+            color: { argb: 'FF' + (st.fg || '000000') },
+          };
+        } else {
+          cell.font = { name: 'Meiryo UI', size: 10 };
         }
       }
     }
 
-    // Set column widths
-    ws['!cols'] = [{ wch: 16 }];
-    for (let i = 0; i < (rows[0] ? rows[0].length - 1 : 0); i++) {
-      ws['!cols'].push({ wch: 14 });
-    }
-
-    const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, ws, 'Transition');
-    XLSX.writeFile(wb, 'stablestate.xlsx');
+    // Download
+    wb.xlsx.writeBuffer().then(function(buf) {
+      const blob = new Blob([buf], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url; a.download = 'stablestate.xlsx';
+      a.click();
+      URL.revokeObjectURL(url);
+    });
   }
-  if (typeof XLSX !== 'undefined') { doExport(); return; }
+  if (typeof ExcelJS !== 'undefined') { doExport(); return; }
   const script = document.createElement('script');
-  script.src = 'https://cdn.sheetjs.com/xlsx-0.20.0/package/dist/xlsx.full.min.js';
+  script.src = 'https://cdn.jsdelivr.net/npm/exceljs@4.4.0/dist/exceljs.min.js';
   script.onload = doExport;
-  script.onerror = function() { alert('SheetJS CDN load failed. Check network connection.'); };
+  script.onerror = function() { alert('ExcelJS CDN load failed. Check network connection.'); };
   document.head.appendChild(script);
 }
 

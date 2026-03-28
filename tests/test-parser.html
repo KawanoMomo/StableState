@@ -226,14 +226,22 @@ function parseDSL(text) {
         continue;
       }
 
-      let event = null, guard = null, action = null, kind = null;
+      let event = null, guard = null, action = null, kind = null, width = null, style = null, color = null;
       if (rest.startsWith(':')) {
         const detail = rest.slice(1).trim();
-        const kindMatch = detail.match(/@(local|external|internal)\s*$/);
         let remaining = detail;
+        const attrRe = /\b(width|style|color)=(\S+)/g;
+        let attrMatch;
+        while ((attrMatch = attrRe.exec(remaining)) !== null) {
+          if (attrMatch[1] === 'width') width = parseFloat(attrMatch[2]);
+          else if (attrMatch[1] === 'style') style = attrMatch[2];
+          else if (attrMatch[1] === 'color') color = attrMatch[2];
+        }
+        remaining = remaining.replace(/\b(width|style|color)=\S+/g, '').trim();
+        const kindMatch = remaining.match(/@(local|external|internal)\s*$/);
         if (kindMatch) {
           kind = kindMatch[1];
-          remaining = detail.slice(0, detail.lastIndexOf('@' + kind)).trim();
+          remaining = remaining.slice(0, remaining.lastIndexOf('@' + kind)).trim();
         }
         const slashIdx = remaining.indexOf('/');
         if (slashIdx !== -1) {
@@ -255,6 +263,9 @@ function parseDSL(text) {
         guard: guard,
         action: action,
         kind: kind || result.config.transition,
+        width: width,
+        style: style,
+        color: color,
         label: rest.startsWith(':') ? rest.slice(1).trim() : null,
         line: lineNum
       });
@@ -906,6 +917,221 @@ runTest('test_removeTransition', test_removeTransition);
 runTest('test_addTransition_with_kind', test_addTransition_with_kind);
 runTest('test_updateTransition_guard', test_updateTransition_guard);
 runTest('test_updateTransition_action', test_updateTransition_action);
+
+// ═══════════════════════════════════════════════
+// Transition style/color attribute tests (TDD — RED phase)
+// ═══════════════════════════════════════════════
+function test_transition_style() {
+  const dsl = `@canvas width=960 height=600 grid=20
+state idle "Idle" at 2,3 size 8x4
+state active "Active" at 15,3 size 8x4
+idle -> active : EvStart style=dashed`;
+  const r = parseDSL(dsl);
+  assert(r.transitions.length === 1, 'transition_style: 1 transition parsed');
+  assert(r.transitions[0].style === 'dashed', 'transition_style: style=dashed parsed');
+  assert(r.transitions[0].event === 'EvStart', 'transition_style: event preserved');
+}
+
+function test_transition_color() {
+  const dsl = `@canvas width=960 height=600 grid=20
+state idle "Idle" at 2,3 size 8x4
+state active "Active" at 15,3 size 8x4
+idle -> active : EvStart color=#FF0000`;
+  const r = parseDSL(dsl);
+  assert(r.transitions.length === 1, 'transition_color: 1 transition parsed');
+  assert(r.transitions[0].color === '#FF0000', 'transition_color: color=#FF0000 parsed');
+}
+
+function test_transition_style_and_color_combined() {
+  const dsl = `@canvas width=960 height=600 grid=20
+state a "A" at 2,3 size 8x4
+state b "B" at 15,3 size 8x4
+a -> b : Ev [Guard] / Act @external style=dashed color=#00FF00 width=3`;
+  const r = parseDSL(dsl);
+  const t = r.transitions[0];
+  assert(t.event === 'Ev', 'transition_combined: event');
+  assert(t.guard === 'Guard', 'transition_combined: guard');
+  assert(t.action === 'Act', 'transition_combined: action');
+  assert(t.kind === 'external', 'transition_combined: kind');
+  assert(t.style === 'dashed', 'transition_combined: style');
+  assert(t.color === '#00FF00', 'transition_combined: color');
+  assert(t.width === 3, 'transition_combined: width');
+}
+
+function test_transition_no_style_defaults_null() {
+  const dsl = `@canvas width=960 height=600 grid=20
+state a "A" at 2,3 size 8x4
+state b "B" at 15,3 size 8x4
+a -> b : Ev`;
+  const r = parseDSL(dsl);
+  assert(r.transitions[0].style === null || r.transitions[0].style === undefined, 'transition_no_style: style is null/undefined');
+  assert(r.transitions[0].color === null || r.transitions[0].color === undefined, 'transition_no_color: color is null/undefined');
+}
+
+runTest('test_transition_style', test_transition_style);
+runTest('test_transition_color', test_transition_color);
+runTest('test_transition_style_and_color_combined', test_transition_style_and_color_combined);
+runTest('test_transition_no_style_defaults_null', test_transition_no_style_defaults_null);
+
+// ═══════════════════════════════════════════════
+// PlantUML Export function
+// ═══════════════════════════════════════════════
+function exportPlantUML(parsed) {
+  let lines = ['@startuml'];
+
+  // Build set of initial/final pseudo-state IDs for transition mapping
+  const initialIds = new Set(parsed.pseudoStates.filter(p => p.type === 'initial').map(p => p.id));
+  const finalIds = new Set(parsed.pseudoStates.filter(p => p.type === 'final').map(p => p.id));
+  const choiceIds = new Set(parsed.pseudoStates.filter(p => p.type === 'choice').map(p => p.id));
+
+  // Render states recursively
+  function renderState(st, indent) {
+    const pad = '  '.repeat(indent);
+    if (st.children.length > 0) {
+      lines.push(pad + 'state "' + st.label + '" as ' + st.id + ' {');
+      for (const childId of st.children) {
+        const child = parsed.stateMap[childId];
+        if (child) renderState(child, indent + 1);
+      }
+      lines.push(pad + '}');
+    } else {
+      lines.push(pad + 'state "' + st.label + '" as ' + st.id);
+    }
+  }
+
+  // Root-level states
+  for (const st of parsed.states.filter(s => s.parent === null)) {
+    renderState(st, 0);
+  }
+
+  // Choice pseudo-states
+  for (const ps of parsed.pseudoStates.filter(p => p.type === 'choice')) {
+    lines.push('state ' + ps.id + ' <<choice>>');
+  }
+
+  lines.push('');
+
+  // Transitions
+  for (const tr of parsed.transitions) {
+    const from = initialIds.has(tr.from) ? '[*]' : tr.from;
+    const to = finalIds.has(tr.to) ? '[*]' : tr.to;
+    let label = '';
+    if (tr.event || tr.guard || tr.action) {
+      const parts = [];
+      if (tr.event) parts.push(tr.event);
+      if (tr.guard) parts.push('[' + tr.guard + ']');
+      if (tr.action) parts.push('/ ' + tr.action);
+      label = ' : ' + parts.join(' ');
+    }
+    lines.push(from + ' --> ' + to + label);
+  }
+
+  lines.push('@enduml');
+  return lines.join('\n');
+}
+
+// ═══════════════════════════════════════════════
+// PlantUML Export tests
+// ═══════════════════════════════════════════════
+function test_plantuml_simple() {
+  const dsl = `@canvas width=960 height=600 grid=20
+initial ini at 1,4
+state idle "Idle" at 2,3 size 8x4
+state active "Active" at 15,3 size 8x4
+ini -> idle
+idle -> active : EvStart [IsReady] / ActInit`;
+  const r = parseDSL(dsl);
+  const puml = exportPlantUML(r);
+  assert(puml.includes('@startuml'), 'plantuml_simple: starts with @startuml');
+  assert(puml.includes('@enduml'), 'plantuml_simple: ends with @enduml');
+  assert(puml.includes('[*] --> idle'), 'plantuml_simple: initial transition');
+  assert(puml.includes('idle --> active : EvStart [IsReady] / ActInit'), 'plantuml_simple: transition with event/guard/action');
+  assert(puml.includes('state "Idle" as idle'), 'plantuml_simple: state alias');
+}
+
+function test_plantuml_composite() {
+  const dsl = `@canvas width=960 height=600 grid=20
+state active "Active" at 15,3 size 20x12 {
+  state accel "Accelerating" at 1,2 size 8x3
+  state cruise "Cruising" at 10,2 size 8x3
+}
+accel -> cruise : EvReach`;
+  const r = parseDSL(dsl);
+  const puml = exportPlantUML(r);
+  assert(puml.includes('state "Active" as active {'), 'plantuml_composite: composite state opens');
+  assert(puml.includes('state "Accelerating" as accel'), 'plantuml_composite: child state');
+  assert(puml.includes('}'), 'plantuml_composite: closes');
+  assert(puml.includes('accel --> cruise : EvReach'), 'plantuml_composite: child transition');
+}
+
+function test_plantuml_final() {
+  const dsl = `@canvas width=960 height=600 grid=20
+state idle "Idle" at 2,3 size 8x4
+final fin at 30,4
+idle -> fin : EvStop`;
+  const r = parseDSL(dsl);
+  const puml = exportPlantUML(r);
+  assert(puml.includes('idle --> [*] : EvStop'), 'plantuml_final: final transition uses [*]');
+}
+
+runTest('test_plantuml_simple', test_plantuml_simple);
+runTest('test_plantuml_composite', test_plantuml_composite);
+runTest('test_plantuml_final', test_plantuml_final);
+
+// ═══════════════════════════════════════════════
+// Excel export data structure tests
+// ═══════════════════════════════════════════════
+function buildExcelData(parsed) {
+  if (!parsed) return [];
+  const rows = [];
+  // Header row
+  const leafStates = parsed.states.filter(s => s.children.length === 0);
+  const headers = ['Event', 'Guard', 'Action'];
+  for (const st of leafStates) headers.push(st.label || st.id);
+  rows.push(headers);
+
+  // Entry/Do/Exit rows
+  for (const field of ['entry', 'do', 'exit']) {
+    const row = [field, '', ''];
+    for (const st of leafStates) row.push(st[field] || '');
+    rows.push(row);
+  }
+
+  // Transition rows grouped by event
+  const events = [...new Set(parsed.transitions.filter(t => t.event).map(t => t.event))];
+  for (const ev of events) {
+    const trs = parsed.transitions.filter(t => t.event === ev);
+    for (const tr of trs) {
+      const row = [ev, tr.guard || '', tr.action || ''];
+      for (const st of leafStates) {
+        row.push(st.id === tr.from ? (parsed.stateMap[tr.to] ? parsed.stateMap[tr.to].label || tr.to : tr.to) : '');
+      }
+      rows.push(row);
+    }
+  }
+  return rows;
+}
+
+function test_excel_data_simple() {
+  const dsl = `@canvas width=960 height=600 grid=20
+state idle "Idle" at 2,3 size 8x4 entry=IdleEntry
+state active "Active" at 15,3 size 8x4
+idle -> active : EvStart [IsReady] / ActInit`;
+  const r = parseDSL(dsl);
+  const rows = buildExcelData(r);
+  assert(rows.length >= 5, 'excel_simple: at least 5 rows (header + 3 action + 1 transition)');
+  assert(rows[0][0] === 'Event', 'excel_simple: header[0] = Event');
+  assert(rows[0][3] === 'Idle', 'excel_simple: header[3] = Idle');
+  assert(rows[0][4] === 'Active', 'excel_simple: header[4] = Active');
+  assert(rows[1][0] === 'entry', 'excel_simple: row 1 = entry');
+  assert(rows[1][3] === 'IdleEntry', 'excel_simple: idle entry value');
+  assert(rows[4][0] === 'EvStart', 'excel_simple: event row');
+  assert(rows[4][1] === 'IsReady', 'excel_simple: guard');
+  assert(rows[4][2] === 'ActInit', 'excel_simple: action');
+  assert(rows[4][3] === 'Active', 'excel_simple: target in idle column');
+}
+
+runTest('test_excel_data_simple', test_excel_data_simple);
 
 // ═══════════════════════════════════════════════
 // hitTest function (copied from stablestate.html) + dependencies

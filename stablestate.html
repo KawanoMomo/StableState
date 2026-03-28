@@ -154,6 +154,7 @@ input[type=number]::-webkit-inner-spin-button { -webkit-appearance:none; }
     <button class="tb tb-accent" onclick="exportSVG()">SVG</button>
     <button class="tb tb-accent" onclick="exportPNG()">PNG</button>
     <button class="tb tb-accent" onclick="copyPNG()" title="クリップボードにコピー">Copy</button>
+    <button class="tb tb-accent" onclick="exportPlantUML()" title="PlantUML形式でエクスポート">PUML</button>
     <div class="sep"></div>
     <button class="tb" onclick="setZoom(-1)">&minus;</button>
     <span id="zoom-label" style="font-size:11px;color:#94A3B8;min-width:36px;text-align:center">100%</span>
@@ -169,6 +170,8 @@ input[type=number]::-webkit-inner-spin-button { -webkit-appearance:none; }
     <button class="tb tb-accent" onclick="exportSVG()">SVG</button>
     <button class="tb tb-accent" onclick="exportPNG()">PNG</button>
     <button class="tb tb-accent" onclick="copyPNG()" title="クリップボードにコピー">Copy</button>
+    <button class="tb tb-accent" onclick="exportExcel()" title="Excel形式でエクスポート">Excel</button>
+    <button class="tb tb-accent" onclick="exportPlantUML()" title="PlantUML形式でエクスポート">PUML</button>
   </div>
 </div>
 
@@ -546,17 +549,21 @@ function parseDSL(text) {
         continue;
       }
 
-      // Parse optional : Event [Guard] / Action @kind width=N
-      let event = null, guard = null, action = null, kind = null, width = null;
+      // Parse optional : Event [Guard] / Action @kind width=N style=S color=C
+      let event = null, guard = null, action = null, kind = null, width = null, style = null, color = null;
       if (rest.startsWith(':')) {
         const detail = rest.slice(1).trim();
-        // Parse width=N from the end
-        const widthMatch = detail.match(/\bwidth=([0-9.]+)\s*$/);
         let remaining = detail;
-        if (widthMatch) {
-          width = parseFloat(widthMatch[1]);
-          remaining = remaining.slice(0, remaining.lastIndexOf('width=')).trim();
+        // Parse trailing key=value attributes (width, style, color) from the end
+        const attrRe = /\b(width|style|color)=(\S+)/g;
+        let attrMatch;
+        while ((attrMatch = attrRe.exec(remaining)) !== null) {
+          if (attrMatch[1] === 'width') width = parseFloat(attrMatch[2]);
+          else if (attrMatch[1] === 'style') style = attrMatch[2];
+          else if (attrMatch[1] === 'color') color = attrMatch[2];
         }
+        // Strip all key=value attrs from remaining
+        remaining = remaining.replace(/\b(width|style|color)=\S+/g, '').trim();
         // Parse @kind from the end
         const kindMatch = remaining.match(/@(local|external|internal)\s*$/);
         if (kindMatch) {
@@ -587,6 +594,8 @@ function parseDSL(text) {
         action: action,
         kind: kind || result.config.transition,
         width: width,
+        style: style,
+        color: color,
         label: rest.startsWith(':') ? rest.slice(1).trim() : null,
         line: lineNum
       });
@@ -1498,10 +1507,12 @@ function renderSVG(parsed) {
 
     // Build SVG path
     const sw = tr.width || 1.5;
+    const sc = tr.color || '#89DDFF';
+    const dashAttr = tr.style === 'dashed' ? ' stroke-dasharray="6 3"' : '';
     if (crossings.length === 0) {
       // Simple polyline
       const pts = route.map(p => `${p.x},${p.y}`).join(' ');
-      svg += `<polyline points="${pts}" fill="none" stroke="#89DDFF" stroke-width="${sw}" marker-end="url(#arrowHead)"/>`;
+      svg += `<polyline points="${pts}" fill="none" stroke="${sc}" stroke-width="${sw}"${dashAttr} marker-end="url(#arrowHead)"/>`;
     } else {
       // Path with bridge arcs (handles both horizontal and vertical crossings)
       let d = `M ${route[0].x},${route[0].y}`;
@@ -1532,7 +1543,7 @@ function renderSVG(parsed) {
           d += ` L ${a2.x},${a2.y}`;
         }
       }
-      svg += `<path d="${d}" fill="none" stroke="#89DDFF" stroke-width="${sw}" marker-end="url(#arrowHead)"/>`;
+      svg += `<path d="${d}" fill="none" stroke="${sc}" stroke-width="${sw}"${dashAttr} marker-end="url(#arrowHead)"/>`;
     }
 
     // Store route for future crossing detection
@@ -2457,6 +2468,106 @@ async function copyPNG() {
     });
   };
   img.src = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svgStr);
+}
+
+// ═══════════════════════════════════════════════
+// PlantUML Export
+// ═══════════════════════════════════════════════
+function exportPlantUML(p) {
+  const data = p || parsed;
+  if (!data) return;
+  const initialIds = new Set(data.pseudoStates.filter(ps => ps.type === 'initial').map(ps => ps.id));
+  const finalIds = new Set(data.pseudoStates.filter(ps => ps.type === 'final').map(ps => ps.id));
+  const lines = ['@startuml'];
+
+  function renderState(st, indent) {
+    const pad = '  '.repeat(indent);
+    if (st.children.length > 0) {
+      lines.push(pad + 'state "' + st.label + '" as ' + st.id + ' {');
+      for (const childId of st.children) {
+        const child = data.stateMap[childId];
+        if (child) renderState(child, indent + 1);
+      }
+      lines.push(pad + '}');
+    } else {
+      lines.push(pad + 'state "' + st.label + '" as ' + st.id);
+    }
+  }
+
+  for (const st of data.states.filter(s => s.parent === null)) renderState(st, 0);
+  for (const ps of data.pseudoStates.filter(p2 => p2.type === 'choice')) lines.push('state ' + ps.id + ' <<choice>>');
+  lines.push('');
+
+  for (const tr of data.transitions) {
+    const from = initialIds.has(tr.from) ? '[*]' : tr.from;
+    const to = finalIds.has(tr.to) ? '[*]' : tr.to;
+    let label = '';
+    if (tr.event || tr.guard || tr.action) {
+      const parts = [];
+      if (tr.event) parts.push(tr.event);
+      if (tr.guard) parts.push('[' + tr.guard + ']');
+      if (tr.action) parts.push('/ ' + tr.action);
+      label = ' : ' + parts.join(' ');
+    }
+    lines.push(from + ' --> ' + to + label);
+  }
+  lines.push('@enduml');
+  const text = lines.join('\n');
+
+  // Download as .puml file
+  const blob = new Blob([text], { type: 'text/plain' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'stablestate.puml';
+  a.click();
+  URL.revokeObjectURL(a.href);
+}
+
+// ═══════════════════════════════════════════════
+// Excel Export (SheetJS — dynamic CDN load)
+// ═══════════════════════════════════════════════
+function buildExcelData(p) {
+  const data = p || parsed;
+  if (!data) return [];
+  const rows = [];
+  const leafStates = data.states.filter(s => s.children.length === 0);
+  const headers = ['Event', 'Guard', 'Action'];
+  for (const st of leafStates) headers.push(st.label || st.id);
+  rows.push(headers);
+  for (const field of ['entry', 'do', 'exit']) {
+    const row = [field, '', ''];
+    for (const st of leafStates) row.push(st[field] || '');
+    rows.push(row);
+  }
+  const events = [...new Set(data.transitions.filter(t => t.event).map(t => t.event))];
+  for (const ev of events) {
+    const trs = data.transitions.filter(t => t.event === ev);
+    for (const tr of trs) {
+      const row = [ev, tr.guard || '', tr.action || ''];
+      for (const st of leafStates) {
+        row.push(st.id === tr.from ? (data.stateMap[tr.to] ? data.stateMap[tr.to].label || tr.to : tr.to) : '');
+      }
+      rows.push(row);
+    }
+  }
+  return rows;
+}
+
+function exportExcel() {
+  if (!parsed) return;
+  function doExport() {
+    const rows = buildExcelData(parsed);
+    const ws = XLSX.utils.aoa_to_sheet(rows);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, 'State Transition');
+    XLSX.writeFile(wb, 'stablestate.xlsx');
+  }
+  if (typeof XLSX !== 'undefined') { doExport(); return; }
+  const script = document.createElement('script');
+  script.src = 'https://cdn.sheetjs.com/xlsx-0.20.0/package/dist/xlsx.full.min.js';
+  script.onload = doExport;
+  script.onerror = function() { alert('SheetJS CDN load failed. Check network connection.'); };
+  document.head.appendChild(script);
 }
 
 // ═══════════════════════════════════════════════

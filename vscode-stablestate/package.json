@@ -28,10 +28,12 @@
       { "command": "stablestate.copy", "title": "StableState: Copy" },
       { "command": "stablestate.cut", "title": "StableState: Cut" },
       { "command": "stablestate.paste", "title": "StableState: Paste" },
-      { "command": "stablestate.selectAll", "title": "StableState: Select All" }
+      { "command": "stablestate.selectAll", "title": "StableState: Select All" },
+      { "command": "stablestate.diffPreview", "title": "StableState: Visual Diff (HEAD vs Current)" }
     ],
     "keybindings": [
       { "command": "stablestate.preview", "key": "ctrl+shift+v", "when": "editorLangId == stablestate" },
+      { "command": "stablestate.diffPreview", "key": "ctrl+shift+d", "when": "editorLangId == stablestate" },
       { "command": "stablestate.undo", "key": "ctrl+z", "when": "stablestatePreviewFocused" },
       { "command": "stablestate.redo", "key": "ctrl+y", "when": "stablestatePreviewFocused" },
       { "command": "stablestate.redo", "key": "ctrl+shift+z", "when": "stablestatePreviewFocused" },

@@ -618,21 +618,24 @@ function parseDSL(text) {
         continue;
       }
 
-      // Parse optional : Event [Guard] / Action @kind width=N style=S color=C
-      let event = null, guard = null, action = null, kind = null, width = null, style = null, color = null;
+      // Parse optional : Event [Guard] / Action @kind width=N style=S color=C from=side to=side
+      let event = null, guard = null, action = null, kind = null;
+      let width = null, style = null, color = null, fromSide = null, toSide = null;
       if (rest.startsWith(':')) {
         const detail = rest.slice(1).trim();
         let remaining = detail;
-        // Parse trailing key=value attributes (width, style, color) from the end
-        const attrRe = /\b(width|style|color)=(\S+)/g;
+        // Parse trailing key=value attributes
+        const attrRe = /\b(width|style|color|from|to)=(\S+)/g;
         let attrMatch;
         while ((attrMatch = attrRe.exec(remaining)) !== null) {
           if (attrMatch[1] === 'width') width = parseFloat(attrMatch[2]);
           else if (attrMatch[1] === 'style') style = attrMatch[2];
           else if (attrMatch[1] === 'color') color = attrMatch[2];
+          else if (attrMatch[1] === 'from') fromSide = attrMatch[2];
+          else if (attrMatch[1] === 'to') toSide = attrMatch[2];
         }
         // Strip all key=value attrs from remaining
-        remaining = remaining.replace(/\b(width|style|color)=\S+/g, '').trim();
+        remaining = remaining.replace(/\b(width|style|color|from|to)=\S+/g, '').trim();
         // Parse @kind from the end
         const kindMatch = remaining.match(/@(local|external|internal)\s*$/);
         if (kindMatch) {
@@ -665,6 +668,8 @@ function parseDSL(text) {
         width: width,
         style: style,
         color: color,
+        fromSide: fromSide,
+        toSide: toSide,
         label: rest.startsWith(':') ? rest.slice(1).trim() : null,
         line: lineNum
       });
@@ -1523,6 +1528,9 @@ function renderSVG(parsed) {
       srcSide = sides.srcSide;
       tgtSide = sides.tgtSide;
     }
+    // Manual side override (from=/to= DSL attributes)
+    if (tr.fromSide && ['top','bottom','left','right'].includes(tr.fromSide)) srcSide = tr.fromSide;
+    if (tr.toSide && ['top','bottom','left','right'].includes(tr.toSide)) tgtSide = tr.toSide;
     transitionSides.push({ srcSide, tgtSide, srcBox, tgtBox, isSelf, isReverse });
 
     // Add to unified edge groups (both source and target edges)

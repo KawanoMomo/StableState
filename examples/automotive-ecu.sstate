@@ -78,7 +78,7 @@ startup -> c_post : EvPOSTDone
 c_post -> run : [POST_OK]
 c_post -> shutdown_seq : [POST_FAIL] / LogError
 run -> shutdown_seq : EvShutdownRequest / PrepareShutdown
-shutdown_seq -> sleep : EvShutdownComplete / PowerDown
+shutdown_seq -> sleep : EvShutdownComplete / PowerDown from=left to=bottom
 sleep -> shutdown : EvBatteryDead
 
 # Self-transitions

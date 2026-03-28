@@ -254,18 +254,21 @@ function parseDSL(text) {
         continue;
       }
 
-      let event = null, guard = null, action = null, kind = null, width = null, style = null, color = null;
+      let event = null, guard = null, action = null, kind = null;
+      let width = null, style = null, color = null, fromSide = null, toSide = null;
       if (rest.startsWith(':')) {
         const detail = rest.slice(1).trim();
         let remaining = detail;
-        const attrRe = /\b(width|style|color)=(\S+)/g;
+        const attrRe = /\b(width|style|color|from|to)=(\S+)/g;
         let attrMatch;
         while ((attrMatch = attrRe.exec(remaining)) !== null) {
           if (attrMatch[1] === 'width') width = parseFloat(attrMatch[2]);
           else if (attrMatch[1] === 'style') style = attrMatch[2];
           else if (attrMatch[1] === 'color') color = attrMatch[2];
+          else if (attrMatch[1] === 'from') fromSide = attrMatch[2];
+          else if (attrMatch[1] === 'to') toSide = attrMatch[2];
         }
-        remaining = remaining.replace(/\b(width|style|color)=\S+/g, '').trim();
+        remaining = remaining.replace(/\b(width|style|color|from|to)=\S+/g, '').trim();
         const kindMatch = remaining.match(/@(local|external|internal)\s*$/);
         if (kindMatch) {
           kind = kindMatch[1];
@@ -294,6 +297,8 @@ function parseDSL(text) {
         width: width,
         style: style,
         color: color,
+        fromSide: fromSide,
+        toSide: toSide,
         label: rest.startsWith(':') ? rest.slice(1).trim() : null,
         line: lineNum
       });
@@ -1000,6 +1005,19 @@ runTest('test_transition_style', test_transition_style);
 runTest('test_transition_color', test_transition_color);
 runTest('test_transition_style_and_color_combined', test_transition_style_and_color_combined);
 runTest('test_transition_no_style_defaults_null', test_transition_no_style_defaults_null);
+
+function test_transition_side_override() {
+  const dsl = `@canvas width=960 height=600 grid=20
+state a "A" at 2,3 size 8x4
+state b "B" at 2,15 size 8x4
+a -> b : Ev from=left to=left`;
+  const r = parseDSL(dsl);
+  assert(r.transitions[0].fromSide === 'left', 'transition_side: fromSide=left');
+  assert(r.transitions[0].toSide === 'left', 'transition_side: toSide=left');
+  assert(r.transitions[0].event === 'Ev', 'transition_side: event preserved');
+}
+
+runTest('test_transition_side_override', test_transition_side_override);
 
 // ═══════════════════════════════════════════════
 // PlantUML Export function

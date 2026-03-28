@@ -24,6 +24,7 @@ mcp.tool()(elements.ss_modify)
 # Smart tools
 mcp.tool()(smart.ss_validate_layout)
 mcp.tool()(smart.ss_suggest_position)
+mcp.tool()(smart.ss_auto_fix)
 
 # Export
 mcp.tool()(export.ss_export_plantuml)

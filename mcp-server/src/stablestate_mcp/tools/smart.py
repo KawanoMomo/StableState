@@ -122,6 +122,76 @@ def ss_validate_layout() -> str:
                     f"Transition {t.from_id}->{t.to_id} crosses block {s.id}"
                 )
 
+    # 4. Pseudo-state overlapping with transition lines
+    all_pseudo_boxes = {}
+    for ps in d.pseudo_states:
+        all_pseudo_boxes[ps.id] = _get_abs_box(ps, d)
+
+    for t in d.transitions:
+        src_el = state_map.get(t.from_id) or pseudo_map.get(t.from_id)
+        tgt_el = state_map.get(t.to_id) or pseudo_map.get(t.to_id)
+        if not src_el or not tgt_el:
+            continue
+        src_box = _get_abs_box(src_el, d)
+        tgt_box = _get_abs_box(tgt_el, d)
+        sx = src_box["x"] + src_box["w"] / 2
+        sy = src_box["y"] + src_box["h"] / 2
+        tx = tgt_box["x"] + tgt_box["w"] / 2
+        ty = tgt_box["y"] + tgt_box["h"] / 2
+
+        for ps in d.pseudo_states:
+            if ps.id == t.from_id or ps.id == t.to_id:
+                continue
+            # Same parent scope check
+            ps_parent = getattr(ps, "parent", None)
+            src_parent = getattr(src_el, "parent", None)
+            tgt_parent = getattr(tgt_el, "parent", None)
+            if ps_parent != src_parent and ps_parent != tgt_parent:
+                continue
+            pb = all_pseudo_boxes[ps.id]
+            # Expand pseudo box slightly for visual overlap
+            expanded = {"x": pb["x"] - 0.3, "y": pb["y"] - 0.3,
+                        "w": pb["w"] + 0.6, "h": pb["h"] + 0.6}
+            if _segment_crosses_box(sx, sy, tx, ty, expanded):
+                issues.append(
+                    f"Pseudo-state {ps.id} overlaps transition {t.from_id}->{t.to_id}"
+                )
+
+    # 5. Transition label overlap detection
+    # Compute label midpoints for all labeled transitions
+    label_positions = []
+    for t in d.transitions:
+        if not (t.event or t.guard or t.action):
+            continue
+        src_el = state_map.get(t.from_id) or pseudo_map.get(t.from_id)
+        tgt_el = state_map.get(t.to_id) or pseudo_map.get(t.to_id)
+        if not src_el or not tgt_el:
+            continue
+        src_box = _get_abs_box(src_el, d)
+        tgt_box = _get_abs_box(tgt_el, d)
+        mx = (src_box["x"] + src_box["w"] / 2 + tgt_box["x"] + tgt_box["w"] / 2) / 2
+        my = (src_box["y"] + src_box["h"] / 2 + tgt_box["y"] + tgt_box["h"] / 2) / 2
+        label_text = ""
+        if t.event:
+            label_text += t.event
+        if t.guard:
+            label_text += f" [{t.guard}]"
+        if t.action:
+            label_text += f" / {t.action}"
+        label_positions.append({"x": mx, "y": my, "text": label_text,
+                                "tid": f"{t.from_id}->{t.to_id}"})
+
+    # Check pairwise distances (in grid units, threshold ~2 grids)
+    for i in range(len(label_positions)):
+        for j in range(i + 1, len(label_positions)):
+            a, b = label_positions[i], label_positions[j]
+            dist = ((a["x"] - b["x"]) ** 2 + (a["y"] - b["y"]) ** 2) ** 0.5
+            if dist < 2.0:
+                issues.append(
+                    f"Label overlap: {a['tid']} and {b['tid']} "
+                    f"(distance={dist:.1f} grids)"
+                )
+
     if not issues:
         return "No issues found. Layout looks good."
     return f"{len(issues)} issue(s) found:\n" + "\n".join(f"  - {i}" for i in issues)

@@ -9,8 +9,9 @@ from ..core.generator import generate_dsl
 
 def ss_new(width: int = 960, height: int = 600, grid: int = 20) -> str:
     """Create a new empty state machine diagram."""
-    d = Diagram(canvas=Canvas(width=width, height=height, grid=grid))
-    state.set_diagram(d)
+    dsl = f"@canvas width={width} height={height} grid={grid}\n"
+    d = parse_dsl(dsl)
+    state.set_diagram(d, dsl)
     return f"Created new diagram ({width}x{height}, grid={grid})"
 
 
@@ -21,7 +22,7 @@ def ss_open(path: str) -> str:
         return f"Error: file not found: {path}"
     text = p.read_text(encoding="utf-8")
     d = parse_dsl(text)
-    state.set_diagram(d)
+    state.set_diagram(d, text)
     errs = f" ({len(d.errors)} warnings)" if d.errors else ""
     return (
         f"Loaded {path}: {len(d.states)} states, "
@@ -31,10 +32,11 @@ def ss_open(path: str) -> str:
 
 
 def ss_save(path: str) -> str:
-    """Save the current diagram to an .sstate file."""
-    d = state.get()
-    text = generate_dsl(d)
-    Path(path).write_text(text, encoding="utf-8")
+    """Save the current diagram to an .sstate file (preserves original DSL formatting)."""
+    dsl = state.get_dsl()
+    if not dsl.strip():
+        dsl = generate_dsl(state.get())
+    Path(path).write_text(dsl, encoding="utf-8")
     return f"Saved to {path}"
 
 
@@ -51,7 +53,7 @@ def ss_show(detail: bool = False) -> str:
     ]
     if detail:
         for s in d.states:
-            lines.append(f"  state {s.id} \"{s.label}\" at {s.x},{s.y} size {s.w}x{s.h}")
+            lines.append(f'  state {s.id} "{s.label}" at {s.x},{s.y} size {s.w}x{s.h}')
         for ps in d.pseudo_states:
             lines.append(f"  {ps.type} {ps.id} at {ps.x},{ps.y}")
         for t in d.transitions:
@@ -69,3 +71,8 @@ def ss_undo() -> str:
     if state.undo():
         return "Undo successful"
     return "Nothing to undo"
+
+
+def ss_get_dsl() -> str:
+    """Get the current DSL text as-is."""
+    return state.get_dsl()

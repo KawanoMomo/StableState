@@ -1,7 +1,15 @@
-"""Element manipulation tools."""
+"""Element manipulation tools — uses DSL regex updaters to preserve formatting."""
 from __future__ import annotations
 from .. import state
-from ..models.types import State, PseudoState, Group, Transition, Note
+from ..core.parser import parse_dsl
+from ..core.dsl_updater import update_pos, update_size, update_label, update_prop, remove_element, add_line
+
+
+def _refresh():
+    """Re-parse DSL text to update the model."""
+    dsl = state.get_dsl()
+    d = parse_dsl(dsl)
+    state._current = d
 
 
 def ss_add_state(
@@ -12,17 +20,25 @@ def ss_add_state(
 ) -> str:
     """Add a new state to the diagram."""
     d = state.get()
-    state.push_history()
     if any(s.id == id for s in d.states):
         return f"Error: state '{id}' already exists"
-    st = State(id=id, label=label, x=x, y=y, w=w, h=h, parent=parent,
-               entry=entry, do=do, exit=exit, color=color)
-    d.states.append(st)
-    if parent:
-        for s in d.states:
-            if s.id == parent:
-                s.children.append(id)
-                break
+    state.push_history()
+    sx = str(int(x)) if x == int(x) else str(x)
+    sy = str(int(y)) if y == int(y) else str(y)
+    sw = str(int(w)) if w == int(w) else str(w)
+    sh = str(int(h)) if h == int(h) else str(h)
+    line = f'state {id} "{label}" at {sx},{sy} size {sw}x{sh}'
+    if entry:
+        line += f" entry={entry}"
+    if do:
+        line += f" do={do}"
+    if exit:
+        line += f" exit={exit}"
+    if color:
+        line += f" color={color}"
+    dsl = add_line(line, state.get_dsl())
+    state.set_dsl(dsl)
+    _refresh()
     return f"Added state '{id}' at ({x},{y})"
 
 
@@ -31,10 +47,13 @@ def ss_add_pseudo(
     parent: str | None = None,
 ) -> str:
     """Add a pseudo-state (initial, final, choice, history, deephistory)."""
-    d = state.get()
     state.push_history()
-    ps = PseudoState(type=type, id=id, x=x, y=y, parent=parent)
-    d.pseudo_states.append(ps)
+    sx = str(int(x)) if x == int(x) else str(x)
+    sy = str(int(y)) if y == int(y) else str(y)
+    line = f"{type} {id} at {sx},{sy}"
+    dsl = add_line(line, state.get_dsl())
+    state.set_dsl(dsl)
+    _refresh()
     return f"Added {type} '{id}' at ({x},{y})"
 
 
@@ -44,14 +63,22 @@ def ss_add_transition(
     action: str | None = None, kind: str | None = None,
 ) -> str:
     """Add a transition between two states."""
-    d = state.get()
     state.push_history()
-    t = Transition(**{
-        "from": from_id, "to": to_id,
-        "event": event, "guard": guard, "action": action,
-        "kind": kind or d.config.transition,
-    })
-    d.transitions.append(t)
+    line = f"{from_id} -> {to_id}"
+    parts = []
+    if event:
+        parts.append(event)
+    if guard:
+        parts.append(f"[{guard}]")
+    if action:
+        parts.append(f"/ {action}")
+    if kind:
+        parts.append(f"@{kind}")
+    if parts:
+        line += " : " + " ".join(parts)
+    dsl = add_line(line, state.get_dsl())
+    state.set_dsl(dsl)
+    _refresh()
     label = event or "(no event)"
     return f"Added transition {from_id} -> {to_id} : {label}"
 
@@ -61,10 +88,15 @@ def ss_add_group(
     color: str | None = None,
 ) -> str:
     """Add a visual group."""
-    d = state.get()
     state.push_history()
-    g = Group(id=id, label=label, x=x, y=y, w=w, h=h, color=color)
-    d.groups.append(g)
+    sx, sy = str(int(x)) if x == int(x) else str(x), str(int(y)) if y == int(y) else str(y)
+    sw, sh = str(int(w)) if w == int(w) else str(w), str(int(h)) if h == int(h) else str(h)
+    line = f'group {id} "{label}" at {sx},{sy} size {sw}x{sh}'
+    if color:
+        line += f" color={color}"
+    dsl = add_line(line, state.get_dsl())
+    state.set_dsl(dsl)
+    _refresh()
     return f"Added group '{id}' at ({x},{y})"
 
 
@@ -73,46 +105,32 @@ def ss_add_note(
     w: float = 8, h: float = 2, color: str | None = None,
 ) -> str:
     """Add an annotation note."""
-    d = state.get()
     state.push_history()
-    n = Note(id=id, label=label, x=x, y=y, w=w, h=h, color=color or "#FEF3C7")
-    d.notes.append(n)
+    sx, sy = str(int(x)) if x == int(x) else str(x), str(int(y)) if y == int(y) else str(y)
+    sw, sh = str(int(w)) if w == int(w) else str(w), str(int(h)) if h == int(h) else str(h)
+    line = f'note {id} "{label}" at {sx},{sy} size {sw}x{sh} color={color or "#FEF3C7"}'
+    dsl = add_line(line, state.get_dsl())
+    state.set_dsl(dsl)
+    _refresh()
     return f"Added note '{id}' at ({x},{y})"
 
 
 def ss_remove(id: str) -> str:
     """Remove a state, pseudo-state, group, or note and its transitions."""
     d = state.get()
+    found = (
+        any(s.id == id for s in d.states)
+        or any(ps.id == id for ps in d.pseudo_states)
+        or any(g.id == id for g in d.groups)
+        or any(n.id == id for n in d.notes)
+    )
+    if not found:
+        return f"Error: '{id}' not found"
     state.push_history()
-    # Remove from states
-    for s in d.states:
-        if s.id == id:
-            d.states.remove(s)
-            # Remove children references
-            for other in d.states:
-                if id in other.children:
-                    other.children.remove(id)
-            # Remove transitions
-            d.transitions = [t for t in d.transitions if t.from_id != id and t.to_id != id]
-            return f"Removed state '{id}'"
-    # Pseudo-states
-    for ps in d.pseudo_states:
-        if ps.id == id:
-            d.pseudo_states.remove(ps)
-            d.transitions = [t for t in d.transitions if t.from_id != id and t.to_id != id]
-            return f"Removed {ps.type} '{id}'"
-    # Groups
-    for g in d.groups:
-        if g.id == id:
-            d.groups.remove(g)
-            return f"Removed group '{id}'"
-    # Notes
-    for n in d.notes:
-        if n.id == id:
-            d.notes.remove(n)
-            d.note_connections = [nc for nc in d.note_connections if nc.note_id != id]
-            return f"Removed note '{id}'"
-    return f"Error: '{id}' not found"
+    dsl = remove_element(id, state.get_dsl())
+    state.set_dsl(dsl)
+    _refresh()
+    return f"Removed '{id}'"
 
 
 def ss_modify(
@@ -123,36 +141,57 @@ def ss_modify(
 ) -> str:
     """Modify properties of a state, group, or note."""
     d = state.get()
-    state.push_history()
-    # Find element
+    # Find element and determine type
+    el_type = None
+    el = None
     for s in d.states:
         if s.id == id:
-            if label is not None: s.label = label
-            if x is not None: s.x = x
-            if y is not None: s.y = y
-            if w is not None: s.w = w
-            if h is not None: s.h = h
-            if color is not None: s.color = color
-            if entry is not None: s.entry = entry
-            if do is not None: s.do = do
-            if exit is not None: s.exit = exit
-            return f"Modified state '{id}'"
-    for g in d.groups:
-        if g.id == id:
-            if label is not None: g.label = label
-            if x is not None: g.x = x
-            if y is not None: g.y = y
-            if w is not None: g.w = w
-            if h is not None: g.h = h
-            if color is not None: g.color = color
-            return f"Modified group '{id}'"
-    for n in d.notes:
-        if n.id == id:
-            if label is not None: n.label = label
-            if x is not None: n.x = x
-            if y is not None: n.y = y
-            if w is not None: n.w = w
-            if h is not None: n.h = h
-            if color is not None: n.color = color
-            return f"Modified note '{id}'"
-    return f"Error: '{id}' not found"
+            el_type = "state"
+            el = s
+            break
+    if not el:
+        for g in d.groups:
+            if g.id == id:
+                el_type = "group"
+                el = g
+                break
+    if not el:
+        for n in d.notes:
+            if n.id == id:
+                el_type = "note"
+                el = n
+                break
+    if not el:
+        for ps in d.pseudo_states:
+            if ps.id == id:
+                el_type = ps.type
+                el = ps
+                break
+    if not el:
+        return f"Error: '{id}' not found"
+
+    state.push_history()
+    dsl = state.get_dsl()
+
+    if x is not None or y is not None:
+        nx = x if x is not None else el.x
+        ny = y if y is not None else el.y
+        dsl = update_pos(el_type, id, nx, ny, dsl)
+    if w is not None or h is not None:
+        nw = w if w is not None else getattr(el, "w", 8)
+        nh = h if h is not None else getattr(el, "h", 4)
+        dsl = update_size(el_type, id, nw, nh, dsl)
+    if label is not None:
+        dsl = update_label(el_type, id, label, dsl)
+    if color is not None:
+        dsl = update_prop(el_type, id, "color", color, dsl)
+    if entry is not None:
+        dsl = update_prop(el_type, id, "entry", entry, dsl)
+    if do is not None:
+        dsl = update_prop(el_type, id, "do", do, dsl)
+    if exit is not None:
+        dsl = update_prop(el_type, id, "exit", exit, dsl)
+
+    state.set_dsl(dsl)
+    _refresh()
+    return f"Modified {el_type} '{id}'"

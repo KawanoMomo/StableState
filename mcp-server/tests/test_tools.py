@@ -68,7 +68,7 @@ def test_remove_state():
     ss_add_state("active", "Active", 15, 3)
     ss_add_transition("idle", "active", event="Go")
     result = ss_remove("idle")
-    assert "Removed state" in result
+    assert "Removed" in result
     d = state.get()
     assert len(d.states) == 1
     assert len(d.transitions) == 0  # Transition also removed

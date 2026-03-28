@@ -96,7 +96,9 @@ body { background: var(--bg); color: var(--text); font-family: 'IBM Plex Sans','
 #table-empty { display:flex; align-items:center; justify-content:center; height:100%; color:var(--muted); font-size:13px; }
 
 /* ─── Property Panel (Right) ─── */
-#prop-panel { width:220px; min-width:220px; border-left:1px solid var(--border); display:flex; flex-direction:column; overflow:hidden; background:var(--panel); }
+#prop-panel { width:220px; min-width:140px; max-width:40vw; border-left:none; display:flex; flex-direction:column; overflow:hidden; background:var(--panel); }
+#splitter-right { width:5px; cursor:col-resize; background:var(--border); flex-shrink:0; }
+#splitter-right:hover, #splitter-right.dragging { background:var(--accent); }
 #prop-content { flex:1; overflow-y:auto; padding:12px; }
 .prop-section { margin-bottom:12px; }
 .prop-label { font-size:10px; color:var(--muted); font-weight:600; margin-bottom:2px; text-transform:uppercase; letter-spacing:0.05em; }
@@ -242,6 +244,8 @@ error -> fin : EvShutdown</textarea>
       </div>
     </div>
   </div>
+
+  <div id="splitter-right"></div>
 
   <!-- Right: Property Panel -->
   <div id="prop-panel">
@@ -2794,6 +2798,34 @@ editorEl.addEventListener('input', function() {
 
   function onUp() {
     splitter.classList.remove('dragging');
+    document.removeEventListener('mousemove', onMove);
+    document.removeEventListener('mouseup', onUp);
+  }
+})();
+
+// Splitter-right (center ↔ property panel resizer)
+(function() {
+  const sp = document.getElementById('splitter-right');
+  const propPanel = document.getElementById('prop-panel');
+  let startX = 0, startW = 0;
+
+  sp.addEventListener('mousedown', function(e) {
+    e.preventDefault();
+    startX = e.clientX;
+    startW = propPanel.offsetWidth;
+    sp.classList.add('dragging');
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup', onUp);
+  });
+
+  function onMove(e) {
+    const dx = startX - e.clientX;
+    const newW = Math.max(140, Math.min(window.innerWidth * 0.4, startW + dx));
+    propPanel.style.width = newW + 'px';
+  }
+
+  function onUp() {
+    sp.classList.remove('dragging');
     document.removeEventListener('mousemove', onMove);
     document.removeEventListener('mouseup', onUp);
   }

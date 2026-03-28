@@ -1838,75 +1838,61 @@ function renderTable(parsed) {
   }
   emptyEl.style.display = 'none';
 
-  // ─── Build multi-level header with rowspan for shallow leaves ───
-  let maxDepth = 0;
-  for (const lc of leafColumns) {
-    if (lc.depth > maxDepth) maxDepth = lc.depth;
-  }
-  const totalHeaderRows = maxDepth + 1; // depth 0..maxDepth
+  // ─── Build two-row header: parent grouping row + leaf row ───
+  // Row 0: composite parent groups (colspan), leaf states without parents
+  // Row 1: leaf states under each parent
+  // This avoids rowspan mismatch issues with deep nesting.
 
-  // For each leaf, compute full ancestry chain (length = depth)
-  const ancestries = leafColumns.map(function(lc) {
-    const chain = [];
+  // Build parent groups: consecutive leaves with the same top-level composite parent
+  const headerGroups = []; // [{label, colspan, stateId, leaves: [{label, stateId}]}]
+  let curGroup = null;
+
+  for (const lc of leafColumns) {
+    // Find the top-level ancestor (depth 0 parent) or self
+    let topAncestor = lc.state;
     let cur = lc.state;
+    while (cur.parent) {
+      const p = parsed.stateMap[cur.parent];
+      if (p) { topAncestor = p; cur = p; }
+      else break;
+    }
+
+    // Build full label path for this leaf (excluding top ancestor)
+    const pathParts = [];
+    cur = lc.state;
+    const chain = [];
     while (cur.parent) {
       const p = parsed.stateMap[cur.parent];
       if (p) { chain.unshift(p); cur = p; }
       else break;
     }
-    return chain; // length = lc.depth
-  });
+    // chain = [root, level1, level2, ...], leaf = lc.state
+    // Skip the top ancestor, include intermediate composites
+    for (let i = 1; i < chain.length; i++) pathParts.push(chain[i].label);
 
-  // Build a cell grid: headerCells[row][col] = {label, colspan, rowspan, stateId} or null (covered by span)
-  const numCols = leafColumns.length;
-  const headerCells = [];
-  for (let r = 0; r < totalHeaderRows; r++) {
-    headerCells.push(new Array(numCols).fill(null));
-  }
-
-  // Fill ancestry cells (parent grouping) then leaf cells
-  // Process column by column
-  for (let ci = 0; ci < numCols; ci++) {
-    const chain = ancestries[ci]; // length = leafColumns[ci].depth
-    const lc = leafColumns[ci];
-
-    // Place ancestors at their depth rows
-    for (let ai = 0; ai < chain.length; ai++) {
-      headerCells[ai][ci] = { label: chain[ai].label, stateId: chain[ai].id, colspan: 1, rowspan: 1, placed: false };
-    }
-
-    // Place leaf at its depth row, spanning down to the last header row
-    const leafRow = lc.depth;
     const prefix = lc.isInitial ? '>' : '';
-    headerCells[leafRow][ci] = {
-      label: prefix + lc.state.label,
-      stateId: lc.id,
-      colspan: 1,
-      rowspan: totalHeaderRows - leafRow,
-      placed: false
-    };
-    // Mark rows below as covered
-    for (let r = leafRow + 1; r < totalHeaderRows; r++) {
-      headerCells[r][ci] = 'covered';
+    const leafLabel = pathParts.length > 0
+      ? pathParts.join(' > ') + ' > ' + prefix + lc.state.label
+      : prefix + lc.state.label;
+
+    if (topAncestor.id === lc.state.id) {
+      // This leaf IS a top-level state (no parent)
+      headerGroups.push({ label: lc.state.label, colspan: 1, stateId: lc.id, leaves: null });
+    } else if (curGroup && curGroup.stateId === topAncestor.id) {
+      // Same parent group
+      curGroup.colspan++;
+      curGroup.leaves.push({ label: leafLabel, stateId: lc.id });
+    } else {
+      // New parent group
+      curGroup = { label: topAncestor.label, colspan: 1, stateId: topAncestor.id, leaves: [{ label: leafLabel, stateId: lc.id }] };
+      headerGroups.push(curGroup);
     }
   }
 
-  // Merge consecutive identical parent cells horizontally (colspan)
-  for (let r = 0; r < totalHeaderRows; r++) {
-    for (let ci = 0; ci < numCols; ci++) {
-      const cell = headerCells[r][ci];
-      if (!cell || cell === 'covered' || cell.placed) continue;
-      let span = 1;
-      while (ci + span < numCols) {
-        const next = headerCells[r][ci + span];
-        if (next && next !== 'covered' && !next.placed && next.stateId === cell.stateId && next.rowspan === cell.rowspan) {
-          headerCells[r][ci + span] = 'covered';
-          span++;
-        } else break;
-      }
-      cell.colspan = span;
-    }
-  }
+  // Determine if we need 2 header rows (any composite parent exists)
+  const hasComposite = headerGroups.some(function(g) { return g.leaves !== null; });
+  const totalHeaderRows = hasComposite ? 2 : 1;
+  const numCols = leafColumns.length;
 
   // ─── Collect events ───
   // Events are all unique event names from transitions (excluding initial pseudo-state transitions)
@@ -1928,19 +1914,36 @@ function renderTable(parsed) {
   // ─── Build HTML ───
   let thtml = '<thead>';
   const rowH = 28;
-  for (let r = 0; r < totalHeaderRows; r++) {
-    thtml += `<tr>`;
-    // Left corner cell: only in first row, spanning all header rows
-    if (r === 0) {
-      thtml += `<th rowspan="${totalHeaderRows}" style="top:0"></th>`;
+
+  if (hasComposite) {
+    // Row 0: parent groups
+    thtml += `<tr><th rowspan="2" style="top:0"></th>`;
+    for (const g of headerGroups) {
+      if (g.leaves === null) {
+        // Top-level leaf — spans both rows
+        thtml += `<th rowspan="2" style="top:0;min-width:${calcMinWidth(g.label)}px">${esc(g.label)}</th>`;
+      } else {
+        thtml += `<th colspan="${g.colspan}" style="top:0">${esc(g.label)}</th>`;
+      }
     }
-    for (let ci = 0; ci < numCols; ci++) {
-      const cell = headerCells[r][ci];
-      if (!cell || cell === 'covered') continue;
-      const mw = cell.rowspan >= totalHeaderRows - r ? calcMinWidth(cell.label) : 0;
-      const styles = [`top:${r * rowH}px`];
-      if (mw > 0) styles.push(`min-width:${mw}px`);
-      thtml += `<th colspan="${cell.colspan}" rowspan="${cell.rowspan}" style="${styles.join(';')}">${esc(cell.label)}</th>`;
+    thtml += '</tr>';
+
+    // Row 1: leaf states under composites
+    thtml += '<tr>';
+    for (const g of headerGroups) {
+      if (g.leaves === null) continue; // already placed with rowspan=2
+      for (const leaf of g.leaves) {
+        const mw = calcMinWidth(leaf.label);
+        thtml += `<th style="top:${rowH}px;min-width:${mw}px">${esc(leaf.label)}</th>`;
+      }
+    }
+    thtml += '</tr>';
+  } else {
+    // Single header row
+    thtml += '<tr><th style="top:0"></th>';
+    for (const g of headerGroups) {
+      const mw = calcMinWidth(g.label);
+      thtml += `<th style="top:0;min-width:${mw}px">${esc(g.label)}</th>`;
     }
     thtml += '</tr>';
   }

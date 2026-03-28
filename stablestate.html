@@ -156,6 +156,8 @@ input[type=number]::-webkit-inner-spin-button { -webkit-appearance:none; }
     <button class="tb tb-accent" onclick="exportPNG()">PNG</button>
     <button class="tb tb-accent" onclick="copyPNG()" title="クリップボードにコピー">Copy</button>
     <button class="tb tb-accent" onclick="exportPlantUML()" title="PlantUML形式でエクスポート">PUML</button>
+    <button class="tb tb-accent" onclick="exportDSL()" title="DSLファイルをダウンロード">Save</button>
+    <label class="tb tb-accent" style="cursor:pointer" title="DSLファイルを読み込み">Open<input type="file" accept=".sstate,.txt" style="display:none" onchange="importDSL(this)"></label>
     <div class="sep"></div>
     <button class="tb" onclick="setZoom(-1)">&minus;</button>
     <span id="zoom-label" style="font-size:11px;color:#94A3B8;min-width:36px;text-align:center">100%</span>
@@ -173,6 +175,8 @@ input[type=number]::-webkit-inner-spin-button { -webkit-appearance:none; }
     <button class="tb tb-accent" onclick="copyPNG()" title="クリップボードにコピー">Copy</button>
     <button class="tb tb-accent" onclick="exportExcel()" title="Excel形式でエクスポート">Excel</button>
     <button class="tb tb-accent" onclick="exportPlantUML()" title="PlantUML形式でエクスポート">PUML</button>
+    <button class="tb tb-accent" onclick="exportDSL()" title="DSLファイルをダウンロード">Save</button>
+    <label class="tb tb-accent" style="cursor:pointer" title="DSLファイルを読み込み">Open<input type="file" accept=".sstate,.txt" style="display:none" onchange="importDSL(this)"></label>
   </div>
 </div>
 
@@ -2443,6 +2447,29 @@ function renderProps() {
 // ═══════════════════════════════════════════════
 // Export (SVG, PNG, Clipboard)
 // ═══════════════════════════════════════════════
+function exportDSL() {
+  const text = getDsl();
+  const blob = new Blob([text], { type: 'text/plain' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'stablestate.sstate';
+  a.click();
+  URL.revokeObjectURL(a.href);
+}
+
+function importDSL(input) {
+  const file = input.files && input.files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = function(ev) {
+    pushHistory();
+    setDsl(ev.target.result);
+    refresh();
+  };
+  reader.readAsText(file);
+  input.value = '';
+}
+
 function getExportSVGString() {
   const svgEl = document.querySelector('#svg-wrap svg');
   if (!svgEl) return null;

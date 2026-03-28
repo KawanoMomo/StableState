@@ -1189,7 +1189,14 @@ function renderSVG(parsed) {
   for (const ps of parsed.pseudoStates) {
     const pos = getAbsolutePos(ps, parsed);
     const dimPs = searchMatchIds && !searchMatchIds.has(ps.id) ? ' opacity="0.2"' : '';
+    const psSel = isSelected(ps.id);
     svg += `<g${dimPs}>`;
+
+    // Selection highlight ring
+    if (psSel) {
+      const selR = ps.type === 'initial' ? 14 : ps.type === 'final' ? 16 : 20;
+      svg += `<circle cx="${pos.x}" cy="${pos.y}" r="${selR}" fill="none" stroke="white" stroke-width="2" stroke-dasharray="4,2"/>`;
+    }
 
     switch (ps.type) {
       case 'initial': {
@@ -1204,16 +1211,16 @@ function renderSVG(parsed) {
       case 'choice': {
         const cx = pos.x;
         const cy = pos.y;
-        svg += `<polygon points="${cx},${cy-10} ${cx+10},${cy} ${cx},${cy+10} ${cx-10},${cy}" fill="#1e293b" stroke="#818CF8" stroke-width="1.5" ${shadow}/>`;
+        svg += `<polygon points="${cx},${cy-10} ${cx+10},${cy} ${cx},${cy+10} ${cx-10},${cy}" fill="#1e293b" stroke="${psSel ? 'white' : '#818CF8'}" stroke-width="${psSel ? 2.5 : 1.5}" ${shadow}/>`;
         break;
       }
       case 'history': {
-        svg += `<circle cx="${pos.x}" cy="${pos.y}" r="16" fill="#1e293b" stroke="#818CF8" stroke-width="1.5" ${shadow}/>`;
+        svg += `<circle cx="${pos.x}" cy="${pos.y}" r="16" fill="#1e293b" stroke="${psSel ? 'white' : '#818CF8'}" stroke-width="${psSel ? 2.5 : 1.5}" ${shadow}/>`;
         svg += `<text x="${pos.x}" y="${pos.y + 5}" text-anchor="middle" font-family="${sans}" font-size="14" font-weight="700" fill="#e0e0e0">H</text>`;
         break;
       }
       case 'deephistory': {
-        svg += `<circle cx="${pos.x}" cy="${pos.y}" r="16" fill="#1e293b" stroke="#818CF8" stroke-width="1.5" ${shadow}/>`;
+        svg += `<circle cx="${pos.x}" cy="${pos.y}" r="16" fill="#1e293b" stroke="${psSel ? 'white' : '#818CF8'}" stroke-width="${psSel ? 2.5 : 1.5}" ${shadow}/>`;
         svg += `<text x="${pos.x}" y="${pos.y + 5}" text-anchor="middle" font-family="${sans}" font-size="14" font-weight="700" fill="#e0e0e0">H*</text>`;
         break;
       }
@@ -1221,7 +1228,7 @@ function renderSVG(parsed) {
       case 'join': {
         const pw = ps.w != null ? ps.w * g : 6;
         const ph = ps.h != null ? ps.h * g : 40;
-        svg += `<rect x="${pos.x - pw/2}" y="${pos.y - ph/2}" width="${pw}" height="${ph}" rx="2" ry="2" fill="#e0e0e0" ${shadow}/>`;
+        svg += `<rect x="${pos.x - pw/2}" y="${pos.y - ph/2}" width="${pw}" height="${ph}" rx="2" ry="2" fill="${psSel ? 'white' : '#e0e0e0'}" ${shadow}/>`;
         break;
       }
     }
@@ -2851,19 +2858,21 @@ function hitTest(px, py) {
   if (!parsed) return null;
   const g = parsed.canvas.grid;
 
-  // In normal mode: states, pseudos, groups are interactive; notes are not
+  // In normal mode: pseudos first (small targets inside states), then states, then groups
   if (!annotationMode) {
+    // Pseudo-states first (they sit inside composite states)
+    for (const ps of parsed.pseudoStates) {
+      const abs = getAbsolutePos(ps, parsed);
+      if (Math.hypot(px - abs.x, py - abs.y) < 15) {
+        return { id: ps.id, type: ps.type, element: ps };
+      }
+    }
+    // Leaf states before composite (reverse order = topmost first, leaves are later in array)
     for (let i = parsed.states.length - 1; i >= 0; i--) {
       const st = parsed.states[i];
       const abs = getAbsolutePos(st, parsed);
       if (px >= abs.x && px <= abs.x + st.w * g && py >= abs.y && py <= abs.y + st.h * g) {
         return { id: st.id, type: 'state', element: st };
-      }
-    }
-    for (const ps of parsed.pseudoStates) {
-      const abs = getAbsolutePos(ps, parsed);
-      if (Math.hypot(px - abs.x, py - abs.y) < 15) {
-        return { id: ps.id, type: ps.type, element: ps };
       }
     }
     for (let i = parsed.groups.length - 1; i >= 0; i--) {

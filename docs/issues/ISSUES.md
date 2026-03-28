@@ -29,3 +29,4 @@
 | ISSUE-025 | 不具合修正 | LOW | Open | copyPNGがHTTPS/localhost以外のブラウザ環境で動作しない | - |
 | ISSUE-026 | 不具合修正 | LOW | Open | シンタックスハイライトがコメント行内のキーワードもハイライトする | - |
 | ISSUE-027 | 機能追加 | LOW | Open | プロパティ値に空白を含む文字列が未対応 | - |
+| ISSUE-028 | 不具合修正 | MEDIUM | Open | 遷移ラベルが親ブロック外にはみ出す（ECN-039） | - |

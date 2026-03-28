@@ -90,9 +90,9 @@ body { background: var(--bg); color: var(--text); font-family: 'IBM Plex Sans','
 #table-view { flex:1; display:none; flex-direction:column; overflow:hidden; }
 #table-head-wrap { flex-shrink:0; overflow-x:auto; overflow-y:hidden; }
 #table-body-wrap { flex:1; overflow:auto; }
-.st-table { border-collapse:collapse; font-size:12px; white-space:nowrap; }
+.st-table { width:100%; border-collapse:collapse; font-size:12px; table-layout:fixed; }
 .st-table th, .st-table td { border:1px solid #1e2a3a; padding:5px 10px; text-align:left; vertical-align:top; }
-.st-table th { background:#1a2332; color:#8eaabf; font-weight:600; font-size:10px; text-transform:uppercase; }
+.st-table th { background:#1a2332; color:#8eaabf; font-weight:600; font-size:10px; text-transform:uppercase; text-align:right; }
 .st-table td { background:#0d1520; color:#b0c4d8; }
 .st-table td:first-child { background:#141e2b; color:#8eaabf; font-weight:600; }
 .st-table .ev-header td { background:#1a1f2e; color:#d4a853; border-bottom:1px solid #2a3545; }

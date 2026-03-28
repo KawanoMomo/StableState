@@ -2055,7 +2055,10 @@ function renderTable(parsed) {
       input.focus();
       input.select();
 
+      let committed = false;
       const commitEdit = function() {
+        if (committed) return;
+        committed = true;
         const newVal = input.value.trim();
         input.remove();
 

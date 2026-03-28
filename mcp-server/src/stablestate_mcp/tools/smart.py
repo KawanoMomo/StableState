@@ -195,8 +195,7 @@ def ss_validate_layout() -> str:
     # Compute routes
     routes, labels = _get_all_routes(d)
 
-    # 6. Route crosses unrelated block (using polyline)
-    root_states = [s for s in d.states if s.parent is None]
+    # 6. Route crosses unrelated block (ALL states, not just root)
     for ti, t in enumerate(d.transitions):
         route = routes[ti]
         if not route:
@@ -205,6 +204,7 @@ def ss_validate_layout() -> str:
         tgt = sm.get(t.to_id) or pm.get(t.to_id)
         if not src or not tgt:
             continue
+        # Skip: source, target, all ancestors of both, all children of source/target
         skip = {t.from_id, t.to_id}
         for el in [src, tgt]:
             pid = getattr(el, "parent", None)
@@ -212,7 +212,12 @@ def ss_validate_layout() -> str:
                 skip.add(pid)
                 p = sm.get(pid)
                 pid = p.parent if p else None
-        for s in root_states:
+            # Also skip direct children of composite endpoints
+            if hasattr(el, "children"):
+                for cid in el.children:
+                    skip.add(cid)
+
+        for s in d.states:
             if s.id in skip:
                 continue
             if _polyline_crosses_box(route, all_boxes[s.id]):

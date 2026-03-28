@@ -56,7 +56,7 @@ state run "Run" at 27,1 size 47x32 entry=EnableWDG do=CyclicTask exit=DisableWDG
   }
 
   # History for returning to previous sub-state after diagnostic
-  history h_run at 38,1
+  history h_run at 37,15
 
   run_ini -> normal
   normal -> diagnostic : EvDiagRequest [TesterPresent] / SaveState @external

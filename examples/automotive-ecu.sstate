@@ -66,7 +66,7 @@ state run "Run" at 27,1 size 47x32 entry=EnableWDG do=CyclicTask exit=DisableWDG
   diagnostic -> failsafe : EvFault [SeverityHigh] / EmergencyStop
 }
 
-state shutdown_seq "Shutdown" at 1,44 size 12x5 entry=SaveNVM do=FlushBuffers exit=PowerOff color=#1e293b border=#EF4444
+state shutdown_seq "Shutdown" at 15,36 size 12x5 entry=SaveNVM do=FlushBuffers exit=PowerOff color=#1e293b border=#EF4444
 
 # ─── Choice for startup result ───
 choice c_post at 25.5,5.5

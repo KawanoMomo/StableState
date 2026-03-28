@@ -322,6 +322,15 @@ def ss_validate_layout() -> str:
                     "detail": f"{ab['state_id']} action '{ab['text']}' overlaps pseudo {ps.id}",
                     "suggestion": f"ss_modify('{ps.id}', y={ps.y + 2}) or move {ps.id} away from {ab['state_id']}"})
 
+    # 10. Transition label extends outside canvas bounds
+    for lbl in valid_labels:
+        lb = lbl["box"]
+        if lb["x"] < 0 or lb["x"] + lb["w"] > cw or lb["y"] < 0 or lb["y"] + lb["h"] > ch:
+            issues.append({"type": "label_out_of_canvas",
+                "elements": [lbl["tid"]],
+                "detail": f"{lbl['tid']} label extends outside canvas",
+                "suggestion": f"move transition endpoints closer together or toward canvas center"})
+
     if not issues:
         return "No issues found."
     summary = f"{len(issues)} issue(s):\n"

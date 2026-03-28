@@ -88,15 +88,15 @@ body { background: var(--bg); color: var(--text); font-family: 'IBM Plex Sans','
 
 /* Table view — freeze-pane: header fixed, body scrolls */
 #table-view { flex:1; display:none; flex-direction:column; overflow:hidden; }
-#table-head-wrap { flex-shrink:0; overflow-x:auto; overflow-y:hidden; }
+#table-head-wrap { flex-shrink:0; overflow:hidden; }
 #table-body-wrap { flex:1; overflow:auto; }
 .st-table { width:100%; border-collapse:collapse; font-size:12px; table-layout:fixed; }
-.st-table th, .st-table td { border:1px solid #1e2a3a; padding:5px 10px; text-align:left; vertical-align:top; }
-.st-table th { background:#1a2332; color:#8eaabf; font-weight:600; font-size:10px; text-transform:uppercase; text-align:right; }
-.st-table td { background:#0d1520; color:#b0c4d8; }
-.st-table td:first-child { background:#141e2b; color:#8eaabf; font-weight:600; }
-.st-table .ev-header td { background:#1a1f2e; color:#d4a853; border-bottom:1px solid #2a3545; }
-.st-table .ev-row td:first-child { background:#141e2b; color:#6b8299; }
+.st-table th, .st-table td { border:1px solid var(--border); padding:4px 8px; text-align:left; }
+.st-table th { background:var(--panel); color:var(--accent); font-weight:600; font-size:10px; text-transform:uppercase; }
+.st-table td { background:var(--editor); color:var(--text); }
+.st-table td:first-child { background:var(--panel); }
+.st-table .ev-header td { background:#2a2233; }
+.st-table .ev-row td:first-child { background:var(--panel); }
 #table-empty { display:flex; align-items:center; justify-content:center; height:100%; color:var(--muted); font-size:13px; }
 
 /* ─── Property Panel (Right) ─── */
@@ -2031,21 +2031,11 @@ function renderTable(parsed) {
     bodyEl.insertAdjacentHTML('afterbegin', colHtml);
   });
 
-  // ─── Sync horizontal scroll (both directions) ───
+  // ─── Sync horizontal scroll ───
   const bodyWrap = document.getElementById('table-body-wrap');
   const headWrap = document.getElementById('table-head-wrap');
-  let syncing = false;
   bodyWrap.addEventListener('scroll', function() {
-    if (syncing) return;
-    syncing = true;
     headWrap.scrollLeft = bodyWrap.scrollLeft;
-    syncing = false;
-  });
-  headWrap.addEventListener('scroll', function() {
-    if (syncing) return;
-    syncing = true;
-    bodyWrap.scrollLeft = headWrap.scrollLeft;
-    syncing = false;
   });
 
   // ─── Wire up double-click editing ───

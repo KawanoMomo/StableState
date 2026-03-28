@@ -30,21 +30,27 @@ def _boxes_overlap(a, b):
 
 
 def _segment_crosses_box(x1, y1, x2, y2, box):
-    """Check if a horizontal or vertical line segment crosses a box interior."""
-    bx, by, bw, bh = box["x"], box["y"], box["w"], box["h"]
-    # Horizontal segment
-    if abs(y1 - y2) < 0.01:
-        if by < y1 < by + bh:
-            lo, hi = min(x1, x2), max(x1, x2)
-            if lo < bx + bw and hi > bx:
-                return True
-    # Vertical segment
-    if abs(x1 - x2) < 0.01:
-        if bx < x1 < bx + bw:
-            lo, hi = min(y1, y2), max(y1, y2)
-            if lo < by + bh and hi > by:
-                return True
-    return False
+    """Check if a line segment (any angle) crosses through a box.
+    Uses Liang-Barsky clipping algorithm."""
+    bx, by = box["x"], box["y"]
+    bx2, by2 = bx + box["w"], by + box["h"]
+    dx, dy = x2 - x1, y2 - y1
+    p = [-dx, dx, -dy, dy]
+    q = [x1 - bx, bx2 - x1, y1 - by, by2 - y1]
+    t0, t1 = 0.0, 1.0
+    for i in range(4):
+        if abs(p[i]) < 1e-10:
+            if q[i] < 0:
+                return False
+        else:
+            r = q[i] / p[i]
+            if p[i] < 0:
+                t0 = max(t0, r)
+            else:
+                t1 = min(t1, r)
+            if t0 > t1:
+                return False
+    return t0 < t1
 
 
 def ss_validate_layout() -> str:

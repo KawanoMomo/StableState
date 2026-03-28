@@ -11,7 +11,7 @@ group pwr "Power Management" at 0,0 size 70x50 color=#0f172a border=#334155
 
 # ─── Power pseudo-states ───
 initial ini at 1,5.5
-final shutdown at 68,5.5
+final shutdown at 1,10.5
 
 # ─── Top-level states ───
 state sleep "Sleep" at 3,3 size 8x5 entry=HW_Sleep exit=HW_Wake color=#1e293b border=#475569

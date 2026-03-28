@@ -2179,7 +2179,7 @@ function renderProps() {
       html += `<div class="prop-row"><input class="prop-input" value="${esc(ps.id)}" readonly style="opacity:0.6"></div>`;
       html += `</div>`;
       html += `<div class="prop-section"><div class="prop-label">Position</div>`;
-      html += `<div class="prop-row"><input type="number" class="prop-input" id="pp-x" value="${ps.x}" placeholder="X" style="width:50%"><input type="number" class="prop-input" id="pp-y" value="${ps.y}" placeholder="Y" style="width:50%"></div>`;
+      html += `<div class="prop-row"><input type="number" step="0.5" class="prop-input" id="pp-x" value="${ps.x}" placeholder="X" style="width:50%"><input type="number" step="0.5" class="prop-input" id="pp-y" value="${ps.y}" placeholder="Y" style="width:50%"></div>`;
       html += `</div>`;
     } else if (parsed.groupMap[id]) {
       // ── Group selected ──
@@ -3171,8 +3171,11 @@ function redo() {
       const pt = svgCoords(e);
       const dx = pt.x - dragState.startX;
       const dy = pt.y - dragState.startY;
-      const dxGrid = Math.round(dx / g);
-      const dyGrid = Math.round(dy / g);
+      // Use half-grid snapping for pseudo-states, full-grid for others
+      const isPseudo = dragState.items.length === 1 && parsed.pseudoMap[dragState.items[0].id];
+      const snapUnit = isPseudo ? g / 2 : g;
+      const dxGrid = Math.round(dx / snapUnit) * (isPseudo ? 0.5 : 1);
+      const dyGrid = Math.round(dy / snapUnit) * (isPseudo ? 0.5 : 1);
 
       if (dxGrid === dragState.lastDxGrid && dyGrid === dragState.lastDyGrid) return;
       dragState.lastDxGrid = dxGrid;
@@ -3697,21 +3700,23 @@ document.addEventListener('keydown', function(e) {
   if (e.ctrlKey && e.key === 'c') { copySelection(); }
   if (e.ctrlKey && e.key === 'v') { pasteSelection(); }
 
-  // ADR-018: Arrow key nudge (1 grid unit)
+  // ADR-018: Arrow key nudge (1 grid for states/groups, 0.5 grid for pseudo-states)
   if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.key) && selection.size > 0) {
     e.preventDefault();
     if (!parsed) return;
-    const dx = e.key === 'ArrowRight' ? 1 : e.key === 'ArrowLeft' ? -1 : 0;
-    const dy = e.key === 'ArrowDown' ? 1 : e.key === 'ArrowUp' ? -1 : 0;
+    const dir = e.key === 'ArrowRight' ? 1 : e.key === 'ArrowLeft' ? -1 : e.key === 'ArrowDown' ? 1 : -1;
+    const isH = e.key === 'ArrowRight' || e.key === 'ArrowLeft';
     pushHistory();
     let dsl = getDsl();
     for (const id of selection) {
-      // Skip elements not valid for current mode
       if (annotationMode && !parsed.noteMap[id]) continue;
       if (!annotationMode && parsed.noteMap[id]) continue;
       const st = parsed.stateMap[id] || parsed.pseudoMap[id] || parsed.groupMap[id] || parsed.noteMap[id];
       if (!st) continue;
       const type = parsed.stateMap[id] ? 'state' : parsed.pseudoMap[id] ? parsed.pseudoMap[id].type : parsed.groupMap[id] ? 'group' : 'note';
+      const step = parsed.pseudoMap[id] ? 0.5 : 1;
+      const dx = isH ? dir * step : 0;
+      const dy = isH ? 0 : dir * step;
       const nx = Math.max(0, (st.x || 0) + dx);
       const ny = Math.max(0, (st.y || 0) + dy);
       dsl = updatePos(type, id, nx, ny, dsl);

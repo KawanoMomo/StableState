@@ -2020,10 +2020,23 @@ function renderTable(parsed) {
     if (!thead) return;
     const rows = thead.querySelectorAll('tr');
     let cumTop = 0;
+    const rowTops = [];
     rows.forEach(function(tr) {
-      const ths = tr.querySelectorAll('th');
-      ths.forEach(function(th) { th.style.top = cumTop + 'px'; });
+      rowTops.push(cumTop);
       cumTop += tr.getBoundingClientRect().height;
+    });
+    // Apply top values and z-index based on rowspan
+    rows.forEach(function(tr, ri) {
+      const ths = tr.querySelectorAll('th');
+      ths.forEach(function(th) {
+        th.style.top = rowTops[ri] + 'px';
+        // Cells with rowspan spanning multiple rows need higher z-index
+        // so they stay above later-row sticky cells
+        const rs = parseInt(th.getAttribute('rowspan')) || 1;
+        if (rs > 1) {
+          th.style.zIndex = 4;
+        }
+      });
     });
   });
 

@@ -56,14 +56,18 @@ body { background: var(--bg); color: var(--text); font-family: 'IBM Plex Sans','
 #body { flex:1; display:flex; overflow:hidden; }
 
 /* ─── Editor Panel (Left) ─── */
-#editor-panel { width:320px; min-width:240px; display:flex; flex-direction:column; border-right:1px solid var(--border); background:var(--editor); }
+#editor-panel { width:320px; min-width:180px; max-width:60vw; display:flex; flex-direction:column; border-right:none; background:var(--editor); }
+#splitter { width:5px; cursor:col-resize; background:var(--border); flex-shrink:0; }
+#splitter:hover, #splitter.dragging { background:var(--accent); }
 .panel-label { padding:4px 10px; font-size:10px; font-weight:600; color:var(--muted); border-bottom:1px solid var(--border); display:flex; align-items:center; gap:4px; text-transform:uppercase; letter-spacing:0.05em; }
 .panel-label .dot { font-size:10px; }
 #error-bar { padding:4px 10px; background:#7F1D1D; color:#FCA5A5; font-size:10px; display:none; border-top:1px solid #DC2626; max-height:100px; overflow-y:auto; font-family:'IBM Plex Mono',monospace; }
 #editor-wrap { flex:1; display:flex; overflow:hidden; background:var(--editor); }
 #line-nums { width:40px; padding:12px 4px 12px 0; text-align:right; font-family:'IBM Plex Mono',monospace; font-size:12px; line-height:20px; color:var(--dim); user-select:none; overflow:hidden; flex-shrink:0; }
 #editor-container { flex:1; position:relative; overflow:hidden; }
-#highlight-overlay { position:absolute; top:0; left:0; width:100%; height:100%; padding:12px 12px 12px 4px; font-family:'IBM Plex Mono',monospace; font-size:12px; line-height:20px; white-space:pre; overflow:hidden; pointer-events:none; tab-size:2; color:var(--text); margin:0; border:0; }
+#highlight-overlay { position:absolute; top:0; left:0; width:100%; height:100%; padding:12px 12px 12px 4px; font-family:'IBM Plex Mono',monospace; font-size:12px; line-height:20px; white-space:pre; overflow:auto; pointer-events:none; tab-size:2; color:var(--text); margin:0; border:0; }
+#highlight-overlay::-webkit-scrollbar { display:none; }
+#highlight-overlay { scrollbar-width:none; -ms-overflow-style:none; }
 #editor { position:absolute; top:0; left:0; width:100%; height:100%; background:transparent; color:transparent; caret-color:#e0e0e0; border:none; outline:none; font-family:'IBM Plex Mono',monospace; font-size:12px; line-height:20px; padding:12px 12px 12px 4px; resize:none; white-space:pre; overflow:auto; tab-size:2; }
 
 /* Syntax highlighting */
@@ -218,6 +222,8 @@ error -> fin : EvShutdown</textarea>
     </div>
     <div id="error-bar"></div>
   </div>
+
+  <div id="splitter"></div>
 
   <!-- Center: Diagram / Table -->
   <div id="center-panel">
@@ -2775,6 +2781,36 @@ const editorEl = document.getElementById('editor');
 editorEl.addEventListener('input', function() {
   refresh();
 });
+
+// ═══════════════════════════════════════════════
+// Splitter (editor ↔ diagram resizer)
+// ═══════════════════════════════════════════════
+(function() {
+  const splitter = document.getElementById('splitter');
+  const editorPanel = document.getElementById('editor-panel');
+  let startX = 0, startW = 0;
+
+  splitter.addEventListener('mousedown', function(e) {
+    e.preventDefault();
+    startX = e.clientX;
+    startW = editorPanel.offsetWidth;
+    splitter.classList.add('dragging');
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup', onUp);
+  });
+
+  function onMove(e) {
+    const dx = e.clientX - startX;
+    const newW = Math.max(180, Math.min(window.innerWidth * 0.6, startW + dx));
+    editorPanel.style.width = newW + 'px';
+  }
+
+  function onUp() {
+    splitter.classList.remove('dragging');
+    document.removeEventListener('mousemove', onMove);
+    document.removeEventListener('mouseup', onUp);
+  }
+})();
 
 // Sync line numbers and highlight overlay scroll
 editorEl.addEventListener('scroll', function() {

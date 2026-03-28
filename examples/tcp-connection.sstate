@@ -1,0 +1,75 @@
+@canvas width=1200 height=800 grid=20
+@config transition=external
+
+# ═══════════════════════════════════════
+# TCP Connection State Machine (RFC 793)
+# ═══════════════════════════════════════
+
+group client "Client Side" at 0,0 size 28x40 color=#0f172a border=#3B82F6
+group server "Server Side" at 30,0 size 28x40 color=#0f172a border=#22C55E
+
+# ─── Client states ───
+initial c_ini at 1,3.5
+
+state closed_c "CLOSED" at 3,2 size 8x4 color=#1e293b border=#64748B
+state syn_sent "SYN_SENT" at 14,2 size 10x4 entry=StartTimer do=WaitSynAck exit=StopTimer color=#1e293b border=#3B82F6
+state established_c "ESTABLISHED" at 3,9 size 22x8 entry=NotifyApp do=DataTransfer color=#0f172a border=#22C55E {
+  initial ec_ini at 1,3.5
+  state sending "Sending" at 3,2 size 8x4 do=SendData
+  state receiving "Receiving" at 13,2 size 8x4 do=RecvData
+  ec_ini -> sending
+  sending -> receiving : EvDataSent / WaitAck
+  receiving -> sending : EvAckRcvd / PrepareNext
+}
+state fin_wait1 "FIN_WAIT_1" at 3,20 size 10x4 entry=SendFIN color=#1e293b border=#F59E0B
+state fin_wait2 "FIN_WAIT_2" at 15,20 size 10x4 do=WaitFIN color=#1e293b border=#F59E0B
+state time_wait "TIME_WAIT" at 3,27 size 10x4 entry=Start2MSL do=Wait2MSL color=#1e293b border=#EF4444
+state closed_c2 "CLOSED" at 15,27 size 10x4 color=#1e293b border=#64748B
+
+# ─── Server states ───
+initial s_ini at 31,3.5
+
+state listen "LISTEN" at 33,2 size 8x4 entry=BindPort do=AcceptLoop color=#1e293b border=#22C55E
+state syn_rcvd "SYN_RCVD" at 44,2 size 10x4 entry=SendSynAck do=WaitAck color=#1e293b border=#22C55E
+state established_s "ESTABLISHED" at 33,9 size 22x8 entry=SpawnHandler do=HandleRequest color=#0f172a border=#22C55E {
+  initial es_ini at 1,3.5
+  state processing "Processing" at 3,2 size 8x4 do=ProcessReq
+  state responding "Responding" at 13,2 size 8x4 do=SendResp
+  es_ini -> processing
+  processing -> responding : EvReqDone / FormatResp
+  responding -> processing : EvRespSent / WaitNextReq
+}
+state close_wait "CLOSE_WAIT" at 33,20 size 10x4 do=FlushBuffers color=#1e293b border=#F59E0B
+state last_ack "LAST_ACK" at 45,20 size 10x4 entry=SendFIN do=WaitACK color=#1e293b border=#F59E0B
+state closed_s "CLOSED" at 33,27 size 10x4 color=#1e293b border=#64748B
+
+# ─── Choice ───
+choice c_handshake at 28,5.5
+
+# ─── Client transitions ───
+c_ini -> closed_c
+closed_c -> syn_sent : EvConnect / SendSYN
+syn_sent -> c_handshake : EvSynAckRcvd / SendACK
+c_handshake -> established_c : [HandshakeOK]
+c_handshake -> closed_c : [HandshakeFail] / ReportError
+established_c -> fin_wait1 : EvClose / InitiateClose
+fin_wait1 -> fin_wait2 : EvAckRcvd
+fin_wait2 -> time_wait : EvFinRcvd / SendACK
+time_wait -> closed_c2 : EvTimeout [2MSL_Expired]
+
+# ─── Server transitions ───
+s_ini -> listen
+listen -> syn_rcvd : EvSynRcvd / SendSynAck
+syn_rcvd -> established_s : EvAckRcvd / ConnectionReady
+established_s -> close_wait : EvFinRcvd / SendACK
+close_wait -> last_ack : EvAppClose / SendFIN
+last_ack -> closed_s : EvAckRcvd
+
+# ─── Notes ───
+note n_3way "Three-Way Handshake:\n1. SYN →\n2. ← SYN+ACK\n3. ACK →" at 22,11 size 12x5 color=#FEF3C7
+note n_timewait "2MSL = 2x Max Segment\nLifetime (typically 60s)" at 15,31 size 12x3 color=#FEE2E2
+note n_halfclose "Half-close: client\nstops sending but\ncan still receive" at 1,24 size 10x3 color=#DBEAFE
+
+n_3way -> c_handshake
+n_timewait -> time_wait
+n_halfclose -> fin_wait2

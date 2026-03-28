@@ -1,0 +1,94 @@
+@canvas width=1400 height=1000 grid=20
+@config transition=local
+@config history=true
+
+# ═══════════════════════════════════════
+# Automotive ECU Power Management System
+# ═══════════════════════════════════════
+
+# Visual groups
+group pwr "Power Management" at 0,0 size 70x50 color=#0f172a border=#334155
+
+# ─── Power pseudo-states ───
+initial ini at 1,5.5
+final shutdown at 68,5.5
+
+# ─── Top-level states ───
+state sleep "Sleep" at 3,3 size 8x5 entry=HW_Sleep exit=HW_Wake color=#1e293b border=#475569
+state startup "Startup" at 14,3 size 10x5 entry=RunPOST do=InitBSW exit=NotifyRTE color=#1e293b border=#6366F1
+state run "Run" at 27,1 size 38x30 entry=EnableWDG do=CyclicTask exit=DisableWDG color=#0f172a border=#818CF8 {
+  initial run_ini at 1,3.5
+
+  state normal "Normal" at 3,1 size 32x12 entry=NormalInit exit=NormalExit color=#0f172a border=#22C55E {
+    initial norm_ini at 1,3.5
+
+    state idle "Idle" at 3,2 size 8x4 entry=IdleEntry do=IdleMonitor
+    state active "Active" at 14,1 size 16x8 entry=ActiveInit exit=ActiveCleanup color=#0f172a border=#6366F1 {
+      initial act_ini at 1,4.5
+      state accel "Accelerating" at 3,2 size 10x3 entry=AccelStart do=AccelCtrl exit=AccelStop
+      state cruise "Cruising" at 3,6 size 10x3 entry=CruiseStart do=CruiseCtrl
+      act_ini -> accel
+      accel -> cruise : EvSpeedReached [v>=target]
+      cruise -> accel : EvSpeedLost [v<target-5] / ResetPID
+    }
+
+    norm_ini -> idle
+    idle -> active : EvDriveRequest [IsReady] / InitDrive
+    active -> idle : EvStopRequest / CleanupDrive
+  }
+
+  state diagnostic "Diagnostic" at 3,15 size 14x10 entry=EnterDiag exit=ExitDiag color=#0f172a border=#F59E0B {
+    initial diag_ini at 1,3.5
+    state uds_session "UDS Session" at 3,2 size 9x3 entry=OpenSession do=ProcessUDS exit=CloseSession
+    state flash "Flash Mode" at 3,6 size 9x3 entry=EraseFlash do=WriteFlash exit=VerifyCRC
+    diag_ini -> uds_session
+    uds_session -> flash : EvFlashRequest [SecurityOK] / SuspendNormal
+    flash -> uds_session : EvFlashComplete / ResumeNormal
+  }
+
+  state failsafe "Failsafe" at 20,15 size 14x10 entry=EnterFailsafe do=LimpHome exit=ExitFailsafe color=#0f172a border=#EF4444 {
+    initial fail_ini at 1,3.5
+    state degraded "Degraded" at 3,2 size 9x3 entry=ReduceLoad do=MonitorDTC
+    state limp "Limp Home" at 3,6 size 9x3 entry=LimpInit do=LimpMonitor exit=LimpCleanup
+    fail_ini -> degraded
+    degraded -> limp : EvCriticalFault [DTCActive] / LogFault
+    limp -> degraded : EvFaultCleared [DTCInactive] / ClearDTC
+  }
+
+  # History for returning to previous sub-state after diagnostic
+  history h_run at 18,4
+
+  run_ini -> normal
+  normal -> diagnostic : EvDiagRequest [TesterPresent] / SaveState @external
+  diagnostic -> h_run : EvDiagEnd / RestoreState
+  normal -> failsafe : EvFault [SeverityHigh] / EmergencyStop
+  failsafe -> normal : EvRecovery [AllClear] / SystemReset
+  diagnostic -> failsafe : EvFault [SeverityHigh] / EmergencyStop
+}
+
+state shutdown_seq "Shutdown" at 27,34 size 12x5 entry=SaveNVM do=FlushBuffers exit=PowerOff color=#1e293b border=#EF4444
+
+# ─── Choice for startup result ───
+choice c_post at 25.5,5.5
+
+# ─── Top-level transitions ───
+ini -> sleep
+sleep -> startup : EvWakeup [VBat>9V] / PowerOn
+startup -> c_post : EvPOSTDone
+c_post -> run : [POST_OK]
+c_post -> shutdown_seq : [POST_FAIL] / LogError
+run -> shutdown_seq : EvShutdownRequest / PrepareShutdown
+shutdown_seq -> sleep : EvShutdownComplete / PowerDown
+sleep -> shutdown : EvBatteryDead
+
+# Self-transitions
+run -> run : EvWatchdogKick @internal
+
+# ─── Notes ───
+note n1 "POST = Power-On Self Test\nChecks RAM, ROM, peripherals" at 14,10 size 14x3 color=#FEF3C7
+note n2 "Failsafe mode limits\ntorque output to 30%" at 36,27 size 12x3 color=#FEE2E2
+note n3 "UDS = Unified Diagnostic\nServices (ISO 14229)" at 1,20 size 12x3 color=#DBEAFE
+
+n1 -> startup
+n2 -> failsafe
+n3 -> diagnostic

@@ -1,4 +1,4 @@
-# ADR-026 分析: エディタ機能8項目の一括追加
+# ECN-026 分析: エディタ機能8項目の一括追加
 
 - **判定**: 3項目実装済、5項目未実装
 - **対象ファイル**: `stablestate.html`, `vscode-stablestate/src/extension.js`

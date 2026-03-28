@@ -66,6 +66,13 @@ function parseDSL(text) {
       continue;
     }
 
+    // @include
+    const includeMatch = trimmed.match(/^@include\s+"([^"]+)"/);
+    if (includeMatch) {
+      result.errors.push({ line: lineNum, msg: `@include "${includeMatch[1]}" — use preprocessInclude() to resolve before parsing` });
+      continue;
+    }
+
     // @canvas
     const canvasMatch = trimmed.match(/^@canvas\s+(.+)$/);
     if (canvasMatch) {
@@ -1168,6 +1175,22 @@ function test_labelToId_japanese() {
 runTest('test_labelToId_simple', test_labelToId_simple);
 runTest('test_labelToId_edge_cases', test_labelToId_edge_cases);
 runTest('test_labelToId_japanese', test_labelToId_japanese);
+
+// ═══════════════════════════════════════════════
+// @include preprocessor tests
+// ═══════════════════════════════════════════════
+function test_include_parser_warning() {
+  const dsl = `@canvas width=960 height=600 grid=20
+@include "shared.sstate"
+state idle "Idle" at 2,3 size 8x4`;
+  const r = parseDSL(dsl);
+  // Parser should emit a warning/error for unresolved @include
+  assert(r.errors.some(e => e.msg.includes('@include')), 'include_warning: parser emits @include warning');
+  // State should still be parsed
+  assert(r.states.length === 1, 'include_warning: state parsed after @include');
+}
+
+runTest('test_include_parser_warning', test_include_parser_warning);
 
 // ═══════════════════════════════════════════════
 // hitTest function (copied from stablestate.html) + dependencies

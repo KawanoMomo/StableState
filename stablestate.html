@@ -2671,38 +2671,174 @@ function exportPlantUML(p) {
 // ═══════════════════════════════════════════════
 function buildExcelData(p) {
   const data = p || parsed;
-  if (!data) return [];
-  const rows = [];
-  const leafStates = data.states.filter(s => s.children.length === 0);
-  const headers = ['Event', 'Guard', 'Action'];
-  for (const st of leafStates) headers.push(st.label || st.id);
-  rows.push(headers);
-  for (const field of ['entry', 'do', 'exit']) {
-    const row = [field, '', ''];
-    for (const st of leafStates) row.push(st[field] || '');
-    rows.push(row);
-  }
-  const events = [...new Set(data.transitions.filter(t => t.event).map(t => t.event))];
-  for (const ev of events) {
-    const trs = data.transitions.filter(t => t.event === ev);
-    for (const tr of trs) {
-      const row = [ev, tr.guard || '', tr.action || ''];
-      for (const st of leafStates) {
-        row.push(st.id === tr.from ? (data.stateMap[tr.to] ? data.stateMap[tr.to].label || tr.to : tr.to) : '');
-      }
-      rows.push(row);
+  if (!data) return { rows: [], styles: [] };
+
+  // Collect leaf columns (same as renderTable)
+  const leafCols = [];
+  const initialTargets = new Set();
+  for (const t of data.transitions) {
+    const fromEl = data.pseudoMap[t.from];
+    if (fromEl && fromEl.type === 'initial') {
+      const tgt = resolveStateRef(t.to, data);
+      if (tgt) initialTargets.add(tgt.id);
     }
   }
-  return rows;
+  function walk(st) {
+    if (st.children.length === 0) leafCols.push(st);
+    else st.children.forEach(function(cid) { const c = data.stateMap[cid]; if (c) walk(c); });
+  }
+  data.states.filter(s => s.parent === null).forEach(function(s) { walk(s); });
+
+  // Find max depth
+  function getDepth(st) { let d = 0, cur = st; while (cur.parent) { cur = data.stateMap[cur.parent]; d++; } return d; }
+  let maxDepth = 0;
+  leafCols.forEach(function(lc) { const d = getDepth(lc); if (d > maxDepth) maxDepth = d; });
+  const headerRows = maxDepth + 1;
+
+  const rows = [];
+  const styles = []; // parallel: styles[rowIdx][colIdx] = {bg, fg, bold, indent}
+
+  // Color palette matching PwrMgr.xlsx
+  const CLR = {
+    headerBg: 'D9E2F3', headerFg: '000000', initialFg: 'C00000',
+    actionLabelBg: 'FFF2CC', actionDataBg: 'FFF9C4',
+    eventBg: 'FCE4EC', subRowBg: 'FFF0F5', subRowFg: '808080',
+    dataFg: '000000',
+  };
+
+  // ── Header rows ──
+  for (let r = 0; r < headerRows; r++) {
+    const row = [''];
+    const sty = [{ bg: CLR.headerBg }];
+    for (let ci = 0; ci < leafCols.length; ci++) {
+      const lc = leafCols[ci];
+      const chain = [];
+      let cur = lc;
+      while (cur.parent) { const pp = data.stateMap[cur.parent]; if (pp) { chain.unshift(pp); cur = pp; } else break; }
+      // chain = ancestors, lc = leaf. chain.length = depth
+      const depth = chain.length;
+      const leafRow = depth; // row where leaf label appears
+      if (r < depth) {
+        // ancestor row — show ancestor label (only first column of its span)
+        const anc = chain[r];
+        // Check if previous column has the same ancestor at this depth
+        if (ci > 0) {
+          const prevLc = leafCols[ci - 1];
+          const prevChain = [];
+          let pcur = prevLc;
+          while (pcur.parent) { const pp = data.stateMap[pcur.parent]; if (pp) { prevChain.unshift(pp); pcur = pp; } else break; }
+          if (r < prevChain.length && prevChain[r].id === anc.id) {
+            row.push(''); // same group, empty
+            sty.push({ bg: CLR.headerBg });
+            continue;
+          }
+        }
+        row.push(anc.label);
+        sty.push({ bg: CLR.headerBg });
+      } else if (r === leafRow) {
+        const prefix = initialTargets.has(lc.id) ? '>' : '';
+        row.push(prefix + lc.label);
+        sty.push({ bg: CLR.headerBg, bold: initialTargets.has(lc.id), fg: initialTargets.has(lc.id) ? CLR.initialFg : CLR.headerFg });
+      } else {
+        row.push(''); // empty cell in header area
+        sty.push({ bg: CLR.headerBg });
+      }
+    }
+    rows.push(row);
+    styles.push(sty);
+  }
+
+  // ── entry / do / exit rows ──
+  for (const field of ['entry', 'do', 'exit']) {
+    const row = [field];
+    const sty = [{ bg: CLR.actionLabelBg, bold: true }];
+    for (const lc of leafCols) {
+      row.push(lc[field] || '-');
+      sty.push({ bg: CLR.actionDataBg });
+    }
+    rows.push(row);
+    styles.push(sty);
+  }
+
+  // ── Event blocks ──
+  const eventSet = new Map();
+  for (const t of data.transitions) {
+    const fromEl = data.pseudoMap[t.from];
+    if (fromEl && fromEl.type === 'initial') continue;
+    const evName = t.event || '(none)';
+    if (!eventSet.has(evName)) eventSet.set(evName, []);
+    eventSet.get(evName).push(t);
+  }
+
+  for (const [evName, transitions] of eventSet) {
+    // Event name row
+    const evRow = [evName];
+    const evSty = [{ bg: CLR.eventBg, bold: true }];
+    for (const lc of leafCols) { evRow.push('-'); evSty.push({ bg: CLR.actionDataBg }); }
+    rows.push(evRow);
+    styles.push(evSty);
+
+    // guard / action / target sub-rows
+    for (const subField of ['guard', 'action', 'target']) {
+      const row = ['  ' + subField];
+      const sty = [{ bg: CLR.subRowBg, fg: CLR.subRowFg }];
+      for (const lc of leafCols) {
+        const matching = transitions.filter(function(t) {
+          const fromEl = resolveStateRef(t.from, data);
+          return fromEl && fromEl.id === lc.id;
+        });
+        let val = '-';
+        if (matching.length > 0) {
+          if (subField === 'guard') val = matching[0].guard || '-';
+          else if (subField === 'action') val = matching[0].action || '-';
+          else {
+            const tgtEl = resolveStateRef(matching[0].to, data);
+            val = tgtEl ? tgtEl.label || tgtEl.id : matching[0].to;
+          }
+        }
+        row.push(val);
+        sty.push({ bg: CLR.actionDataBg });
+      }
+      rows.push(row);
+      styles.push(sty);
+    }
+  }
+
+  return { rows, styles, CLR };
 }
 
 function exportExcel() {
   if (!parsed) return;
   function doExport() {
-    const rows = buildExcelData(parsed);
+    const { rows, styles } = buildExcelData(parsed);
     const ws = XLSX.utils.aoa_to_sheet(rows);
+
+    // Apply styles (SheetJS Pro has full style support; community edition uses cell.s)
+    for (let r = 0; r < rows.length; r++) {
+      for (let c = 0; c < rows[r].length; c++) {
+        const addr = XLSX.utils.encode_cell({ r, c });
+        if (!ws[addr]) ws[addr] = { v: rows[r][c] || '', t: 's' };
+        const st = styles[r] && styles[r][c];
+        if (st) {
+          ws[addr].s = {};
+          if (st.bg) ws[addr].s.fill = { fgColor: { rgb: st.bg } };
+          if (st.bold || st.fg) {
+            ws[addr].s.font = {};
+            if (st.bold) ws[addr].s.font.bold = true;
+            if (st.fg) ws[addr].s.font.color = { rgb: st.fg };
+          }
+        }
+      }
+    }
+
+    // Set column widths
+    ws['!cols'] = [{ wch: 16 }];
+    for (let i = 0; i < (rows[0] ? rows[0].length - 1 : 0); i++) {
+      ws['!cols'].push({ wch: 14 });
+    }
+
     const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, ws, 'State Transition');
+    XLSX.utils.book_append_sheet(wb, ws, 'Transition');
     XLSX.writeFile(wb, 'stablestate.xlsx');
   }
   if (typeof XLSX !== 'undefined') { doExport(); return; }

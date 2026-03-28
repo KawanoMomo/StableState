@@ -98,6 +98,7 @@ body { background: var(--bg); color: var(--text); font-family: 'IBM Plex Sans','
 #state-table td { background:var(--editor); color:var(--text); }
 #state-table td:first-child { position:sticky; left:0; z-index:1; background:var(--panel); }
 #state-table th:first-child { position:sticky; left:0; z-index:3; background:var(--panel); }
+#state-table .th-cont { box-shadow:inset -1px 0 0 0 var(--border), inset 0 -1px 0 0 var(--border); }
 #state-table .ev-header td { background:#2a2233; box-shadow:inset -1px 0 0 0 var(--border), inset 0 -1px 0 0 var(--border); }
 #state-table .ev-row td:first-child { background:var(--panel); }
 #table-empty { display:flex; align-items:center; justify-content:center; height:100%; color:var(--muted); font-size:13px; }
@@ -1928,20 +1929,59 @@ function renderTable(parsed) {
     return Math.max(80, charCount * 8);
   }
 
-  // ─── Build HTML ───
-  let thtml = '<thead>';
+  // ─── Build flat header grid (no rowspan — each row has real cells) ───
+  // Expand rowspan cells into each row they cover, marking duplicates.
+  // This avoids the browser bug where sticky + rowspan conflicts.
+  const flatGrid = [];
   for (let r = 0; r < totalHeaderRows; r++) {
-    thtml += '<tr>';
-    if (r === 0) {
-      thtml += `<th rowspan="${totalHeaderRows}"></th>`;
-    }
+    flatGrid.push(new Array(numCols).fill(null));
+  }
+  // Fill from headerCells: expand rowspan/colspan into flat cells
+  for (let r = 0; r < totalHeaderRows; r++) {
     for (let ci = 0; ci < numCols; ci++) {
       const cell = headerCells[r][ci];
       if (!cell || cell === 'covered') continue;
-      const isLeaf = cell.rowspan >= totalHeaderRows - r;
-      const mw = isLeaf ? calcMinWidth(cell.label) : 0;
+      for (let dr = 0; dr < cell.rowspan; dr++) {
+        for (let dc = 0; dc < cell.colspan; dc++) {
+          flatGrid[r + dr][ci + dc] = {
+            label: cell.label,
+            stateId: cell.stateId,
+            origRow: r,
+            origCol: ci,
+            isOrigin: dr === 0 && dc === 0,
+            colspan: cell.colspan,
+            rowspan: cell.rowspan,
+          };
+        }
+      }
+    }
+  }
+
+  // ─── Build HTML — each row emits real cells, colspan only (no rowspan) ───
+  let thtml = '<thead>';
+  for (let r = 0; r < totalHeaderRows; r++) {
+    thtml += '<tr>';
+    thtml += '<th></th>'; // left corner cell per row
+    let ci = 0;
+    while (ci < numCols) {
+      const fc = flatGrid[r][ci];
+      if (!fc) { thtml += '<th></th>'; ci++; continue; }
+      // Merge consecutive cells in this row with same stateId
+      let span = 1;
+      while (ci + span < numCols) {
+        const next = flatGrid[r][ci + span];
+        if (next && next.stateId === fc.stateId) span++;
+        else break;
+      }
+      // Show label only on the first row this cell appears (origRow)
+      const showLabel = fc.origRow === r;
+      const isLeaf = fc.rowspan >= totalHeaderRows - fc.origRow;
+      const mw = isLeaf ? calcMinWidth(fc.label) : 0;
+      // Remove top box-shadow for continuation rows (visually merge vertically)
+      const contClass = !showLabel ? ' class="th-cont"' : '';
       const style = mw > 0 ? ` style="min-width:${mw}px"` : '';
-      thtml += `<th colspan="${cell.colspan}" rowspan="${cell.rowspan}"${style}>${esc(cell.label)}</th>`;
+      thtml += `<th colspan="${span}"${contClass}${style}>${showLabel ? esc(fc.label) : ''}</th>`;
+      ci += span;
     }
     thtml += '</tr>';
   }
@@ -2014,29 +2054,16 @@ function renderTable(parsed) {
   thtml += '</tbody>';
   tableEl.innerHTML = thtml;
 
-  // ─── Apply dynamic sticky top offsets based on actual row heights ───
+  // ─── Apply dynamic sticky top offsets ───
   requestAnimationFrame(function() {
     const thead = tableEl.querySelector('thead');
     if (!thead) return;
     const rows = thead.querySelectorAll('tr');
     let cumTop = 0;
-    const rowTops = [];
     rows.forEach(function(tr) {
-      rowTops.push(cumTop);
-      cumTop += tr.getBoundingClientRect().height;
-    });
-    // Apply top values and z-index based on rowspan
-    rows.forEach(function(tr, ri) {
       const ths = tr.querySelectorAll('th');
-      ths.forEach(function(th) {
-        th.style.top = rowTops[ri] + 'px';
-        // Cells with rowspan spanning multiple rows need higher z-index
-        // so they stay above later-row sticky cells
-        const rs = parseInt(th.getAttribute('rowspan')) || 1;
-        if (rs > 1) {
-          th.style.zIndex = 4;
-        }
-      });
+      ths.forEach(function(th) { th.style.top = cumTop + 'px'; });
+      cumTop += tr.getBoundingClientRect().height;
     });
   });
 

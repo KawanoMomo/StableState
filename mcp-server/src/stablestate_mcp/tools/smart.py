@@ -181,10 +181,22 @@ def ss_validate_layout() -> str:
         label_positions.append({"x": mx, "y": my, "text": label_text,
                                 "tid": f"{t.from_id}->{t.to_id}"})
 
+    # Build bidirectional pair set (A->B + B->A: renderer uses alternate route, skip)
+    trans_pairs = {(t.from_id, t.to_id) for t in d.transitions}
+    bidir_pairs = set()
+    for t in d.transitions:
+        if (t.to_id, t.from_id) in trans_pairs:
+            bidir_pairs.add(tuple(sorted([t.from_id, t.to_id])))
+
     # Check pairwise distances (in grid units, threshold ~2 grids)
     for i in range(len(label_positions)):
         for j in range(i + 1, len(label_positions)):
             a, b = label_positions[i], label_positions[j]
+            # Skip bidirectional pairs (renderer routes them differently)
+            a_ids = tuple(sorted(a["tid"].split("->")))
+            b_ids = tuple(sorted(b["tid"].split("->")))
+            if a_ids == b_ids and a_ids in bidir_pairs:
+                continue
             dist = ((a["x"] - b["x"]) ** 2 + (a["y"] - b["y"]) ** 2) ** 0.5
             if dist < 2.0:
                 issues.append(

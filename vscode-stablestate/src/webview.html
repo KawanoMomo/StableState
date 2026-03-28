@@ -104,7 +104,7 @@ input[type=number]::-webkit-inner-spin-button { -webkit-appearance:none; }
     <button class="tb" id="tool-connect" onclick="setTool('connect')">&#8599;Connect</button>
     <div class="sep"></div>
     <button class="tb" id="btn-actions" onclick="toggleActions()">Actions</button>
-    <button class="tb active" id="btn-annotations" onclick="toggleAnnotations()">Notes</button>
+    <button class="tb" id="btn-annotations" onclick="toggleAnnotations()">Notes</button>
     <div class="sep"></div>
     <button class="tb tb-accent" onclick="doExportSVG()">SVG</button>
     <button class="tb tb-accent" onclick="doExportPNG()">PNG</button>
@@ -173,7 +173,7 @@ var showActions = false;
 var selection = new Set();
 function isSelected(id) { return selection.has(id); }
 
-var showAnnotations = true;
+var annotationMode = false;
 var dragState = null;
 var resizeState = null;
 var undoHistory = [];
@@ -208,6 +208,35 @@ window.addEventListener('message', function(e) {
   }
   if (msg.type === 'exportSVG') { doExportSVGToHost(); }
   if (msg.type === 'exportPNG') { doExportPNGToHost(); }
+  // ADR-001: Extension-forwarded shortcut commands
+  if (msg.type === 'undo') { undo(); }
+  if (msg.type === 'redo') { redo(); }
+  if (msg.type === 'copy') { copySelection(); }
+  if (msg.type === 'cut') { copySelection(); deleteSelected(); }
+  if (msg.type === 'paste') { pasteSelection(); }
+  if (msg.type === 'selectAll') {
+    if (!parsed) return;
+    selection = new Set(parsed.states.map(function(s){return s.id;}).concat(parsed.pseudoStates.map(function(p){return p.id;})));
+    refresh();
+  }
+});
+
+// ADR-001: Clipboard event listeners for Electron/native interception
+document.addEventListener('copy', function(e) {
+  if (document.activeElement && (document.activeElement.tagName === 'INPUT' || document.activeElement.tagName === 'SELECT' || document.activeElement.tagName === 'TEXTAREA')) return;
+  e.preventDefault();
+  copySelection();
+});
+document.addEventListener('cut', function(e) {
+  if (document.activeElement && (document.activeElement.tagName === 'INPUT' || document.activeElement.tagName === 'SELECT' || document.activeElement.tagName === 'TEXTAREA')) return;
+  e.preventDefault();
+  copySelection();
+  deleteSelected();
+});
+document.addEventListener('paste', function(e) {
+  if (document.activeElement && (document.activeElement.tagName === 'INPUT' || document.activeElement.tagName === 'SELECT' || document.activeElement.tagName === 'TEXTAREA')) return;
+  e.preventDefault();
+  pasteSelection();
 });
 
 // ===============================================
@@ -848,20 +877,6 @@ function renderSVG(parsed) {
     }
   }
 
-  // Notes
-  if (showAnnotations && parsed.notes.length > 0) {
-    for (var ni = 0; ni < parsed.notes.length; ni++) {
-      var n = parsed.notes[ni];
-      var pos = getAbsolutePos(n, parsed);
-      var pw = n.w * g, ph = n.h * g;
-      var fill = n.color || '#FEF3C7';
-      var border = n.textColor || '#FCD34D';
-      var sel = isSelected(n.id);
-      svg += '<rect x="' + pos.x + '" y="' + pos.y + '" width="' + pw + '" height="' + ph + '" rx="6" ry="6" fill="' + esc(fill) + '" stroke="' + esc(sel ? 'white' : border) + '" stroke-width="' + (sel ? 2.5 : 1.5) + '" ' + shadow + '/>';
-      svg += '<text x="' + (pos.x + pw/2) + '" y="' + (pos.y + ph/2 + 4) + '" text-anchor="middle" font-family="' + sans + '" font-size="11" font-weight="500" fill="#1a1a2e">' + esc(n.label) + '</text>';
-    }
-  }
-
   // Arrow marker
   svg += '<defs><marker id="arrowHead" markerWidth="10" markerHeight="8" refX="10" refY="4" orient="auto">';
   svg += '<path d="M0,0 L10,4 L0,8 Z" fill="#89DDFF"/></marker></defs>';
@@ -883,14 +898,25 @@ function renderSVG(parsed) {
   }
 
   function computePortSide(srcBox, tgtBox) {
-    var dx = (tgtBox.x + tgtBox.w/2) - (srcBox.x + srcBox.w/2);
-    var dy = (tgtBox.y + tgtBox.h/2) - (srcBox.y + srcBox.h/2);
-    if (Math.abs(dx) > Math.abs(dy)) return { srcSide: dx > 0 ? 'right' : 'left', tgtSide: dx > 0 ? 'left' : 'right' };
-    return { srcSide: dy > 0 ? 'bottom' : 'top', tgtSide: dy > 0 ? 'top' : 'bottom' };
+    var gapR = tgtBox.x - (srcBox.x + srcBox.w);
+    var gapL = srcBox.x - (tgtBox.x + tgtBox.w);
+    var gapB = tgtBox.y - (srcBox.y + srcBox.h);
+    var gapT = srcBox.y - (tgtBox.y + tgtBox.h);
+    var hBest = Math.max(gapR, gapL);
+    var vBest = Math.max(gapB, gapT);
+    if (vBest >= hBest) {
+      return gapB >= gapT
+        ? { srcSide: 'bottom', tgtSide: 'top' }
+        : { srcSide: 'top', tgtSide: 'bottom' };
+    } else {
+      return gapR >= gapL
+        ? { srcSide: 'right', tgtSide: 'left' }
+        : { srcSide: 'left', tgtSide: 'right' };
+    }
   }
 
   function getPortPoint(box, side, portIndex, portCount) {
-    var pad = 0.2;
+    var pad = portCount <= 2 ? 0.4 : portCount <= 4 ? 0.25 : 0.15;
     var t = portCount <= 1 ? 0.5 : pad + (1 - 2 * pad) * portIndex / (portCount - 1);
     switch (side) {
       case 'top': return { x: box.x + box.w * t, y: box.y };
@@ -1017,7 +1043,7 @@ function renderSVG(parsed) {
   }
 
   // Note connections
-  if (showAnnotations) {
+  if (annotationMode) {
     for (var nci = 0; nci < parsed.noteConnections.length; nci++) {
       var nc = parsed.noteConnections[nci];
       var noteEl = parsed.noteMap[nc.noteId]; if (!noteEl) continue;
@@ -1030,6 +1056,35 @@ function renderSVG(parsed) {
       var route = buildRoute(fromPt, toPt, sides.srcSide, sides.tgtSide);
       svg += '<polyline points="' + route.map(function(p) { return p.x+','+p.y; }).join(' ') + '" fill="none" stroke="#FCD34D" stroke-width="1" stroke-dasharray="6,3"/>';
     }
+  }
+
+  // Notes (rendered ABOVE transitions and note connections)
+  if (annotationMode && parsed.notes.length > 0) {
+    for (var ni = 0; ni < parsed.notes.length; ni++) {
+      var n = parsed.notes[ni];
+      var pos = getAbsolutePos(n, parsed);
+      var pw = n.w * g, ph = n.h * g;
+      var fill = n.color || '#FEF3C7';
+      var borderClr = n.borderColor || '#D97706';
+      var textClr = n.textColor || '#92400E';
+      var sel = isSelected(n.id);
+      var strokeClr = sel ? '#F59E0B' : borderClr;
+      var strokeW = sel ? 2.5 : 1;
+      svg += '<rect x="' + pos.x + '" y="' + pos.y + '" width="' + pw + '" height="' + ph + '" rx="0" ry="0" fill="' + esc(fill) + '" stroke="' + esc(strokeClr) + '" stroke-width="' + strokeW + '" stroke-dasharray="4,2" style="filter:drop-shadow(0 1px 2px rgba(0,0,0,0.08))"/>';
+      var lines = n.label.split('\\n');
+      for (var li = 0; li < lines.length; li++) {
+        var ty = pos.y + 6 + li * 14 + 10;
+        svg += '<text x="' + (pos.x + 6) + '" y="' + ty + '" text-anchor="start" font-family="' + sans + '" font-size="11" font-weight="400" fill="' + esc(textClr) + '" style="pointer-events:none">' + esc(lines[li]) + '</text>';
+      }
+    }
+  }
+
+  // Annotation mode indicator banner
+  if (annotationMode) {
+    svg += '<g id="annotation-banner">';
+    svg += '<rect x="0" y="0" width="' + canvas.width + '" height="24" fill="#F59E0B" fill-opacity="0.15"/>';
+    svg += '<text x="' + (canvas.width/2) + '" y="16" text-anchor="middle" font-family="' + sans + '" font-size="11" font-weight="600" fill="#F59E0B">ANNOTATION MODE — states are locked, press N to exit</text>';
+    svg += '</g>';
   }
 
   // Resize handles
@@ -1214,7 +1269,13 @@ function renderProps() {
   var selArr = Array.from(selection);
 
   if (selArr.length === 0) {
-    html += '<div class="prop-section"><div class="prop-label">Selected</div><div class="prop-sub">Select an element to edit</div></div>';
+    if (annotationMode) {
+      html += '<div class="prop-section"><div class="prop-label">Annotation Mode</div>';
+      html += '<div class="prop-sub">Click notes to select. States are locked.</div>';
+      html += '</div>';
+    } else {
+      html += '<div class="prop-section"><div class="prop-label">Selected</div><div class="prop-sub">Select an element to edit</div></div>';
+    }
   } else if (selArr.length === 1) {
     var id = selArr[0];
     if (parsed.stateMap[id]) {
@@ -1255,13 +1316,22 @@ function renderProps() {
       html += '<div class="prop-row"><input type="number" class="prop-input" id="pp-w" value="' + grp.w + '" style="width:50%"><input type="number" class="prop-input" id="pp-h" value="' + grp.h + '" style="width:50%"></div></div>';
     } else if (parsed.noteMap[id]) {
       var n = parsed.noteMap[id];
-      html += '<div class="prop-section"><div class="prop-label">Note</div>';
-      html += '<div class="prop-row"><input class="prop-input" value="' + esc(n.id) + '" readonly style="opacity:0.6"></div>';
-      html += '<div class="prop-row"><input class="prop-input" id="pp-label" value="' + esc(n.label) + '" placeholder="Label"></div></div>';
+      html += '<div class="prop-section"><div class="prop-label" style="color:#F59E0B">NOTE</div>';
+      html += '<div class="prop-row"><input class="prop-input" value="' + esc(n.id) + '" readonly style="opacity:0.6"></div></div>';
+      html += '<div class="prop-section"><div class="prop-label">テキスト</div>';
+      html += '<textarea class="prop-input" id="pp-note-text" style="height:80px;resize:vertical;font-size:11px;line-height:1.4">' + esc(n.label).replace(/\\n/g, '\n') + '</textarea></div>';
       html += '<div class="prop-section"><div class="prop-label">Position</div>';
       html += '<div class="prop-row"><input type="number" class="prop-input" id="pp-x" value="' + n.x + '" style="width:50%"><input type="number" class="prop-input" id="pp-y" value="' + n.y + '" style="width:50%"></div></div>';
       html += '<div class="prop-section"><div class="prop-label">Size</div>';
       html += '<div class="prop-row"><input type="number" class="prop-input" id="pp-w" value="' + n.w + '" style="width:50%"><input type="number" class="prop-input" id="pp-h" value="' + n.h + '" style="width:50%"></div></div>';
+      var noteColors = ['#FEF3C7','#FEE2E2','#DBEAFE','#DCFCE7','#F5F3FF','#FCE7F3','#CFFAFE','#FFF7ED','#F1F5F9','#FEF9C3','#ECFDF5','#F8FAFC'];
+      html += '<div class="prop-section"><div class="prop-label">Color</div><div class="color-grid">';
+      for (var ci = 0; ci < noteColors.length; ci++) { html += '<div class="color-dot' + (n.color === noteColors[ci] ? ' active' : '') + '" style="background:' + noteColors[ci] + '" data-prop="color" data-val="' + noteColors[ci] + '"></div>'; }
+      html += '</div></div>';
+      var noteTextColors = ['#FFFFFF','#000000','#1E293B','#F8FAFC','#92400E','#991B1B','#1E40AF','#166534'];
+      html += '<div class="prop-section"><div class="prop-label">テキスト色</div><div class="color-grid">';
+      for (var ti2 = 0; ti2 < noteTextColors.length; ti2++) { html += '<div class="color-dot' + (n.textColor === noteTextColors[ti2] ? ' active' : '') + '" style="background:' + noteTextColors[ti2] + '" data-prop="text" data-val="' + noteTextColors[ti2] + '"></div>'; }
+      html += '</div></div>';
     } else {
       html += '<div class="prop-section"><div class="prop-label">Selected</div><div class="prop-sub">' + esc(id) + ' (not found)</div></div>';
     }
@@ -1270,6 +1340,13 @@ function renderProps() {
     html += '<button class="tb tb-accent" style="margin-top:8px;width:100%" onclick="connectSelected()">Connect</button></div>';
   } else {
     html += '<div class="prop-section"><div class="prop-label">Selected: ' + selArr.length + '</div></div>';
+  }
+
+  // Annotation mode: always show Add Note button
+  if (annotationMode) {
+    html += '<div class="prop-section" style="margin-top:12px;border-top:1px solid var(--border);padding-top:8px;">';
+    html += '<button class="tb tb-accent" style="width:100%" onclick="addNewElement(\'note\')">+ Add Note</button>';
+    html += '</div>';
   }
 
   // Config
@@ -1297,15 +1374,18 @@ function renderProps() {
 
   function propChange(inputId, handler) { var el = document.getElementById(inputId); if (el) el.addEventListener('change', handler); }
 
-  propChange('pp-label', function() { var info = getElTypeAndId(); if (!info) return; pushHistory(); var d = getDsl(); d = updateLabel(info.type, info.id, this.value, d); setDsl(d); refresh(); });
+  propChange('pp-label', function() { var info = getElTypeAndId(); if (!info) return; pushHistory(); var d = getDsl(); d = updateLabel(info.type, info.id, this.value, d); setDsl(d); refreshView(); });
+
+  var noteTextEl = document.getElementById('pp-note-text');
+  if (noteTextEl) noteTextEl.addEventListener('input', function() { var info = getElTypeAndId(); if (!info) return; pushHistory(); var d = getDsl(); d = updateLabel(info.type, info.id, this.value.replace(/\n/g, '\\n'), d); setDsl(d); refreshView(); });
 
   var ppx = document.getElementById('pp-x'), ppy = document.getElementById('pp-y');
-  function handlePosChange() { var info = getElTypeAndId(); if (!info) return; pushHistory(); var d = getDsl(); d = updatePos(info.type, info.id, parseFloat(document.getElementById('pp-x').value)||0, parseFloat(document.getElementById('pp-y').value)||0, d); setDsl(d); refresh(); }
+  function handlePosChange() { var info = getElTypeAndId(); if (!info) return; pushHistory(); var d = getDsl(); d = updatePos(info.type, info.id, parseFloat(document.getElementById('pp-x').value)||0, parseFloat(document.getElementById('pp-y').value)||0, d); setDsl(d); refreshView(); }
   if (ppx) ppx.addEventListener('change', handlePosChange);
   if (ppy) ppy.addEventListener('change', handlePosChange);
 
   var ppw = document.getElementById('pp-w'), pph = document.getElementById('pp-h');
-  function handleSizeChange() { var info = getElTypeAndId(); if (!info) return; pushHistory(); var d = getDsl(); d = updateSize(info.type, info.id, parseFloat(document.getElementById('pp-w').value)||1, parseFloat(document.getElementById('pp-h').value)||1, d); setDsl(d); refresh(); }
+  function handleSizeChange() { var info = getElTypeAndId(); if (!info) return; pushHistory(); var d = getDsl(); d = updateSize(info.type, info.id, parseFloat(document.getElementById('pp-w').value)||1, parseFloat(document.getElementById('pp-h').value)||1, d); setDsl(d); refreshView(); }
   if (ppw) ppw.addEventListener('change', handleSizeChange);
   if (pph) pph.addEventListener('change', handleSizeChange);
 
@@ -1314,7 +1394,7 @@ function renderProps() {
       var info = getElTypeAndId(); if (!info) return; pushHistory(); var d = getDsl(); var val = this.value.trim();
       if (val) d = updateProp(info.type, info.id, field, val, d);
       else { var re = new RegExp('(^\\s*' + info.type + '\\s+' + info.id + '\\s+.*)\\b' + field + '=\\S+', 'm'); d = d.replace(re, '$1'); }
-      setDsl(d); refresh();
+      setDsl(d); refreshView();
     });
   });
 
@@ -1322,10 +1402,10 @@ function renderProps() {
     dot.addEventListener('click', function() { var info = getElTypeAndId(); if (!info) return; pushHistory(); var d = getDsl(); d = updateProp(info.type, info.id, this.dataset.prop, this.dataset.val, d); setDsl(d); refresh(); });
   });
 
-  propChange('pp-border', function() { var info = getElTypeAndId(); if (!info) return; pushHistory(); var d = getDsl(); var val = this.value.trim(); if (val) d = updateProp(info.type, info.id, 'border', val, d); else { var re = new RegExp('(^\\s*' + info.type + '\\s+' + info.id + '\\s+.*)\\bborder=\\S+', 'm'); d = d.replace(re, '$1'); } setDsl(d); refresh(); });
-  propChange('pp-text', function() { var info = getElTypeAndId(); if (!info) return; pushHistory(); var d = getDsl(); var val = this.value.trim(); if (val) d = updateProp(info.type, info.id, 'text', val, d); else { var re = new RegExp('(^\\s*' + info.type + '\\s+' + info.id + '\\s+.*)\\btext=\\S+', 'm'); d = d.replace(re, '$1'); } setDsl(d); refresh(); });
-  propChange('pp-style', function() { var info = getElTypeAndId(); if (!info) return; pushHistory(); var d = getDsl(); var val = this.value; if (val) d = updateProp(info.type, info.id, 'style', val, d); else { var re = new RegExp('(^\\s*' + info.type + '\\s+' + info.id + '\\s+.*)\\bstyle=\\S+', 'm'); d = d.replace(re, '$1'); } setDsl(d); refresh(); });
-  propChange('pp-round', function() { var info = getElTypeAndId(); if (!info) return; pushHistory(); var d = getDsl(); var val = this.value.trim(); if (val) d = updateProp(info.type, info.id, 'round', val, d); else { var re = new RegExp('(^\\s*' + info.type + '\\s+' + info.id + '\\s+.*)\\bround=\\S+', 'm'); d = d.replace(re, '$1'); } setDsl(d); refresh(); });
+  propChange('pp-border', function() { var info = getElTypeAndId(); if (!info) return; pushHistory(); var d = getDsl(); var val = this.value.trim(); if (val) d = updateProp(info.type, info.id, 'border', val, d); else { var re = new RegExp('(^\\s*' + info.type + '\\s+' + info.id + '\\s+.*)\\bborder=\\S+', 'm'); d = d.replace(re, '$1'); } setDsl(d); refreshView(); });
+  propChange('pp-text', function() { var info = getElTypeAndId(); if (!info) return; pushHistory(); var d = getDsl(); var val = this.value.trim(); if (val) d = updateProp(info.type, info.id, 'text', val, d); else { var re = new RegExp('(^\\s*' + info.type + '\\s+' + info.id + '\\s+.*)\\btext=\\S+', 'm'); d = d.replace(re, '$1'); } setDsl(d); refreshView(); });
+  propChange('pp-style', function() { var info = getElTypeAndId(); if (!info) return; pushHistory(); var d = getDsl(); var val = this.value; if (val) d = updateProp(info.type, info.id, 'style', val, d); else { var re = new RegExp('(^\\s*' + info.type + '\\s+' + info.id + '\\s+.*)\\bstyle=\\S+', 'm'); d = d.replace(re, '$1'); } setDsl(d); refreshView(); });
+  propChange('pp-round', function() { var info = getElTypeAndId(); if (!info) return; pushHistory(); var d = getDsl(); var val = this.value.trim(); if (val) d = updateProp(info.type, info.id, 'round', val, d); else { var re = new RegExp('(^\\s*' + info.type + '\\s+' + info.id + '\\s+.*)\\bround=\\S+', 'm'); d = d.replace(re, '$1'); } setDsl(d); refreshView(); });
 
   propChange('pp-cfg-transition', function() { pushHistory(); var d = getDsl(); var val = this.value; if (/^@config\s+transition=/m.test(d)) d = d.replace(/^(@config\s+transition=)\S+/m, '$1' + val); else d = d.replace(/^(@canvas\s+.*)$/m, '$1\n@config transition=' + val); setDsl(d); refresh(); });
 
@@ -1342,17 +1422,24 @@ function renderProps() {
 function doExportSVG() { doExportSVGToHost(); }
 function doExportPNG() { doExportPNGToHost(); }
 
-function doExportSVGToHost() {
+function getExportSVGString() {
   var svgEl = document.querySelector('#svg-wrap svg');
-  if (!svgEl) return;
-  var svgStr = new XMLSerializer().serializeToString(svgEl);
+  if (!svgEl) return null;
+  var clone = svgEl.cloneNode(true);
+  var banner = clone.querySelector('#annotation-banner');
+  if (banner) banner.parentNode.removeChild(banner);
+  return new XMLSerializer().serializeToString(clone);
+}
+
+function doExportSVGToHost() {
+  var svgStr = getExportSVGString();
+  if (!svgStr) return;
   vscodeApi.postMessage({ type: 'exportSVG', data: btoa(unescape(encodeURIComponent(svgStr))) });
 }
 
 function doExportPNGToHost() {
-  var svgEl = document.querySelector('#svg-wrap svg');
-  if (!svgEl || !parsed) return;
-  var svgStr = new XMLSerializer().serializeToString(svgEl);
+  var svgStr = getExportSVGString();
+  if (!svgStr || !parsed) return;
   var canvas = document.createElement('canvas');
   canvas.width = parsed.canvas.width; canvas.height = parsed.canvas.height;
   var ctx = canvas.getContext('2d');
@@ -1377,6 +1464,16 @@ function refresh() {
   applyZoom();
 }
 
+function refreshView() {
+  parsed = parseDSL(dsl);
+  validate(parsed);
+  updateErrorBar(parsed);
+  document.getElementById('svg-wrap').innerHTML = renderSVG(parsed);
+  renderTable(parsed);
+  updateStatus();
+  applyZoom();
+}
+
 function updateStatus() {
   if (!parsed) return;
   document.getElementById('status-states').textContent = 'States: ' + parsed.states.length;
@@ -1395,21 +1492,25 @@ function svgCoords(e) {
 function hitTest(px, py) {
   if (!parsed) return null;
   var g = parsed.canvas.grid;
-  for (var i = parsed.states.length - 1; i >= 0; i--) {
-    var st = parsed.states[i]; var abs = getAbsolutePos(st, parsed);
-    if (px >= abs.x && px <= abs.x + st.w*g && py >= abs.y && py <= abs.y + st.h*g) return { id: st.id, type: 'state', element: st };
+  if (!annotationMode) {
+    for (var i = parsed.states.length - 1; i >= 0; i--) {
+      var st = parsed.states[i]; var abs = getAbsolutePos(st, parsed);
+      if (px >= abs.x && px <= abs.x + st.w*g && py >= abs.y && py <= abs.y + st.h*g) return { id: st.id, type: 'state', element: st };
+    }
+    for (var i = 0; i < parsed.pseudoStates.length; i++) {
+      var ps = parsed.pseudoStates[i]; var abs = getAbsolutePos(ps, parsed);
+      if (Math.hypot(px - abs.x, py - abs.y) < 15) return { id: ps.id, type: ps.type, element: ps };
+    }
+    for (var i = parsed.groups.length - 1; i >= 0; i--) {
+      var grp = parsed.groups[i]; var x = grp.x*g, y = grp.y*g;
+      if (px >= x && px <= x + grp.w*g && py >= y && py <= y + grp.h*g) return { id: grp.id, type: 'group', element: grp };
+    }
   }
-  for (var i = 0; i < parsed.pseudoStates.length; i++) {
-    var ps = parsed.pseudoStates[i]; var abs = getAbsolutePos(ps, parsed);
-    if (Math.hypot(px - abs.x, py - abs.y) < 15) return { id: ps.id, type: ps.type, element: ps };
-  }
-  for (var i = parsed.groups.length - 1; i >= 0; i--) {
-    var grp = parsed.groups[i]; var x = grp.x*g, y = grp.y*g;
-    if (px >= x && px <= x + grp.w*g && py >= y && py <= y + grp.h*g) return { id: grp.id, type: 'group', element: grp };
-  }
-  for (var i = 0; i < parsed.notes.length; i++) {
-    var n = parsed.notes[i]; var x = n.x*g, y = n.y*g;
-    if (px >= x && px <= x + n.w*g && py >= y && py <= y + n.h*g) return { id: n.id, type: 'note', element: n };
+  if (annotationMode) {
+    for (var i = 0; i < parsed.notes.length; i++) {
+      var n = parsed.notes[i]; var x = n.x*g, y = n.y*g;
+      if (px >= x && px <= x + n.w*g && py >= y && py <= y + n.h*g) return { id: n.id, type: 'note', element: n };
+    }
   }
   return null;
 }
@@ -1417,6 +1518,8 @@ function hitTest(px, py) {
 function hitTestHandle(px, py) {
   if (!parsed || selection.size !== 1) return null;
   var selId = Array.from(selection)[0];
+  if (annotationMode && !parsed.noteMap[selId]) return null;
+  if (!annotationMode && parsed.noteMap[selId]) return null;
   var selEl = parsed.stateMap[selId] || parsed.groupMap[selId] || parsed.noteMap[selId];
   if (!selEl || selEl.w == null) return null;
   var g = parsed.canvas.grid; var pos = getAbsolutePos(selEl, parsed);
@@ -1605,7 +1708,7 @@ function pasteSelection() {
   var d = getDsl(); d = d + '\n' + pastedLines.join('\n'); setDsl(d); refresh();
 }
 
-var addCounter = { state: 0, group: 0, initial: 0, final: 0 };
+var addCounter = { state: 0, group: 0, initial: 0, final: 0, note: 0 };
 function addNewElement(type) {
   pushHistory(); var d = getDsl(); var line = '';
   switch (type) {
@@ -1613,14 +1716,22 @@ function addNewElement(type) {
     case 'group': addCounter.group++; line = 'group grp_' + addCounter.group + ' "New Group" at 8,8 size 20x12'; break;
     case 'initial': addCounter.initial++; line = 'initial ini_' + addCounter.initial + ' at 5,5'; break;
     case 'final': addCounter.final++; line = 'final fin_' + addCounter.final + ' at 30,5'; break;
+    case 'note': addCounter.note++; line = 'note note_' + addCounter.note + ' "Annotation" at 5,5 size 8x2 color=#FEF3C7'; break;
   }
-  if (line) { d = d + '\n' + line; setDsl(d); refresh(); }
+  if (line) { d = d + '\n' + line; setDsl(d); if (type === 'note' && !annotationMode) { annotationMode = true; var btn = document.getElementById('btn-annotations'); if (btn) { btn.classList.add('active'); btn.textContent = 'Notes (Edit)'; } } refresh(); }
 }
 
 function toggleAnnotations() {
-  showAnnotations = !showAnnotations;
+  annotationMode = !annotationMode;
+  if (annotationMode) {
+    var noteIds = new Set(parsed ? parsed.notes.map(function(n){return n.id;}) : []);
+    selection = new Set(Array.from(selection).filter(function(id){return noteIds.has(id);}));
+  } else {
+    var noteIds2 = new Set(parsed ? parsed.notes.map(function(n){return n.id;}) : []);
+    selection = new Set(Array.from(selection).filter(function(id){return !noteIds2.has(id);}));
+  }
   var btn = document.getElementById('btn-annotations');
-  if (btn) btn.classList.toggle('active', showAnnotations);
+  if (btn) { btn.classList.toggle('active', annotationMode); btn.textContent = annotationMode ? 'Notes (Edit)' : 'Notes'; }
   refresh();
 }
 
@@ -1628,14 +1739,33 @@ function toggleAnnotations() {
 // Keyboard Shortcuts
 // ===============================================
 document.addEventListener('keydown', function(e) {
-  if (document.activeElement && (document.activeElement.tagName === 'INPUT' || document.activeElement.tagName === 'SELECT')) return;
+  var ae = document.activeElement;
+  if (ae && (ae.tagName === 'INPUT' || ae.tagName === 'SELECT' || ae.tagName === 'TEXTAREA')) {
+    if (!e.ctrlKey) return;
+  }
   if (e.ctrlKey && e.key === 'z') { e.preventDefault(); undo(); }
   if (e.ctrlKey && e.key === 'y') { e.preventDefault(); redo(); }
   if (e.key === 'Delete' || e.key === 'Backspace') { e.preventDefault(); deleteSelected(); }
   if (e.key === 'n' || e.key === 'N') { toggleAnnotations(); }
-  if (e.ctrlKey && e.key === 'a') { e.preventDefault(); if (!parsed) return; selection = new Set(parsed.states.concat(parsed.pseudoStates, parsed.groups, parsed.notes).map(function(el) { return el.id; })); refresh(); }
+  if (e.ctrlKey && e.key === 'a') { e.preventDefault(); if (!parsed) return; if (annotationMode) { selection = new Set(parsed.notes.map(function(el){return el.id;})); } else { selection = new Set(parsed.states.concat(parsed.pseudoStates, parsed.groups).map(function(el){return el.id;})); } refresh(); }
   if (e.ctrlKey && e.key === 'c') { copySelection(); }
   if (e.ctrlKey && e.key === 'v') { pasteSelection(); }
+  if (['ArrowUp','ArrowDown','ArrowLeft','ArrowRight'].indexOf(e.key) >= 0 && selection.size > 0) {
+    e.preventDefault();
+    if (!parsed) return;
+    var dx = e.key === 'ArrowRight' ? 1 : e.key === 'ArrowLeft' ? -1 : 0;
+    var dy = e.key === 'ArrowDown' ? 1 : e.key === 'ArrowUp' ? -1 : 0;
+    pushHistory();
+    var d = getDsl();
+    selection.forEach(function(id) {
+      var st = parsed.stateMap[id] || parsed.pseudoMap[id] || parsed.groupMap[id] || parsed.noteMap[id];
+      if (!st) return;
+      var type = parsed.stateMap[id] ? 'state' : parsed.pseudoMap[id] ? parsed.pseudoMap[id].type : parsed.groupMap[id] ? 'group' : 'note';
+      d = updatePos(type, id, Math.max(0, (st.x||0)+dx), Math.max(0, (st.y||0)+dy), d);
+    });
+    setDsl(d);
+    refresh();
+  }
 });
 
 // ===============================================

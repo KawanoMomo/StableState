@@ -907,6 +907,115 @@ runTest('test_addTransition_with_kind', test_addTransition_with_kind);
 runTest('test_updateTransition_guard', test_updateTransition_guard);
 runTest('test_updateTransition_action', test_updateTransition_action);
 
+// ═══════════════════════════════════════════════
+// hitTest function (copied from stablestate.html) + dependencies
+// ═══════════════════════════════════════════════
+let annotationMode = false;
+
+function getAbsolutePos(element, parsed) {
+  let ox = 0, oy = 0;
+  let pid = element.parent;
+  while (pid) {
+    const p = parsed.stateMap[pid];
+    if (p) { ox += p.x; oy += p.y; pid = p.parent; }
+    else break;
+  }
+  return { x: (element.x + ox) * parsed.canvas.grid, y: (element.y + oy) * parsed.canvas.grid };
+}
+
+function hitTest(px, py, parsed) {
+  if (!parsed) return null;
+  const g = parsed.canvas.grid;
+
+  if (!annotationMode) {
+    for (let i = parsed.states.length - 1; i >= 0; i--) {
+      const st = parsed.states[i];
+      const abs = getAbsolutePos(st, parsed);
+      if (px >= abs.x && px <= abs.x + st.w * g && py >= abs.y && py <= abs.y + st.h * g) {
+        return { id: st.id, type: 'state', element: st };
+      }
+    }
+    for (const ps of parsed.pseudoStates) {
+      const abs = getAbsolutePos(ps, parsed);
+      if (Math.hypot(px - abs.x, py - abs.y) < 15) {
+        return { id: ps.id, type: ps.type, element: ps };
+      }
+    }
+    for (let i = parsed.groups.length - 1; i >= 0; i--) {
+      const grp = parsed.groups[i];
+      const x = grp.x * g, y = grp.y * g;
+      if (px >= x && px <= x + grp.w * g && py >= y && py <= y + grp.h * g) {
+        return { id: grp.id, type: 'group', element: grp };
+      }
+    }
+  }
+
+  if (annotationMode) {
+    for (const n of parsed.notes) {
+      const x = n.x * g, y = n.y * g;
+      if (px >= x && px <= x + n.w * g && py >= y && py <= y + n.h * g) {
+        return { id: n.id, type: 'note', element: n };
+      }
+    }
+  }
+
+  return null;
+}
+
+// ═══════════════════════════════════════════════
+// hitTest tests
+// ═══════════════════════════════════════════════
+function test_hitTest_normal_mode() {
+  const dsl = `@canvas width=960 height=600 grid=20
+state idle "Idle" at 2,3 size 8x4
+note tip "Tip" at 2,10 size 8x2`;
+  const r = parseDSL(dsl);
+
+  annotationMode = false;
+  // Click inside state: should hit state
+  const hit1 = hitTest(60, 80, r); // (2+1)*20=60, (3+1)*20=80 → inside idle
+  assert(hit1 !== null && hit1.id === 'idle', 'hitTest normal: state hit');
+
+  // Click inside note: should NOT hit (notes invisible in normal mode)
+  const hit2 = hitTest(60, 220, r); // (2+1)*20=60, (10+1)*20=220 → inside note
+  assert(hit2 === null, 'hitTest normal: note not hit');
+}
+
+function test_hitTest_annotation_mode() {
+  const dsl = `@canvas width=960 height=600 grid=20
+state idle "Idle" at 2,3 size 8x4
+note tip "Tip" at 2,10 size 8x2`;
+  const r = parseDSL(dsl);
+
+  annotationMode = true;
+  // Click inside state: should NOT hit (states locked in annotation mode)
+  const hit1 = hitTest(60, 80, r);
+  assert(hit1 === null, 'hitTest annotation: state not hit');
+
+  // Click inside note: should hit
+  const hit2 = hitTest(60, 220, r);
+  assert(hit2 !== null && hit2.id === 'tip', 'hitTest annotation: note hit');
+
+  annotationMode = false; // reset
+}
+
+function test_hitTest_annotation_empty() {
+  const dsl = `@canvas width=960 height=600 grid=20
+state idle "Idle" at 2,3 size 8x4`;
+  const r = parseDSL(dsl);
+
+  annotationMode = true;
+  // No notes exist, click anywhere: should return null
+  const hit = hitTest(60, 80, r);
+  assert(hit === null, 'hitTest annotation: no notes → null');
+
+  annotationMode = false; // reset
+}
+
+runTest('test_hitTest_normal_mode', test_hitTest_normal_mode);
+runTest('test_hitTest_annotation_mode', test_hitTest_annotation_mode);
+runTest('test_hitTest_annotation_empty', test_hitTest_annotation_empty);
+
 // Summary
 const summaryClass = failedTests === 0 ? 'all-pass' : 'has-fail';
 outputEl.innerHTML += '<div class="summary ' + summaryClass + '">' +

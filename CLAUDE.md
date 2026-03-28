@@ -224,7 +224,20 @@ tip -> idle    # 注釈から状態への点線接続
   - ズーム（ボタン+マウスホイール）
   - シンタックスハイライト（DSLエディタ）
   - VSCode拡張（TextMate文法・プレビュー・スニペット）
-- **Phase 2（拡張）**: 履歴擬似状態、PlantUML/Excelエクスポート、Auto-Route、検索/フィルター、Visual Diff
+- **Phase 2（拡張）**:
+  - 注釈モード再設計（3段階→2段階統合、操作制限、注釈追加UI） — 設計書: `docs/superpowers/plans/2026-03-28-annotation-mode-redesign.md`
+  - 履歴擬似状態（history/deephistory）
+  - PlantUML/Excelエクスポート
+  - Auto-Route（遷移線自動最適配置）
+  - Visual Diff
+  - ID自動生成・補正（ADR-016: labelToId、一括リネーム）
+  - 遷移線スタイル dashed対応（ADR-019）
+  - 遷移線カラーピッカー（ADR-022）
+  - MCPサーバー（ADR-025: LLM連携）
+  - 複数選択→グループ化（ADR-026）
+  - PlantUMLエクスポート（ADR-026）
+  - @includeディレクティブ（ADR-026）
+  - Git Visual Diff（ADR-026）
 - **Phase 3（直交領域）**: 直交領域（region）、フォーク/ジョイン
 
 ## 既知の制限事項

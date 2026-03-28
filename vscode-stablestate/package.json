@@ -22,10 +22,23 @@
     "commands": [
       { "command": "stablestate.preview", "title": "StableState: Open Preview" },
       { "command": "stablestate.exportSVG", "title": "StableState: Export SVG" },
-      { "command": "stablestate.exportPNG", "title": "StableState: Export PNG" }
+      { "command": "stablestate.exportPNG", "title": "StableState: Export PNG" },
+      { "command": "stablestate.undo", "title": "StableState: Undo" },
+      { "command": "stablestate.redo", "title": "StableState: Redo" },
+      { "command": "stablestate.copy", "title": "StableState: Copy" },
+      { "command": "stablestate.cut", "title": "StableState: Cut" },
+      { "command": "stablestate.paste", "title": "StableState: Paste" },
+      { "command": "stablestate.selectAll", "title": "StableState: Select All" }
     ],
     "keybindings": [
-      { "command": "stablestate.preview", "key": "ctrl+shift+v", "when": "editorLangId == stablestate" }
+      { "command": "stablestate.preview", "key": "ctrl+shift+v", "when": "editorLangId == stablestate" },
+      { "command": "stablestate.undo", "key": "ctrl+z", "when": "stablestatePreviewFocused" },
+      { "command": "stablestate.redo", "key": "ctrl+y", "when": "stablestatePreviewFocused" },
+      { "command": "stablestate.redo", "key": "ctrl+shift+z", "when": "stablestatePreviewFocused" },
+      { "command": "stablestate.copy", "key": "ctrl+c", "when": "stablestatePreviewFocused" },
+      { "command": "stablestate.cut", "key": "ctrl+x", "when": "stablestatePreviewFocused" },
+      { "command": "stablestate.paste", "key": "ctrl+v", "when": "stablestatePreviewFocused" },
+      { "command": "stablestate.selectAll", "key": "ctrl+a", "when": "stablestatePreviewFocused" }
     ]
   }
 }

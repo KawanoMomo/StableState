@@ -76,8 +76,15 @@ function activate(context) {
       }
     });
 
+    // Set context key for keybindings
+    panel.onDidChangeViewState(e => {
+      vscode.commands.executeCommand('setContext', 'stablestatePreviewFocused', e.webviewPanel.active);
+    });
+    vscode.commands.executeCommand('setContext', 'stablestatePreviewFocused', true);
+
     panel.onDidDispose(() => {
       panel = null;
+      vscode.commands.executeCommand('setContext', 'stablestatePreviewFocused', false);
       docChangeDisposable.dispose();
       editorChangeDisposable.dispose();
     });
@@ -93,7 +100,15 @@ function activate(context) {
     if (panel) panel.webview.postMessage({ type: 'exportPNG' });
   });
 
-  context.subscriptions.push(previewCmd, exportSvgCmd, exportPngCmd);
+  // ADR-001: Shortcut forwarding commands
+  const fwdCommands = ['undo', 'redo', 'copy', 'cut', 'paste', 'selectAll'];
+  const fwdDisposables = fwdCommands.map(cmd =>
+    vscode.commands.registerCommand(`stablestate.${cmd}`, () => {
+      if (panel) panel.webview.postMessage({ type: cmd });
+    })
+  );
+
+  context.subscriptions.push(previewCmd, exportSvgCmd, exportPngCmd, ...fwdDisposables);
 }
 
 function getWebviewContent(context, initialDsl) {

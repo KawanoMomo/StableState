@@ -132,7 +132,7 @@ input[type=number]::-webkit-inner-spin-button { -webkit-appearance:none; }
   <div class="logo">
     <div class="logo-icon">S</div>
     <span class="logo-text">StableState</span>
-    <span class="badge">v0.1</span>
+    <span class="badge">v0.1.0</span>
   </div>
 
   <div class="tab-group">
@@ -149,7 +149,7 @@ input[type=number]::-webkit-inner-spin-button { -webkit-appearance:none; }
     <button class="tb" id="tool-connect" onclick="setTool('connect')" title="Click source element, then click target element to create a transition">&#8599;Connect</button>
     <div class="sep"></div>
     <button class="tb" id="btn-actions" onclick="toggleActions()">Actions</button>
-    <button class="tb active" id="btn-annotations" onclick="toggleAnnotations()">Notes</button>
+    <button class="tb" id="btn-annotations" onclick="toggleAnnotations()">Notes</button>
     <div class="sep"></div>
     <button class="tb tb-accent" onclick="exportSVG()">SVG</button>
     <button class="tb tb-accent" onclick="exportPNG()">PNG</button>
@@ -158,6 +158,9 @@ input[type=number]::-webkit-inner-spin-button { -webkit-appearance:none; }
     <button class="tb" onclick="setZoom(-1)">&minus;</button>
     <span id="zoom-label" style="font-size:11px;color:#94A3B8;min-width:36px;text-align:center">100%</span>
     <button class="tb" onclick="setZoom(1)">+</button>
+    <div class="sep"></div>
+    <input type="text" id="search-input" placeholder="Search..." style="width:120px;padding:2px 6px;font-size:11px;background:#1e293b;color:#e2e8f0;border:1px solid #334155;border-radius:4px" oninput="applySearchFilter()" onkeydown="if(event.key==='Escape'){clearSearchFilter();this.blur();}">
+    <button class="tb" onclick="clearSearchFilter()" title="Clear search" style="padding:2px 6px">&times;</button>
   </div>
 
   <div class="toolbar" id="table-toolbar" style="display:none">
@@ -258,8 +261,7 @@ let selection = new Set();
 function isSelected(id) { return selection.has(id); }
 
 // Interaction state
-let showAnnotations = true; // annotation layer visibility
-let annotationEditMode = false; // when true, dim states/transitions, notes foreground
+let annotationMode = false; // annotation mode: notes visible + editable, normal elements dimmed + non-interactive
 let dragState = null;      // { startX, startY, items: [{id, type, origX, origY, parent, w, h}], offsetX, offsetY }
 let resizeState = null;    // { id, type, handle, origX, origY, origW, origH, startMX, startMY }
 let undoHistory = [];      // undo stack (DSL snapshots)
@@ -268,6 +270,8 @@ const MAX_HISTORY = 100;
 let clipboard = null;      // copied DSL lines
 let zoom = 1.0;
 let snapGuides = [];       // [{axis:'x'|'y', pos:number}] for rendering
+let searchFilter = '';     // ADR-026: search/filter string
+let searchMatchIds = null; // Set of matching IDs, or null if no filter
 
 // ═══════════════════════════════════════════════
 // Tab Switching
@@ -542,16 +546,22 @@ function parseDSL(text) {
         continue;
       }
 
-      // Parse optional : Event [Guard] / Action @kind
-      let event = null, guard = null, action = null, kind = null;
+      // Parse optional : Event [Guard] / Action @kind width=N
+      let event = null, guard = null, action = null, kind = null, width = null;
       if (rest.startsWith(':')) {
         const detail = rest.slice(1).trim();
-        // Parse @kind from the end
-        const kindMatch = detail.match(/@(local|external|internal)\s*$/);
+        // Parse width=N from the end
+        const widthMatch = detail.match(/\bwidth=([0-9.]+)\s*$/);
         let remaining = detail;
+        if (widthMatch) {
+          width = parseFloat(widthMatch[1]);
+          remaining = remaining.slice(0, remaining.lastIndexOf('width=')).trim();
+        }
+        // Parse @kind from the end
+        const kindMatch = remaining.match(/@(local|external|internal)\s*$/);
         if (kindMatch) {
           kind = kindMatch[1];
-          remaining = detail.slice(0, detail.lastIndexOf('@' + kind)).trim();
+          remaining = remaining.slice(0, remaining.lastIndexOf('@' + kind)).trim();
         }
         // Parse / Action
         const slashIdx = remaining.indexOf('/');
@@ -576,6 +586,7 @@ function parseDSL(text) {
         guard: guard,
         action: action,
         kind: kind || result.config.transition,
+        width: width,
         label: rest.startsWith(':') ? rest.slice(1).trim() : null,
         line: lineNum
       });
@@ -984,9 +995,6 @@ function renderSVG(parsed) {
   svg += `<rect width="${canvas.width}" height="${canvas.height}" fill="#1a1a2e"/>`;
   svg += `<rect width="${canvas.width}" height="${canvas.height}" fill="url(#gridPat)"/>`;
 
-  // Annotation edit mode: dim non-note elements
-  if (annotationEditMode) svg += `<g opacity="0.35">`;
-
   // ─── 2. Groups ───
   for (const grp of parsed.groups) {
     const px = grp.x * g;
@@ -996,8 +1004,11 @@ function renderSVG(parsed) {
     const fill = grp.color || '#1a1a3e';
     const border = grp.borderColor || '#3a3a5a';
     const textClr = grp.textColor || '#888888';
+    const dimGrp = searchMatchIds && !searchMatchIds.has(grp.id) ? ' opacity="0.2"' : '';
+    svg += `<g${dimGrp}>`;
     svg += `<rect x="${px}" y="${py}" width="${pw}" height="${ph}" rx="6" ry="6" fill="${esc(fill)}" fill-opacity="0.3" stroke="${esc(border)}" stroke-width="1"/>`;
     svg += `<text x="${px + 10}" y="${py + 16}" font-family="${sans}" font-size="11" font-weight="600" fill="${esc(textClr)}">${esc(grp.label)}</text>`;
+    svg += `</g>`;
   }
 
   // ─── 3. Composite states (states with children) ───
@@ -1013,7 +1024,9 @@ function renderSVG(parsed) {
     const strokeClr = sel ? 'white' : border;
     const strokeW = sel ? 2.5 : 1.5;
     const dashAttr = st.style === 'dashed' ? ' stroke-dasharray="6 3"' : '';
+    const dimSt = searchMatchIds && !searchMatchIds.has(st.id) ? ' opacity="0.2"' : '';
 
+    svg += `<g${dimSt}>`;
     svg += `<rect x="${pos.x}" y="${pos.y}" width="${pw}" height="${ph}" rx="${round}" ry="${round}" fill="${esc(fill)}" stroke="${esc(strokeClr)}" stroke-width="${strokeW}"${dashAttr} ${shadow}/>`;
     svg += `<text x="${pos.x + 10}" y="${pos.y + 18}" font-family="${sans}" font-size="12" font-weight="600" fill="${esc(textClr)}">${esc(st.label)}</text>`;
 
@@ -1032,6 +1045,7 @@ function renderSVG(parsed) {
         svg += `<text x="${pos.x + 10}" y="${ay}" font-family="${mono}" font-size="10" fill="#888888">exit / ${esc(st.exit)}</text>`;
       }
     }
+    svg += `</g>`;
   }
 
   // ─── 4. Leaf states (states without children) ───
@@ -1048,7 +1062,9 @@ function renderSVG(parsed) {
     const strokeW = sel ? 2.5 : 1.5;
     const dashAttr = st.style === 'dashed' ? ' stroke-dasharray="6 3"' : '';
     const hasActions = showActions && (st.entry || st.do || st.exit);
+    const dimSt = searchMatchIds && !searchMatchIds.has(st.id) ? ' opacity="0.2"' : '';
 
+    svg += `<g${dimSt}>`;
     svg += `<rect x="${pos.x}" y="${pos.y}" width="${pw}" height="${ph}" rx="${round}" ry="${round}" fill="${esc(fill)}" stroke="${esc(strokeClr)}" stroke-width="${strokeW}"${dashAttr} ${shadow}/>`;
 
     if (hasActions) {
@@ -1074,11 +1090,14 @@ function renderSVG(parsed) {
       // Centered label only
       svg += `<text x="${pos.x + pw/2}" y="${pos.y + ph/2 + 5}" text-anchor="middle" font-family="${sans}" font-size="13" font-weight="600" fill="${esc(textClr)}">${esc(st.label)}</text>`;
     }
+    svg += `</g>`;
   }
 
   // ─── 5. Pseudo-states ───
   for (const ps of parsed.pseudoStates) {
     const pos = getAbsolutePos(ps, parsed);
+    const dimPs = searchMatchIds && !searchMatchIds.has(ps.id) ? ' opacity="0.2"' : '';
+    svg += `<g${dimPs}>`;
 
     switch (ps.type) {
       case 'initial': {
@@ -1114,30 +1133,9 @@ function renderSVG(parsed) {
         break;
       }
     }
+    svg += `</g>`;
   }
 
-  // Close annotation-edit-mode dimming group (before notes so notes stay full opacity)
-  if (annotationEditMode) svg += `</g>`;
-
-  // ─── 5b. Notes (annotation layer) ───
-  if (showAnnotations && parsed.notes.length > 0) {
-    for (const n of parsed.notes) {
-      const pos = getAbsolutePos(n, parsed);
-      const pw = n.w * g;
-      const ph = n.h * g;
-      const fill = n.color || '#FEF3C7';
-      const border = n.textColor || '#FCD34D';
-      const textClr = '#1a1a2e';
-      const sel = isSelected(n.id);
-      const strokeClr = sel ? 'white' : border;
-      const strokeW = sel ? 2.5 : 1.5;
-      svg += `<rect x="${pos.x}" y="${pos.y}" width="${pw}" height="${ph}" rx="6" ry="6" fill="${esc(fill)}" stroke="${esc(strokeClr)}" stroke-width="${strokeW}" ${shadow}/>`;
-      svg += `<text x="${pos.x + pw/2}" y="${pos.y + ph/2 + 4}" text-anchor="middle" font-family="${sans}" font-size="11" font-weight="500" fill="${esc(textClr)}">${esc(n.label)}</text>`;
-    }
-  }
-
-  // Dim transitions in annotation edit mode
-  if (annotationEditMode) svg += `<g opacity="0.35">`;
 
   // ─── 6. Transitions ───
   // Arrow marker definition
@@ -1177,23 +1175,28 @@ function renderSVG(parsed) {
   }
 
   // Helper: determine which side of source/target to connect
+  // ADR-006: Edge-gap algorithm instead of angle-based
   function computePortSide(srcBox, tgtBox) {
-    const dx = (tgtBox.x + tgtBox.w / 2) - (srcBox.x + srcBox.w / 2);
-    const dy = (tgtBox.y + tgtBox.h / 2) - (srcBox.y + srcBox.h / 2);
-    let srcSide, tgtSide;
-    if (Math.abs(dx) > Math.abs(dy)) {
-      srcSide = dx > 0 ? 'right' : 'left';
-      tgtSide = dx > 0 ? 'left' : 'right';
+    const gapR = tgtBox.x - (srcBox.x + srcBox.w);
+    const gapL = srcBox.x - (tgtBox.x + tgtBox.w);
+    const gapB = tgtBox.y - (srcBox.y + srcBox.h);
+    const gapT = srcBox.y - (tgtBox.y + tgtBox.h);
+    const hBest = Math.max(gapR, gapL);
+    const vBest = Math.max(gapB, gapT);
+    if (vBest >= hBest) {
+      return gapB >= gapT
+        ? { srcSide: 'bottom', tgtSide: 'top' }
+        : { srcSide: 'top', tgtSide: 'bottom' };
     } else {
-      srcSide = dy > 0 ? 'bottom' : 'top';
-      tgtSide = dy > 0 ? 'top' : 'bottom';
+      return gapR >= gapL
+        ? { srcSide: 'right', tgtSide: 'left' }
+        : { srcSide: 'left', tgtSide: 'right' };
     }
-    return { srcSide, tgtSide };
   }
 
   // Helper: get port point on a box edge, distributed for multiple ports
   function getPortPoint(box, side, portIndex, portCount) {
-    const pad = 0.2;
+    const pad = portCount <= 2 ? 0.4 : portCount <= 4 ? 0.25 : 0.15;
     const t = portCount <= 1 ? 0.5 : pad + (1 - 2 * pad) * portIndex / (portCount - 1);
     switch (side) {
       case 'top': return { x: box.x + box.w * t, y: box.y };
@@ -1432,11 +1435,22 @@ function renderSVG(parsed) {
     edgeGroups[tgtKey].push({ ti, dir: 'tgt' });
   }
 
+  // ADR-015: Pre-build index maps for O(1) lookup instead of O(n) findIndex
+  const edgeIndexMap = {}; // key: "groupKey:ti" -> index
+  for (const key in edgeGroups) {
+    const group = edgeGroups[key];
+    for (let i = 0; i < group.length; i++) {
+      edgeIndexMap[key + ':' + group[i].ti] = i;
+    }
+  }
+
   // Second pass: compute routes and render
   for (let ti = 0; ti < parsed.transitions.length; ti++) {
     const tr = parsed.transitions[ti];
     const info = transitionSides[ti];
     if (!info) continue;
+    const dimTr = searchMatchIds && !searchMatchIds.has(tr.from) && !searchMatchIds.has(tr.to) ? ' opacity="0.2"' : '';
+    svg += `<g${dimTr}>`;
 
     const { srcSide, tgtSide, srcBox, tgtBox, isSelf } = info;
     let route;
@@ -1446,11 +1460,10 @@ function renderSVG(parsed) {
     } else {
       const srcKey = tr.from + ':' + srcSide;
       const tgtKey = tr.to + ':' + tgtSide;
-      // Find this transition's index within the UNIFIED edge group
       const srcEdge = edgeGroups[srcKey];
       const tgtEdge = edgeGroups[tgtKey];
-      const srcIdx = srcEdge.findIndex(e => e.ti === ti);
-      const tgtIdx = tgtEdge.findIndex(e => e.ti === ti);
+      const srcIdx = edgeIndexMap[srcKey + ':' + ti];
+      const tgtIdx = edgeIndexMap[tgtKey + ':' + ti];
       const fromPt = getPortPoint(srcBox, srcSide, srcIdx, srcEdge.length);
       const toPt = getPortPoint(tgtBox, tgtSide, tgtIdx, tgtEdge.length);
       // Channel offset based on position within unified group
@@ -1484,10 +1497,11 @@ function renderSVG(parsed) {
     crossings.sort((a, b) => a.segIdx !== b.segIdx ? a.segIdx - b.segIdx : a.t - b.t);
 
     // Build SVG path
+    const sw = tr.width || 1.5;
     if (crossings.length === 0) {
       // Simple polyline
       const pts = route.map(p => `${p.x},${p.y}`).join(' ');
-      svg += `<polyline points="${pts}" fill="none" stroke="#89DDFF" stroke-width="1.5" marker-end="url(#arrowHead)"/>`;
+      svg += `<polyline points="${pts}" fill="none" stroke="#89DDFF" stroke-width="${sw}" marker-end="url(#arrowHead)"/>`;
     } else {
       // Path with bridge arcs (handles both horizontal and vertical crossings)
       let d = `M ${route[0].x},${route[0].y}`;
@@ -1518,7 +1532,7 @@ function renderSVG(parsed) {
           d += ` L ${a2.x},${a2.y}`;
         }
       }
-      svg += `<path d="${d}" fill="none" stroke="#89DDFF" stroke-width="1.5" marker-end="url(#arrowHead)"/>`;
+      svg += `<path d="${d}" fill="none" stroke="#89DDFF" stroke-width="${sw}" marker-end="url(#arrowHead)"/>`;
     }
 
     // Store route for future crossing detection
@@ -1570,10 +1584,11 @@ function renderSVG(parsed) {
         }
       }
     }
+    svg += `</g>`;
   }
 
   // ─── 7. Note connections (dashed lines, no arrowheads) ───
-  if (showAnnotations) {
+  if (annotationMode) {
     for (const nc of parsed.noteConnections) {
       const noteEl = parsed.noteMap[nc.noteId];
       if (!noteEl) continue;
@@ -1626,8 +1641,34 @@ function renderSVG(parsed) {
     }
   }
 
-  // Close annotation-edit-mode dimming group for transitions
-  if (annotationEditMode) svg += `</g>`;
+  // ─── 8. Notes (annotation layer — rendered ABOVE transitions) ───
+  if (annotationMode && parsed.notes.length > 0) {
+    for (const n of parsed.notes) {
+      const pos = getAbsolutePos(n, parsed);
+      const pw = n.w * g;
+      const ph = n.h * g;
+      const fill = n.color || '#FEF3C7';
+      const borderClr = n.borderColor || '#D97706';
+      const textClr = n.textColor || '#92400E';
+      const sel = isSelected(n.id);
+      const strokeClr = sel ? '#F59E0B' : borderClr;
+      const strokeW = sel ? 2.5 : 1;
+      svg += `<rect x="${pos.x}" y="${pos.y}" width="${pw}" height="${ph}" rx="0" ry="0" fill="${esc(fill)}" stroke="${esc(strokeClr)}" stroke-width="${strokeW}" stroke-dasharray="4,2" style="filter:drop-shadow(0 1px 2px rgba(0,0,0,0.08))"/>`;
+      const lines = n.label.split('\\n');
+      for (let li = 0; li < lines.length; li++) {
+        const ty = pos.y + 6 + li * 14 + 10;
+        svg += `<text x="${pos.x + 6}" y="${ty}" text-anchor="start" font-family="${sans}" font-size="11" font-weight="400" fill="${esc(textClr)}" style="pointer-events:none">${esc(lines[li])}</text>`;
+      }
+    }
+  }
+
+  // ─── 9. Annotation mode indicator (top banner, excluded from export) ───
+  if (annotationMode) {
+    svg += `<g id="annotation-banner">`;
+    svg += `<rect x="0" y="0" width="${canvas.width}" height="24" fill="#F59E0B" fill-opacity="0.15"/>`;
+    svg += `<text x="${canvas.width/2}" y="16" text-anchor="middle" font-family="${sans}" font-size="11" font-weight="600" fill="#F59E0B">ANNOTATION MODE — states are locked, press N to exit</text>`;
+    svg += `</g>`;
+  }
 
   svg += '</svg>';
   return svg;
@@ -1987,7 +2028,13 @@ function renderProps() {
   const selArr = [...selection];
 
   if (selArr.length === 0) {
-    html += `<div class="prop-section"><div class="prop-label">Selected</div><div class="prop-sub">Select an element to edit</div></div>`;
+    if (annotationMode) {
+      html += `<div class="prop-section"><div class="prop-label">Annotation Mode</div>`;
+      html += `<div class="prop-sub">Click notes to select. States are locked.</div>`;
+      html += `</div>`;
+    } else {
+      html += `<div class="prop-section"><div class="prop-label">Selected</div><div class="prop-sub">Select an element to edit</div></div>`;
+    }
   } else if (selArr.length === 1) {
     const id = selArr[0];
     const el = parsed.stateMap[id] || parsed.pseudoMap[id] || parsed.groupMap[id] || parsed.noteMap[id];
@@ -2066,9 +2113,12 @@ function renderProps() {
     } else if (parsed.noteMap[id]) {
       // ── Note selected ──
       const n = parsed.noteMap[id];
-      html += `<div class="prop-section"><div class="prop-label">Note</div>`;
+      html += `<div class="prop-section"><div class="prop-label" style="color:#F59E0B">NOTE</div>`;
       html += `<div class="prop-row"><input class="prop-input" value="${esc(n.id)}" readonly style="opacity:0.6"></div>`;
-      html += `<div class="prop-row"><input class="prop-input" id="pp-label" value="${esc(n.label)}" placeholder="Label"></div>`;
+      html += `</div>`;
+      // Textarea for multi-line text
+      html += `<div class="prop-section"><div class="prop-label">テキスト</div>`;
+      html += `<textarea class="prop-input" id="pp-note-text" style="height:80px;resize:vertical;font-size:11px;line-height:1.4">${esc(n.label).replace(/\\n/g, '\n')}</textarea>`;
       html += `</div>`;
       html += `<div class="prop-section"><div class="prop-label">Position</div>`;
       html += `<div class="prop-row"><input type="number" class="prop-input" id="pp-x" value="${n.x}" placeholder="X" style="width:50%"><input type="number" class="prop-input" id="pp-y" value="${n.y}" placeholder="Y" style="width:50%"></div>`;
@@ -2076,11 +2126,20 @@ function renderProps() {
       html += `<div class="prop-section"><div class="prop-label">Size</div>`;
       html += `<div class="prop-row"><input type="number" class="prop-input" id="pp-w" value="${n.w}" placeholder="W" style="width:50%"><input type="number" class="prop-input" id="pp-h" value="${n.h}" placeholder="H" style="width:50%"></div>`;
       html += `</div>`;
-      const presetColors = ['#FEF3C7','#6366F1','#818CF8','#22C55E','#F59E0B','#EF4444','#EC4899','#8B5CF6'];
+      // Note-specific color palette (warm tones)
+      const noteColors = ['#FEF3C7','#FEE2E2','#DBEAFE','#DCFCE7','#F5F3FF','#FCE7F3','#CFFAFE','#FFF7ED','#F1F5F9','#FEF9C3','#ECFDF5','#F8FAFC'];
       html += `<div class="prop-section"><div class="prop-label">Color</div><div class="color-grid">`;
-      for (const c of presetColors) {
+      for (const c of noteColors) {
         const active = n.color === c ? ' active' : '';
         html += `<div class="color-dot${active}" style="background:${c}" data-prop="color" data-val="${c}"></div>`;
+      }
+      html += `</div></div>`;
+      // Text color
+      const noteTextColors = ['#FFFFFF','#000000','#1E293B','#F8FAFC','#92400E','#991B1B','#1E40AF','#166534'];
+      html += `<div class="prop-section"><div class="prop-label">テキスト色</div><div class="color-grid">`;
+      for (const c of noteTextColors) {
+        const active = n.textColor === c ? ' active' : '';
+        html += `<div class="color-dot${active}" style="background:${c}" data-prop="text" data-val="${c}"></div>`;
       }
       html += `</div></div>`;
     }
@@ -2090,6 +2149,13 @@ function renderProps() {
     html += `</div>`;
   } else {
     html += `<div class="prop-section"><div class="prop-label">Selected: ${selArr.length} elements</div></div>`;
+  }
+
+  // ─── Annotation mode: always show Add Note button ───
+  if (annotationMode) {
+    html += `<div class="prop-section" style="margin-top:12px; border-top:1px solid var(--border); padding-top:8px;">`;
+    html += `<button class="tb tb-accent" style="width:100%" onclick="addNewElement('note')">+ Add Note</button>`;
+    html += `</div>`;
   }
 
   // ─── Config section (always visible) ───
@@ -2136,7 +2202,19 @@ function renderProps() {
     let dsl = getDsl();
     dsl = updateLabel(info.type, info.id, this.value, dsl);
     setDsl(dsl);
-    refresh();
+    refreshView();
+  });
+
+  // Note text (textarea with multi-line → \n conversion)
+  const noteTextEl = document.getElementById('pp-note-text');
+  if (noteTextEl) noteTextEl.addEventListener('input', function() {
+    const info = getElTypeAndId();
+    if (!info) return;
+    pushHistory();
+    let dsl = getDsl();
+    dsl = updateLabel(info.type, info.id, this.value.replace(/\n/g, '\\n'), dsl);
+    setDsl(dsl);
+    refreshView();
   });
 
   // Position change
@@ -2151,7 +2229,7 @@ function renderProps() {
     const ny = parseFloat(document.getElementById('pp-y').value) || 0;
     dsl = updatePos(info.type, info.id, nx, ny, dsl);
     setDsl(dsl);
-    refresh();
+    refreshView();
   }
   if (ppx) ppx.addEventListener('change', handlePosChange);
   if (ppy) ppy.addEventListener('change', handlePosChange);
@@ -2168,7 +2246,7 @@ function renderProps() {
     const nh = parseFloat(document.getElementById('pp-h').value) || 1;
     dsl = updateSize(info.type, info.id, nw, nh, dsl);
     setDsl(dsl);
-    refresh();
+    refreshView();
   }
   if (ppw) ppw.addEventListener('change', handleSizeChange);
   if (pph) pph.addEventListener('change', handleSizeChange);
@@ -2189,7 +2267,7 @@ function renderProps() {
         dsl = dsl.replace(re, '$1');
       }
       setDsl(dsl);
-      refresh();
+      refreshView();
     });
   });
 
@@ -2220,7 +2298,7 @@ function renderProps() {
       dsl = dsl.replace(re, '$1');
     }
     setDsl(dsl);
-    refresh();
+    refreshView();
   });
 
   // Text color
@@ -2237,7 +2315,7 @@ function renderProps() {
       dsl = dsl.replace(re, '$1');
     }
     setDsl(dsl);
-    refresh();
+    refreshView();
   });
 
   // Style dropdown
@@ -2254,7 +2332,7 @@ function renderProps() {
       dsl = dsl.replace(re, '$1');
     }
     setDsl(dsl);
-    refresh();
+    refreshView();
   });
 
   // Round
@@ -2271,7 +2349,7 @@ function renderProps() {
       dsl = dsl.replace(re, '$1');
     }
     setDsl(dsl);
-    refresh();
+    refreshView();
   });
 
   // ─── Config change handlers ───
@@ -2321,10 +2399,18 @@ function renderProps() {
 // ═══════════════════════════════════════════════
 // Export (SVG, PNG, Clipboard)
 // ═══════════════════════════════════════════════
-function exportSVG() {
+function getExportSVGString() {
   const svgEl = document.querySelector('#svg-wrap svg');
-  if (!svgEl) return;
-  const svgStr = new XMLSerializer().serializeToString(svgEl);
+  if (!svgEl) return null;
+  const clone = svgEl.cloneNode(true);
+  const banner = clone.querySelector('#annotation-banner');
+  if (banner) banner.remove();
+  return new XMLSerializer().serializeToString(clone);
+}
+
+function exportSVG() {
+  const svgStr = getExportSVGString();
+  if (!svgStr) return;
   const blob = new Blob([svgStr], { type: 'image/svg+xml' });
   const a = document.createElement('a');
   a.href = URL.createObjectURL(blob);
@@ -2334,9 +2420,8 @@ function exportSVG() {
 }
 
 function exportPNG() {
-  const svgEl = document.querySelector('#svg-wrap svg');
-  if (!svgEl || !parsed) return;
-  const svgStr = new XMLSerializer().serializeToString(svgEl);
+  const svgStr = getExportSVGString();
+  if (!svgStr || !parsed) return;
   const canvas = document.createElement('canvas');
   canvas.width = parsed.canvas.width;
   canvas.height = parsed.canvas.height;
@@ -2356,9 +2441,8 @@ function exportPNG() {
 }
 
 async function copyPNG() {
-  const svgEl = document.querySelector('#svg-wrap svg');
-  if (!svgEl || !parsed) return;
-  const svgStr = new XMLSerializer().serializeToString(svgEl);
+  const svgStr = getExportSVGString();
+  if (!svgStr || !parsed) return;
   const canvas = document.createElement('canvas');
   canvas.width = parsed.canvas.width;
   canvas.height = parsed.canvas.height;
@@ -2430,6 +2514,19 @@ function refresh() {
   updateHighlight();
 }
 
+// ADR-003: refresh without renderProps() to prevent input focus loss during property editing
+function refreshView() {
+  const text = document.getElementById('editor').value;
+  parsed = parseDSL(text);
+  validate(parsed);
+  updateErrorBar(parsed);
+  document.getElementById('svg-wrap').innerHTML = renderSVG(parsed);
+  renderTable(parsed);
+  updateLineNumbers();
+  updateStatus();
+  updateHighlight();
+}
+
 // ═══════════════════════════════════════════════
 // Line Numbers
 // ═══════════════════════════════════════════════
@@ -2490,38 +2587,37 @@ function hitTest(px, py) {
   if (!parsed) return null;
   const g = parsed.canvas.grid;
 
-  // Check states (reverse order = topmost first)
-  for (let i = parsed.states.length - 1; i >= 0; i--) {
-    const st = parsed.states[i];
-    const abs = getAbsolutePos(st, parsed);
-    if (px >= abs.x && px <= abs.x + st.w * g && py >= abs.y && py <= abs.y + st.h * g) {
-      return { id: st.id, type: 'state', element: st };
+  // In normal mode: states, pseudos, groups are interactive; notes are not
+  if (!annotationMode) {
+    for (let i = parsed.states.length - 1; i >= 0; i--) {
+      const st = parsed.states[i];
+      const abs = getAbsolutePos(st, parsed);
+      if (px >= abs.x && px <= abs.x + st.w * g && py >= abs.y && py <= abs.y + st.h * g) {
+        return { id: st.id, type: 'state', element: st };
+      }
+    }
+    for (const ps of parsed.pseudoStates) {
+      const abs = getAbsolutePos(ps, parsed);
+      if (Math.hypot(px - abs.x, py - abs.y) < 15) {
+        return { id: ps.id, type: ps.type, element: ps };
+      }
+    }
+    for (let i = parsed.groups.length - 1; i >= 0; i--) {
+      const grp = parsed.groups[i];
+      const x = grp.x * g, y = grp.y * g;
+      if (px >= x && px <= x + grp.w * g && py >= y && py <= y + grp.h * g) {
+        return { id: grp.id, type: 'group', element: grp };
+      }
     }
   }
 
-  // Check pseudo-states (click radius ~15px around center)
-  for (const ps of parsed.pseudoStates) {
-    const abs = getAbsolutePos(ps, parsed);
-    // Pseudo-states are rendered centered at abs position
-    if (Math.hypot(px - abs.x, py - abs.y) < 15) {
-      return { id: ps.id, type: ps.type, element: ps };
-    }
-  }
-
-  // Check groups
-  for (let i = parsed.groups.length - 1; i >= 0; i--) {
-    const grp = parsed.groups[i];
-    const x = grp.x * g, y = grp.y * g;
-    if (px >= x && px <= x + grp.w * g && py >= y && py <= y + grp.h * g) {
-      return { id: grp.id, type: 'group', element: grp };
-    }
-  }
-
-  // Check notes
-  for (const n of parsed.notes) {
-    const x = n.x * g, y = n.y * g;
-    if (px >= x && px <= x + n.w * g && py >= y && py <= y + n.h * g) {
-      return { id: n.id, type: 'note', element: n };
+  // In annotation mode: only notes are interactive
+  if (annotationMode) {
+    for (const n of parsed.notes) {
+      const x = n.x * g, y = n.y * g;
+      if (px >= x && px <= x + n.w * g && py >= y && py <= y + n.h * g) {
+        return { id: n.id, type: 'note', element: n };
+      }
     }
   }
 
@@ -2534,6 +2630,10 @@ function hitTest(px, py) {
 function hitTestHandle(px, py) {
   if (!parsed || selection.size !== 1) return null;
   const selId = [...selection][0];
+  // In annotation mode, only allow resize for notes
+  if (annotationMode && !parsed.noteMap[selId]) return null;
+  // In normal mode, don't allow resize for notes
+  if (!annotationMode && parsed.noteMap[selId]) return null;
   const selEl = parsed.stateMap[selId] || parsed.groupMap[selId] || parsed.noteMap[selId];
   if (!selEl || selEl.w == null || selEl.h == null) return null;
 
@@ -2599,13 +2699,12 @@ function collectDragSet(selectionSet) {
 // ═══════════════════════════════════════════════
 // Snap Guide Computation
 // ═══════════════════════════════════════════════
+// ADR-011: Select only the nearest snap candidate per axis to prevent jitter
 function computeSnapGuides(dragItems) {
   if (!parsed) return [];
   const g = parsed.canvas.grid;
-  const threshold = 0.5 * g; // 0.5 grid units in pixels
-  const guides = [];
+  const threshold = 0.5 * g;
 
-  // Collect edges of non-dragged elements
   const dragIds = new Set(dragItems.map(it => it.id));
   const otherEdges = { x: [], y: [] };
 
@@ -2621,7 +2720,9 @@ function computeSnapGuides(dragItems) {
     otherEdges.y.push(grp.y * g, (grp.y + grp.h) * g);
   }
 
-  // Check dragged items' edges against others
+  let bestX = null, bestXDist = Infinity;
+  let bestY = null, bestYDist = Infinity;
+
   for (const item of dragItems) {
     const el = parsed.stateMap[item.id] || parsed.groupMap[item.id] || parsed.noteMap[item.id];
     if (!el || el.w == null) continue;
@@ -2632,23 +2733,27 @@ function computeSnapGuides(dragItems) {
     };
     for (const ex of edges.x) {
       for (const ox of otherEdges.x) {
-        if (Math.abs(ex - ox) < threshold) {
-          if (!guides.some(sg => sg.axis === 'x' && Math.abs(sg.pos - ox) < 1)) {
-            guides.push({ axis: 'x', pos: ox });
-          }
+        const dist = Math.abs(ex - ox);
+        if (dist < threshold && dist < bestXDist) {
+          bestXDist = dist;
+          bestX = ox;
         }
       }
     }
     for (const ey of edges.y) {
       for (const oy of otherEdges.y) {
-        if (Math.abs(ey - oy) < threshold) {
-          if (!guides.some(sg => sg.axis === 'y' && Math.abs(sg.pos - oy) < 1)) {
-            guides.push({ axis: 'y', pos: oy });
-          }
+        const dist = Math.abs(ey - oy);
+        if (dist < threshold && dist < bestYDist) {
+          bestYDist = dist;
+          bestY = oy;
         }
       }
     }
   }
+
+  const guides = [];
+  if (bestX !== null) guides.push({ axis: 'x', pos: bestX });
+  if (bestY !== null) guides.push({ axis: 'y', pos: bestY });
   return guides;
 }
 
@@ -2788,8 +2893,14 @@ function redo() {
     e.preventDefault();
   });
 
-  document.addEventListener('mousemove', function(e) {
-    if (!parsed) return;
+  // ADR-015: RAF batching for mousemove
+  let rafPending = false;
+  let lastMouseEvent = null;
+
+  function processDragFrame() {
+    rafPending = false;
+    const e = lastMouseEvent;
+    if (!e || !parsed) return;
     const g = parsed.canvas.grid;
 
     if (dragState) {
@@ -2810,7 +2921,6 @@ function redo() {
                        item.type === 'note' ? 'note' : item.type;
 
         if (item.parent) {
-          // Child state: clamp to parent bounds
           const parentSt = parsed.stateMap[item.parent];
           if (parentSt) {
             const newX = Math.max(0, Math.min(parentSt.w - (item.w || 1), item.origX + dxGrid));
@@ -2827,11 +2937,9 @@ function redo() {
       }
       setDsl(dsl);
 
-      // Re-parse to get updated positions for snap guide computation
       parsed = parseDSL(getDsl());
       snapGuides = computeSnapGuides(dragState.items);
 
-      // Re-render (lightweight: skip full refresh, just update SVG)
       document.getElementById('svg-wrap').innerHTML = renderSVG(parsed);
       applyZoom();
       return;
@@ -2850,17 +2958,11 @@ function redo() {
       let newW = resizeState.origW;
       let newH = resizeState.origH;
 
-      // Adjust based on handle direction
-      // West handles: move x left, shrink width
       if (h === 'nw' || h === 'w' || h === 'sw') { newX = resizeState.origX + dxGrid; newW = resizeState.origW - dxGrid; }
-      // East handles: grow width
       if (h === 'ne' || h === 'e' || h === 'se') { newW = resizeState.origW + dxGrid; }
-      // North handles: move y up, shrink height
       if (h === 'nw' || h === 'n' || h === 'ne') { newY = resizeState.origY + dyGrid; newH = resizeState.origH - dyGrid; }
-      // South handles: grow height
       if (h === 'sw' || h === 's' || h === 'se') { newH = resizeState.origH + dyGrid; }
 
-      // Enforce minimum size
       const minSize = 2;
       if (newW < minSize) { newW = minSize; if (h.includes('w')) newX = resizeState.origX + resizeState.origW - minSize; }
       if (newH < minSize) { newH = minSize; if (h.includes('n')) newY = resizeState.origY + resizeState.origH - minSize; }
@@ -2875,6 +2977,15 @@ function redo() {
       document.getElementById('svg-wrap').innerHTML = renderSVG(parsed);
       applyZoom();
       return;
+    }
+  }
+
+  document.addEventListener('mousemove', function(e) {
+    if (!dragState && !resizeState) return;
+    lastMouseEvent = e;
+    if (!rafPending) {
+      rafPending = true;
+      requestAnimationFrame(processDragFrame);
     }
   });
 
@@ -3031,7 +3142,7 @@ function pasteSelection() {
 // ═══════════════════════════════════════════════
 // Add Element Buttons
 // ═══════════════════════════════════════════════
-let addCounter = { state: 0, group: 0, initial: 0, final: 0 };
+let addCounter = { state: 0, group: 0, initial: 0, final: 0, note: 0 };
 
 function addNewElement(type) {
   pushHistory();
@@ -3063,11 +3174,23 @@ function addNewElement(type) {
       line = `final ${id} at 30,5`;
       break;
     }
+    case 'note': {
+      addCounter.note++;
+      const id = 'note_' + addCounter.note;
+      line = `note ${id} "Annotation" at 5,5 size 8x2 color=#FEF3C7`;
+      break;
+    }
   }
 
   if (line) {
     dsl = dsl + '\n' + line;
     setDsl(dsl);
+    // Auto-enable annotation mode when adding a note
+    if (type === 'note' && !annotationMode) {
+      annotationMode = true;
+      const btn = document.getElementById('btn-annotations');
+      if (btn) { btn.classList.add('active'); btn.textContent = 'Notes (Edit)'; }
+    }
     refresh();
   }
 }
@@ -3076,23 +3199,75 @@ function addNewElement(type) {
 // Toggle Annotations
 // ═══════════════════════════════════════════════
 function toggleAnnotations() {
-  if (!showAnnotations) {
-    // Turn on annotations
-    showAnnotations = true;
-    annotationEditMode = false;
-  } else if (!annotationEditMode) {
-    // Enter annotation edit mode (dim states, notes foreground)
-    annotationEditMode = true;
+  annotationMode = !annotationMode;
+  // Filter selection on mode change
+  if (annotationMode) {
+    const noteIds = new Set(parsed ? parsed.notes.map(n => n.id) : []);
+    selection = new Set([...selection].filter(id => noteIds.has(id)));
   } else {
-    // Turn off both
-    showAnnotations = false;
-    annotationEditMode = false;
+    const noteIds = new Set(parsed ? parsed.notes.map(n => n.id) : []);
+    selection = new Set([...selection].filter(id => !noteIds.has(id)));
   }
   const btn = document.getElementById('btn-annotations');
   if (btn) {
-    btn.classList.toggle('active', showAnnotations);
-    btn.textContent = annotationEditMode ? 'Notes (Edit)' : 'Notes';
+    btn.classList.toggle('active', annotationMode);
+    btn.textContent = annotationMode ? 'Notes (Edit)' : 'Notes';
   }
+  refresh();
+}
+
+// ═══════════════════════════════════════════════
+// ADR-026: Search / Filter
+// ═══════════════════════════════════════════════
+function applySearchFilter() {
+  const input = document.getElementById('search-input');
+  searchFilter = (input ? input.value : '').trim().toLowerCase();
+  if (!searchFilter) {
+    searchMatchIds = null;
+    refresh();
+    return;
+  }
+  if (!parsed) return;
+  const matched = new Set();
+  // Match states by id, label, entry, do, exit
+  for (const st of parsed.states) {
+    if (st.id.toLowerCase().includes(searchFilter) ||
+        (st.label && st.label.toLowerCase().includes(searchFilter)) ||
+        (st.entry && st.entry.toLowerCase().includes(searchFilter)) ||
+        (st.do && st.do.toLowerCase().includes(searchFilter)) ||
+        (st.exit && st.exit.toLowerCase().includes(searchFilter))) {
+      matched.add(st.id);
+    }
+  }
+  // Match pseudo-states by id
+  for (const ps of parsed.pseudoStates) {
+    if (ps.id.toLowerCase().includes(searchFilter)) matched.add(ps.id);
+  }
+  // Match groups by id, label
+  for (const grp of parsed.groups) {
+    if (grp.id.toLowerCase().includes(searchFilter) ||
+        (grp.label && grp.label.toLowerCase().includes(searchFilter))) {
+      matched.add(grp.id);
+    }
+  }
+  // Match transitions by event, guard, action — add both endpoints
+  for (const tr of parsed.transitions) {
+    if ((tr.event && tr.event.toLowerCase().includes(searchFilter)) ||
+        (tr.guard && tr.guard.toLowerCase().includes(searchFilter)) ||
+        (tr.action && tr.action.toLowerCase().includes(searchFilter))) {
+      matched.add(tr.from);
+      matched.add(tr.to);
+    }
+  }
+  searchMatchIds = matched;
+  refresh();
+}
+
+function clearSearchFilter() {
+  const input = document.getElementById('search-input');
+  if (input) input.value = '';
+  searchFilter = '';
+  searchMatchIds = null;
   refresh();
 }
 
@@ -3101,7 +3276,12 @@ function toggleAnnotations() {
 // ═══════════════════════════════════════════════
 document.addEventListener('keydown', function(e) {
   const ta = document.getElementById('editor');
-  if (document.activeElement === ta) return; // Don't intercept while editing DSL
+  const ae = document.activeElement;
+  if (ae === ta) return; // Don't intercept while editing DSL
+  if (ae && (ae.tagName === 'INPUT' || ae.tagName === 'SELECT' || ae.tagName === 'TEXTAREA')) {
+    // Allow Ctrl shortcuts but block arrow keys etc. from moving elements
+    if (!e.ctrlKey) return;
+  }
 
   if (e.ctrlKey && e.key === 'z') { e.preventDefault(); undo(); }
   if (e.ctrlKey && e.key === 'y') { e.preventDefault(); redo(); }
@@ -3110,11 +3290,38 @@ document.addEventListener('keydown', function(e) {
   if (e.ctrlKey && e.key === 'a') {
     e.preventDefault();
     if (!parsed) return;
-    selection = new Set([...parsed.states, ...parsed.pseudoStates, ...parsed.groups, ...parsed.notes].map(el => el.id));
+    if (annotationMode) {
+      selection = new Set(parsed.notes.map(el => el.id));
+    } else {
+      selection = new Set([...parsed.states, ...parsed.pseudoStates, ...parsed.groups].map(el => el.id));
+    }
     refresh();
   }
   if (e.ctrlKey && e.key === 'c') { copySelection(); }
   if (e.ctrlKey && e.key === 'v') { pasteSelection(); }
+
+  // ADR-018: Arrow key nudge (1 grid unit)
+  if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.key) && selection.size > 0) {
+    e.preventDefault();
+    if (!parsed) return;
+    const dx = e.key === 'ArrowRight' ? 1 : e.key === 'ArrowLeft' ? -1 : 0;
+    const dy = e.key === 'ArrowDown' ? 1 : e.key === 'ArrowUp' ? -1 : 0;
+    pushHistory();
+    let dsl = getDsl();
+    for (const id of selection) {
+      // Skip elements not valid for current mode
+      if (annotationMode && !parsed.noteMap[id]) continue;
+      if (!annotationMode && parsed.noteMap[id]) continue;
+      const st = parsed.stateMap[id] || parsed.pseudoMap[id] || parsed.groupMap[id] || parsed.noteMap[id];
+      if (!st) continue;
+      const type = parsed.stateMap[id] ? 'state' : parsed.pseudoMap[id] ? parsed.pseudoMap[id].type : parsed.groupMap[id] ? 'group' : 'note';
+      const nx = Math.max(0, (st.x || 0) + dx);
+      const ny = Math.max(0, (st.y || 0) + dy);
+      dsl = updatePos(type, id, nx, ny, dsl);
+    }
+    setDsl(dsl);
+    refresh();
+  }
 });
 
 // ═══════════════════════════════════════════════

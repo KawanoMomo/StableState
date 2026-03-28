@@ -17,7 +17,7 @@ final shutdown at 1,10.5
 state sleep "Sleep" at 3,3 size 8x5 entry=HW_Sleep exit=HW_Wake color=#1e293b border=#475569
 state startup "Startup" at 14,3 size 10x5 entry=RunPOST do=InitBSW exit=NotifyRTE color=#1e293b border=#6366F1
 state run "Run" at 27,1 size 47x32 entry=EnableWDG do=CyclicTask exit=DisableWDG color=#0f172a border=#818CF8 {
-  initial run_ini at 1,3.5
+  initial run_ini at 1,5
 
   state normal "Normal" at 3,1 size 32x13 entry=NormalInit exit=NormalExit color=#0f172a border=#22C55E {
     initial norm_ini at 1,3.5
@@ -38,7 +38,7 @@ state run "Run" at 27,1 size 47x32 entry=EnableWDG do=CyclicTask exit=DisableWDG
   }
 
   state diagnostic "Diagnostic" at 2,16 size 14x10 entry=EnterDiag exit=ExitDiag color=#0f172a border=#F59E0B {
-    initial diag_ini at 1,1.5
+    initial diag_ini at 13,1
     state uds_session "UDS Session" at 3,2 size 9x3 entry=OpenSession do=ProcessUDS exit=CloseSession
     state flash "Flash Mode" at 3,6 size 9x3 entry=EraseFlash do=WriteFlash exit=VerifyCRC
     diag_ini -> uds_session
@@ -47,7 +47,7 @@ state run "Run" at 27,1 size 47x32 entry=EnableWDG do=CyclicTask exit=DisableWDG
   }
 
   state failsafe "Failsafe" at 29,16 size 14x10 entry=EnterFailsafe do=LimpHome exit=ExitFailsafe color=#0f172a border=#EF4444 {
-    initial fail_ini at 1,3.5
+    initial fail_ini at 1,5
     state degraded "Degraded" at 3,2 size 9x3 entry=ReduceLoad do=MonitorDTC
     state limp "Limp Home" at 3,6 size 9x3 entry=LimpInit do=LimpMonitor exit=LimpCleanup
     fail_ini -> degraded

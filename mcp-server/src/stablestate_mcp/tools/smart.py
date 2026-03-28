@@ -61,8 +61,35 @@ def _polyline_crosses_box(points, box):
     return False
 
 
+def _estimate_action_boxes(el, d):
+    """Estimate bounding boxes for entry/do/exit action text below state label."""
+    if not hasattr(el, "entry") and not hasattr(el, "do") and not hasattr(el, "exit"):
+        return []
+    box = _get_abs_box(el, d)
+    char_w = 0.3
+    line_h = 0.7
+    boxes = []
+    y_off = 1.6  # below state label
+    for attr in ("entry", "do", "exit"):
+        val = getattr(el, attr, None)
+        if val:
+            prefix = f"{attr} / "
+            text = prefix + val
+            w = len(text) * char_w
+            boxes.append({
+                "x": box["x"] + 0.5,
+                "y": box["y"] + y_off,
+                "w": w,
+                "h": line_h,
+                "text": text,
+                "state_id": el.id,
+            })
+            y_off += line_h
+    return boxes
+
+
 def _estimate_label_box(mid, text):
-    char_w = 0.25
+    char_w = 0.25  # ~5px per char at 11px font / 20px grid
     line_h = 0.8
     lines = text.split("\n") if "\n" in text else [text]
     max_len = max(len(l) for l in lines)
@@ -281,9 +308,22 @@ def ss_validate_layout() -> str:
                     "detail": f"{lbl['tid']} label overlaps pseudo {ps.id}",
                     "suggestion": f"ss_modify('{ps.id}', x={ps.x + 2}) or ss_modify('{ps.id}', y={ps.y + 2})"})
 
+    # 9. Action text (entry/do/exit) overlaps pseudo-state
+    all_action_boxes = []
+    for s in d.states:
+        all_action_boxes.extend(_estimate_action_boxes(s, d))
+    for ab in all_action_boxes:
+        for ps in d.pseudo_states:
+            pb = ps_boxes[ps.id]
+            ps_exp = {"x": pb["x"] - 0.5, "y": pb["y"] - 0.5, "w": pb["w"] + 1, "h": pb["h"] + 1}
+            if _boxes_overlap(ab, ps_exp):
+                issues.append({"type": "action_on_pseudo",
+                    "elements": [ab["state_id"], ps.id],
+                    "detail": f"{ab['state_id']} action '{ab['text']}' overlaps pseudo {ps.id}",
+                    "suggestion": f"ss_modify('{ps.id}', y={ps.y + 2}) or move {ps.id} away from {ab['state_id']}"})
+
     if not issues:
         return "No issues found."
-    # Return JSON for LLM parsing
     summary = f"{len(issues)} issue(s):\n"
     for iss in issues:
         summary += f"  [{iss['type']}] {iss['detail']} → {iss['suggestion']}\n"

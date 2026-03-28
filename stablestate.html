@@ -75,7 +75,25 @@ body { background: var(--bg); color: var(--text); font-family: 'IBM Plex Sans','
 }
 
 /* Syntax highlighting */
-/* Syntax highlighting classes removed (ECN-030: overlay removed for cursor accuracy) */
+#highlight-overlay {
+  position:absolute; top:0; left:0; width:100%; height:100%;
+  padding:12px 12px 12px 4px; margin:0; border:0;
+  font-family:'IBM Plex Mono',monospace; font-size:12px; line-height:20px;
+  white-space:pre; tab-size:2; box-sizing:border-box;
+  overflow:auto; pointer-events:none; color:var(--text);
+  scrollbar-width:none; -ms-overflow-style:none;
+  display:none;
+}
+#highlight-overlay::-webkit-scrollbar { display:none; }
+#editor-container.hl-active #highlight-overlay { display:block; }
+#editor-container.hl-active #editor { color:transparent; }
+.hl-comment { color: #546E7A; }
+.hl-keyword { color: #C792EA; }
+.hl-keyword2 { color: #89DDFF; }
+.hl-arrow { color: #89DDFF; }
+.hl-string { color: #C3E88D; }
+.hl-color { color: #F78C6C; }
+.hl-number { color: #F78C6C; }
 
 /* ─── Center Panel ─── */
 #center-panel { flex:1; display:flex; flex-direction:column; overflow:hidden; }
@@ -192,7 +210,8 @@ input[type=number]::-webkit-inner-spin-button { -webkit-appearance:none; }
     <div class="panel-label"><span class="dot" style="color:var(--accent)">&#9679;</span> DSL</div>
     <div id="editor-wrap">
       <div id="line-nums"></div>
-      <div id="editor-container">
+      <div id="editor-container" class="hl-active">
+        <pre id="highlight-overlay"></pre>
         <textarea id="editor" spellcheck="false">@canvas width=960 height=600 grid=20
 @config transition=local
 
@@ -2703,8 +2722,20 @@ function addEvent() {
 // Syntax Highlighting
 // ═══════════════════════════════════════════════
 function updateHighlight() {
-  // Syntax highlighting disabled — overlay removed to fix cursor position mismatch (ECN-030)
-  // Highlighting is provided by VSCode extension's TextMate grammar instead
+  const overlay = document.getElementById('highlight-overlay');
+  if (!overlay) return;
+  const text = getDsl();
+  overlay.innerHTML = text
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/(^[ \t]*#.*$)/gm, '<span class="hl-comment">$1</span>')
+    .replace(/(@canvas|@config)\b/g, '<span class="hl-keyword">$1</span>')
+    .replace(/\b(state|initial|final|choice|history|deephistory|fork|join|region|group|note)\b/g, '<span class="hl-keyword">$1</span>')
+    .replace(/(->)/g, '<span class="hl-arrow">$1</span>')
+    .replace(/("(?:[^"\\]|\\.)*")/g, '<span class="hl-string">$1</span>')
+    .replace(/(=#[0-9A-Fa-f]{6})\b/g, '<span class="hl-color">$1</span>')
+    .replace(/(\bat\b|\bsize\b)/g, '<span class="hl-keyword2">$1</span>')
+    .replace(/\b(\d+(?:\.\d+)?)\b/g, '<span class="hl-number">$1</span>')
+    + '\n';
 }
 
 // ═══════════════════════════════════════════════
@@ -2834,6 +2865,21 @@ editorEl.addEventListener('input', function() {
 // Sync line numbers scroll
 editorEl.addEventListener('scroll', function() {
   document.getElementById('line-nums').scrollTop = this.scrollTop;
+});
+
+// Highlight overlay: show when editor is not focused, hide when editing
+const editorContainer = document.getElementById('editor-container');
+editorEl.addEventListener('focus', function() {
+  editorContainer.classList.remove('hl-active');
+});
+editorEl.addEventListener('blur', function() {
+  updateHighlight();
+  const overlay = document.getElementById('highlight-overlay');
+  if (overlay) {
+    overlay.scrollTop = this.scrollTop;
+    overlay.scrollLeft = this.scrollLeft;
+  }
+  editorContainer.classList.add('hl-active');
 });
 
 // ═══════════════════════════════════════════════

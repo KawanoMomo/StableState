@@ -24,7 +24,7 @@ state run "Run" at 27,1 size 47x32 entry=EnableWDG do=CyclicTask exit=DisableWDG
 
     state idle "Idle" at 3,2 size 8x4 entry=IdleEntry do=IdleMonitor
     state active "Active" at 14,1 size 16x10 entry=ActiveInit exit=ActiveCleanup color=#0f172a border=#6366F1 {
-      initial act_ini at 1,4.5
+      initial act_ini at 15,0.5
       state accel "Accelerating" at 3,2 size 10x3 entry=AccelStart do=AccelCtrl exit=AccelStop
       state cruise "Cruising" at 3,6 size 10x3 entry=CruiseStart do=CruiseCtrl
       act_ini -> accel

@@ -38,7 +38,7 @@ state run "Run" at 27,1 size 47x32 entry=EnableWDG do=CyclicTask exit=DisableWDG
   }
 
   state diagnostic "Diagnostic" at 2,16 size 14x10 entry=EnterDiag exit=ExitDiag color=#0f172a border=#F59E0B {
-    initial diag_ini at 1,3.5
+    initial diag_ini at 1,1.5
     state uds_session "UDS Session" at 3,2 size 9x3 entry=OpenSession do=ProcessUDS exit=CloseSession
     state flash "Flash Mode" at 3,6 size 9x3 entry=EraseFlash do=WriteFlash exit=VerifyCRC
     diag_ini -> uds_session

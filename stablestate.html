@@ -275,8 +275,26 @@ let currentTool = 'select';
 let connectFrom = null; // first element ID in connect mode
 let showActions = false;
 let zoomLevel = 100;
-let selection = new Set();
-function isSelected(id) { return selection.has(id); }
+let sel = []; // [{type, id}, ...] — StableBlock compatible
+function isSel(id) { return sel.some(s => s.id === id); }
+function isSelected(id) { return isSel(id); } // renderSVG compat wrapper
+
+function getItem(si) {
+  if (!parsed) return null;
+  if (si.type === 'state') return parsed.stateMap[si.id] || null;
+  if (si.type === 'group') return parsed.groupMap[si.id] || null;
+  if (si.type === 'note') return parsed.noteMap[si.id] || null;
+  return parsed.pseudoMap[si.id] || null;
+}
+
+function resolveSelType(id) {
+  if (!parsed) return 'state';
+  if (parsed.stateMap[id]) return 'state';
+  if (parsed.pseudoMap[id]) return parsed.pseudoMap[id].type;
+  if (parsed.groupMap[id]) return 'group';
+  if (parsed.noteMap[id]) return 'note';
+  return 'state';
+}
 
 // Interaction state
 let annotationMode = false; // annotation mode: notes visible + editable, normal elements dimmed + non-interactive
@@ -1101,9 +1119,9 @@ function renderSVG(parsed) {
     const border = st.borderColor || '#6366F1';
     const textClr = st.textColor || '#e0e0e0';
     const round = st.round != null ? st.round : 10;
-    const sel = isSelected(st.id);
-    const strokeClr = sel ? 'white' : border;
-    const strokeW = sel ? 2.5 : 1.5;
+    const elSel = isSelected(st.id);
+    const strokeClr = elSel ? 'white' : border;
+    const strokeW = elSel ? 2.5 : 1.5;
     const dashAttr = st.style === 'dashed' ? ' stroke-dasharray="6 3"' : '';
     const dimSt = searchMatchIds && !searchMatchIds.has(st.id) ? ' opacity="0.2"' : '';
 
@@ -1152,9 +1170,9 @@ function renderSVG(parsed) {
     const border = st.borderColor || '#818CF8';
     const textClr = st.textColor || '#e0e0e0';
     const round = st.round != null ? st.round : 10;
-    const sel = isSelected(st.id);
-    const strokeClr = sel ? 'white' : border;
-    const strokeW = sel ? 2.5 : 1.5;
+    const elSel = isSelected(st.id);
+    const strokeClr = elSel ? 'white' : border;
+    const strokeW = elSel ? 2.5 : 1.5;
     const dashAttr = st.style === 'dashed' ? ' stroke-dasharray="6 3"' : '';
     const hasActions = showActions && (st.entry || st.do || st.exit);
     const dimSt = searchMatchIds && !searchMatchIds.has(st.id) ? ' opacity="0.2"' : '';
@@ -1710,8 +1728,8 @@ function renderSVG(parsed) {
   }
 
   // ─── 8. Resize handles (when exactly 1 element selected) ───
-  if (selection.size === 1) {
-    const selId = [...selection][0];
+  if (sel.length === 1) {
+    const selId = sel[0].id;
     let selEl = parsed.stateMap[selId] || parsed.groupMap[selId] || parsed.noteMap[selId];
     if (selEl && selEl.w != null && selEl.h != null) {
       const pos = getAbsolutePos(selEl, parsed);
@@ -1754,9 +1772,9 @@ function renderSVG(parsed) {
       const fill = n.color || '#FEF3C7';
       const borderClr = n.borderColor || '#D97706';
       const textClr = n.textColor || '#92400E';
-      const sel = isSelected(n.id);
-      const strokeClr = sel ? '#F59E0B' : borderClr;
-      const strokeW = sel ? 2.5 : 1;
+      const elSel = isSelected(n.id);
+      const strokeClr = elSel ? '#F59E0B' : borderClr;
+      const strokeW = elSel ? 2.5 : 1;
       svg += `<rect x="${pos.x}" y="${pos.y}" width="${pw}" height="${ph}" rx="0" ry="0" fill="${esc(fill)}" stroke="${esc(strokeClr)}" stroke-width="${strokeW}" stroke-dasharray="4,2" style="filter:drop-shadow(0 1px 2px rgba(0,0,0,0.08))"/>`;
       const lines = n.label.split('\\n');
       for (let li = 0; li < lines.length; li++) {
@@ -2154,7 +2172,7 @@ function renderProps() {
   let html = '';
 
   // ─── Selection-dependent section ───
-  const selArr = [...selection];
+  const selArr = sel.map(s => s.id);
 
   if (selArr.length === 0) {
     if (annotationMode) {
@@ -3076,8 +3094,8 @@ function hitTest(px, py) {
 // Resize Handle Hit Testing
 // ═══════════════════════════════════════════════
 function hitTestHandle(px, py) {
-  if (!parsed || selection.size !== 1) return null;
-  const selId = [...selection][0];
+  if (!parsed || sel.length !== 1) return null;
+  const selId = sel[0].id;
   // In annotation mode, only allow resize for notes
   if (annotationMode && !parsed.noteMap[selId]) return null;
   // In normal mode, don't allow resize for notes
@@ -3113,10 +3131,11 @@ function hitTestHandle(px, py) {
 // ═══════════════════════════════════════════════
 // Drag Set Collection
 // ═══════════════════════════════════════════════
-function collectDragSet(selectionSet) {
+function collectDragSet(selItems) {
   if (!parsed) return [];
   const items = [];
-  for (const id of selectionSet) {
+  for (const si of selItems) {
+    const id = si.id;
     const el = parsed.stateMap[id] || parsed.pseudoMap[id] || parsed.groupMap[id] || parsed.noteMap[id];
     if (!el) continue;
     let type;
@@ -3129,8 +3148,8 @@ function collectDragSet(selectionSet) {
   }
 
   // If a group is selected, include states inside it (center-point containment)
-  for (const id of selectionSet) {
-    const grp = parsed.groupMap[id];
+  for (const si of selItems) {
+    const grp = parsed.groupMap[si.id];
     if (!grp) continue;
     for (const st of parsed.states) {
       const cx = st.x + (st.w || 0) / 2, cy = st.y + (st.h || 0) / 2;
@@ -3281,8 +3300,7 @@ function redo() {
       if (!connectFrom) {
         // First click: set source, highlight it
         connectFrom = hit.id;
-        selection.clear();
-        selection.add(hit.id);
+        sel = [{type: resolveSelType(hit.id), id: hit.id}];
         refresh();
         return;
       } else {
@@ -3295,7 +3313,7 @@ function redo() {
           setDsl(dsl);
         }
         connectFrom = null;
-        selection.clear();
+        sel = [];
         setTool('select');
         refresh();
         return;
@@ -3304,7 +3322,7 @@ function redo() {
 
     if (!hit) {
       // Click on empty area: clear selection
-      selection.clear();
+      sel = [];
       snapGuides = [];
       refresh();
       return;
@@ -3312,25 +3330,24 @@ function redo() {
 
     // Shift-click: toggle in selection
     if (e.shiftKey) {
-      if (selection.has(hit.id)) {
-        selection.delete(hit.id);
+      if (isSel(hit.id)) {
+        sel = sel.filter(s => s.id !== hit.id);
       } else {
-        selection.add(hit.id);
+        if (!isSel(hit.id)) sel.push({type: resolveSelType(hit.id), id: hit.id});
       }
       refresh();
       return;
     }
 
     // Normal click: if not already selected, replace selection
-    if (!selection.has(hit.id)) {
-      selection.clear();
-      selection.add(hit.id);
+    if (!isSel(hit.id)) {
+      sel = [{type: resolveSelType(hit.id), id: hit.id}];
       refresh();
     }
 
     // Start drag
     pushHistory();
-    const items = collectDragSet(selection);
+    const items = collectDragSet(sel);
     dragState = {
       startX: pt.x,
       startY: pt.y,
@@ -3470,8 +3487,8 @@ document.getElementById('svg-wrap').addEventListener('wheel', function(e) {
 // Connect Selected
 // ═══════════════════════════════════════════════
 function connectSelected() {
-  if (selection.size !== 2) return;
-  const ids = [...selection];
+  if (sel.length !== 2) return;
+  const ids = sel.map(s => s.id);
   const event = prompt('Event name (optional):');
   pushHistory();
   let dsl = getDsl();
@@ -3516,13 +3533,13 @@ function removeDSLElement(id, dsl) {
 }
 
 function deleteSelected() {
-  if (!selection.size) return;
+  if (!sel.length) return;
   pushHistory();
   let dsl = getDsl();
-  for (const id of selection) {
-    dsl = removeDSLElement(id, dsl);
+  for (const si of sel) {
+    dsl = removeDSLElement(si.id, dsl);
   }
-  selection.clear();
+  sel = [];
   setDsl(dsl);
   refresh();
 }
@@ -3531,11 +3548,12 @@ function deleteSelected() {
 // Copy / Paste (basic)
 // ═══════════════════════════════════════════════
 function copySelection() {
-  if (!selection.size) return;
+  if (!sel.length) return;
   clipboard = [];
   const dsl = getDsl();
   const lines = dsl.split('\n');
-  for (const id of selection) {
+  for (const si of sel) {
+    const id = si.id;
     // Find the DSL lines that define this element
     let collecting = false;
     let nestDepth = 0;
@@ -3671,10 +3689,11 @@ function autoRoute() {
 }
 
 function groupSelected() {
-  if (!parsed || selection.size < 2) return;
+  if (!parsed || sel.length < 2) return;
   const g = parsed.canvas.grid;
   let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-  for (const id of selection) {
+  for (const si of sel) {
+    const id = si.id;
     const el = parsed.stateMap[id] || parsed.pseudoMap[id] || parsed.groupMap[id];
     if (!el) continue;
     const abs = getAbsolutePos(el, parsed);
@@ -3735,8 +3754,8 @@ function addNewElement(type) {
 
   // Check if a composite state is selected — new element goes inside it
   let parentState = null;
-  if (parsed && selection.size === 1) {
-    const selId = [...selection][0];
+  if (parsed && sel.length === 1) {
+    const selId = sel[0].id;
     const st = parsed.stateMap[selId];
     if (st && st.children.length > 0) {
       parentState = st;
@@ -3830,10 +3849,10 @@ function toggleAnnotations() {
   // Filter selection on mode change
   if (annotationMode) {
     const noteIds = new Set(parsed ? parsed.notes.map(n => n.id) : []);
-    selection = new Set([...selection].filter(id => noteIds.has(id)));
+    sel = sel.filter(s => noteIds.has(s.id));
   } else {
     const noteIds = new Set(parsed ? parsed.notes.map(n => n.id) : []);
-    selection = new Set([...selection].filter(id => !noteIds.has(id)));
+    sel = sel.filter(s => !noteIds.has(s.id));
   }
   const btn = document.getElementById('btn-annotations');
   if (btn) {
@@ -3918,9 +3937,13 @@ document.addEventListener('keydown', function(e) {
     e.preventDefault();
     if (!parsed) return;
     if (annotationMode) {
-      selection = new Set(parsed.notes.map(el => el.id));
+      sel = parsed.notes.map(el => ({type: 'note', id: el.id}));
     } else {
-      selection = new Set([...parsed.states, ...parsed.pseudoStates, ...parsed.groups].map(el => el.id));
+      sel = [
+        ...parsed.states.map(el => ({type: 'state', id: el.id})),
+        ...parsed.pseudoStates.map(el => ({type: el.type, id: el.id})),
+        ...parsed.groups.map(el => ({type: 'group', id: el.id}))
+      ];
     }
     refresh();
   }
@@ -3928,14 +3951,15 @@ document.addEventListener('keydown', function(e) {
   if (e.ctrlKey && e.key === 'v') { pasteSelection(); }
 
   // ADR-018: Arrow key nudge (1 grid for states/groups, 0.5 grid for pseudo-states)
-  if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.key) && selection.size > 0) {
+  if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.key) && sel.length > 0) {
     e.preventDefault();
     if (!parsed) return;
     const dir = e.key === 'ArrowRight' ? 1 : e.key === 'ArrowLeft' ? -1 : e.key === 'ArrowDown' ? 1 : -1;
     const isH = e.key === 'ArrowRight' || e.key === 'ArrowLeft';
     pushHistory();
     let dsl = getDsl();
-    for (const id of selection) {
+    for (const si of sel) {
+      const id = si.id;
       if (annotationMode && !parsed.noteMap[id]) continue;
       if (!annotationMode && parsed.noteMap[id]) continue;
       const st = parsed.stateMap[id] || parsed.pseudoMap[id] || parsed.groupMap[id] || parsed.noteMap[id];

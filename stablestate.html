@@ -1899,11 +1899,11 @@ function renderTable(parsed) {
     if (st.children.length === 0) {
       leafColumns.push({ id: st.id, state: st, depth: depth, isInitial: initialTargets.has(st.id) });
     } else {
+      leafColumns.push({ id: st.id, state: st, depth: depth + 1, isInitial: false, isSelf: true });
       for (const childId of st.children) {
         const child = parsed.stateMap[childId];
         if (child) walkState(child, depth + 1);
       }
-      leafColumns.push({ id: st.id, state: st, depth: depth + 1, isInitial: false, isSelf: true });
     }
   }
 

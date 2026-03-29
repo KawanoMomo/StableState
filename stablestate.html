@@ -158,6 +158,7 @@ input[type=number]::-webkit-inner-spin-button { -webkit-appearance:none; }
     <div class="sep"></div>
     <button class="tb" id="btn-actions" onclick="toggleActions()">Actions</button>
     <button class="tb" id="btn-annotations" onclick="toggleAnnotations()">Notes</button>
+    <button class="tb" id="btn-highlight" onclick="toggleHighlight()" title="Highlight connected (H)">&#9678; HL</button>
     <button class="tb" onclick="autoRoute()" title="遷移線の交差を最小化">AutoRoute</button>
     <div class="sep"></div>
     <button class="tb tb-accent" onclick="exportSVG()">SVG</button>
@@ -307,6 +308,26 @@ let zoom = 1.0;
 let snapGuides = [];       // [{axis:'x'|'y', pos:number}] for rendering
 let searchFilter = '';     // ADR-026: search/filter string
 let searchMatchIds = null; // Set of matching IDs, or null if no filter
+let highlight = false;
+
+function getConnectedIds() {
+  if (!parsed) return new Set();
+  const ids = new Set();
+  for (const t of parsed.transitions) {
+    const fromEl = resolveStateRef(t.from, parsed);
+    const toEl = resolveStateRef(t.to, parsed);
+    if (fromEl) ids.add(fromEl.id);
+    if (toEl) ids.add(toEl.id);
+  }
+  return ids;
+}
+
+function toggleHighlight() {
+  highlight = !highlight;
+  const btn = document.getElementById('btn-highlight');
+  if (btn) btn.classList.toggle('active', highlight);
+  refresh();
+}
 
 // ═══════════════════════════════════════════════
 // Tab Switching
@@ -1072,6 +1093,7 @@ function renderSVG(parsed) {
   if (!parsed) return '';
   const { canvas } = parsed;
   const g = canvas.grid;
+  const hlIds = highlight ? getConnectedIds() : null;
   const sans = "'IBM Plex Sans','Noto Sans JP',sans-serif";
   const mono = "'IBM Plex Mono',monospace";
   const shadow = 'filter="drop-shadow(2px 2px 4px rgba(0,0,0,0.4))"';
@@ -1095,7 +1117,10 @@ function renderSVG(parsed) {
     const fill = grp.color || '#1a1a3e';
     const border = grp.borderColor || '#3a3a5a';
     const textClr = grp.textColor || '#888888';
-    const dimGrp = searchMatchIds && !searchMatchIds.has(grp.id) ? ' opacity="0.2"' : '';
+    const dimGrpSearch = searchMatchIds && !searchMatchIds.has(grp.id) ? 0.2 : null;
+    const dimGrpHl = hlIds && !hlIds.has(grp.id) ? 0.15 : null;
+    const dimGrpVal = dimGrpSearch || dimGrpHl;
+    const dimGrp = dimGrpVal ? ` opacity="${dimGrpVal}"` : '';
     const grpShadow = isSelected(grp.id) ? 'filter="drop-shadow(0 4px 12px rgba(99,102,241,0.5))"' : '';
     svg += `<g data-type="group" data-id="${grp.id}" style="cursor:${annotationMode?'default':'grab'}"${dimGrp}>`;
     svg += `<rect x="${px}" y="${py}" width="${pw}" height="${ph}" rx="6" ry="6" fill="${esc(fill)}" fill-opacity="0.3" stroke="${esc(border)}" stroke-width="1" ${grpShadow}/>`;
@@ -1116,7 +1141,10 @@ function renderSVG(parsed) {
     const strokeClr = elSel ? 'white' : border;
     const strokeW = elSel ? 2.5 : 1.5;
     const dashAttr = st.style === 'dashed' ? ' stroke-dasharray="6 3"' : '';
-    const dimSt = searchMatchIds && !searchMatchIds.has(st.id) ? ' opacity="0.2"' : '';
+    const dimStSearch = searchMatchIds && !searchMatchIds.has(st.id) ? 0.2 : null;
+    const dimStHl = hlIds && !hlIds.has(st.id) ? 0.15 : null;
+    const dimStVal = dimStSearch || dimStHl;
+    const dimSt = dimStVal ? ` opacity="${dimStVal}"` : '';
     const stShadow = elSel ? 'filter="drop-shadow(0 4px 12px rgba(99,102,241,0.5))"' : shadow;
 
     svg += `<g data-type="state" data-id="${st.id}" style="cursor:${annotationMode?'default':'grab'}"${dimSt}>`;
@@ -1169,7 +1197,10 @@ function renderSVG(parsed) {
     const strokeW = elSel ? 2.5 : 1.5;
     const dashAttr = st.style === 'dashed' ? ' stroke-dasharray="6 3"' : '';
     const hasActions = showActions && (st.entry || st.do || st.exit);
-    const dimSt = searchMatchIds && !searchMatchIds.has(st.id) ? ' opacity="0.2"' : '';
+    const dimStSearch = searchMatchIds && !searchMatchIds.has(st.id) ? 0.2 : null;
+    const dimStHl = hlIds && !hlIds.has(st.id) ? 0.15 : null;
+    const dimStVal = dimStSearch || dimStHl;
+    const dimSt = dimStVal ? ` opacity="${dimStVal}"` : '';
     const stShadow = elSel ? 'filter="drop-shadow(0 4px 12px rgba(99,102,241,0.5))"' : shadow;
 
     svg += `<g data-type="state" data-id="${st.id}" style="cursor:${annotationMode?'default':'grab'}"${dimSt}>`;
@@ -1204,7 +1235,10 @@ function renderSVG(parsed) {
   // ─── 5. Pseudo-states ───
   for (const ps of parsed.pseudoStates) {
     const pos = getAbsolutePos(ps, parsed);
-    const dimPs = searchMatchIds && !searchMatchIds.has(ps.id) ? ' opacity="0.2"' : '';
+    const dimPsSearch = searchMatchIds && !searchMatchIds.has(ps.id) ? 0.2 : null;
+    const dimPsHl = hlIds && !hlIds.has(ps.id) ? 0.15 : null;
+    const dimPsVal = dimPsSearch || dimPsHl;
+    const dimPs = dimPsVal ? ` opacity="${dimPsVal}"` : '';
     const psSel = isSelected(ps.id);
     const psShadow = psSel ? 'filter="drop-shadow(0 4px 12px rgba(99,102,241,0.5))"' : shadow;
     svg += `<g data-type="${ps.type}" data-id="${ps.id}" style="cursor:grab"${dimPs}>`;
@@ -3492,6 +3526,19 @@ function copySelection() {
   }
 }
 
+function cutSelection() {
+  if (!sel.length) return;
+  copySelection();
+  pushHistory();
+  let dsl = getDsl();
+  sel.forEach(si => {
+    dsl = removeDSLElement(si.id, dsl);
+  });
+  sel = [];
+  setDsl(dsl);
+  refresh();
+}
+
 function pasteSelection() {
   if (!clipboard || !clipboard.length) return;
   pushHistory();
@@ -3823,58 +3870,56 @@ function clearSearchFilter() {
 document.addEventListener('keydown', function(e) {
   const ta = document.getElementById('editor');
   const ae = document.activeElement;
-  if (ae === ta) return; // Don't intercept while editing DSL
+
+  // Ctrl+Z: Undo (always works)
+  if ((e.ctrlKey || e.metaKey) && e.key === 'z' && !e.shiftKey) { e.preventDefault(); undo(); return; }
+  // Ctrl+Y or Ctrl+Shift+Z: Redo
+  if ((e.ctrlKey || e.metaKey) && (e.key === 'y' || (e.key === 'z' && e.shiftKey))) { e.preventDefault(); redo(); return; }
+  // Ctrl+Shift+Z uppercase fallback
+  if ((e.ctrlKey || e.metaKey) && e.key === 'Z' && e.shiftKey) { e.preventDefault(); redo(); return; }
+
+  // Don't intercept while editing DSL
+  if (ae === ta) return;
   if (ae && (ae.tagName === 'INPUT' || ae.tagName === 'SELECT' || ae.tagName === 'TEXTAREA')) {
-    // Allow Ctrl shortcuts but block arrow keys etc. from moving elements
-    if (!e.ctrlKey) return;
+    if (!e.ctrlKey && !e.metaKey) return;
   }
 
-  if (e.ctrlKey && e.key === 'z') { e.preventDefault(); undo(); }
-  if (e.ctrlKey && e.key === 'y') { e.preventDefault(); redo(); }
-  if (e.key === 'Delete' || e.key === 'Backspace') { e.preventDefault(); deleteSelected(); }
-  if (e.key === 'n' || e.key === 'N') { toggleAnnotations(); }
-  if (e.ctrlKey && e.key === 'a') {
+  // Ctrl+C: Copy
+  if ((e.ctrlKey || e.metaKey) && e.key === 'c') { e.preventDefault(); copySelection(); return; }
+  // Ctrl+X: Cut
+  if ((e.ctrlKey || e.metaKey) && e.key === 'x') { e.preventDefault(); cutSelection(); return; }
+  // Ctrl+V: Paste
+  if ((e.ctrlKey || e.metaKey) && e.key === 'v') { e.preventDefault(); pasteSelection(); return; }
+  // Delete / Backspace
+  if (e.key === 'Delete' || e.key === 'Backspace') { e.preventDefault(); deleteSelected(); return; }
+  // Ctrl+A: Select all
+  if ((e.ctrlKey || e.metaKey) && e.key === 'a') {
     e.preventDefault();
     if (!parsed) return;
     if (annotationMode) {
-      sel = parsed.notes.map(el => ({type: 'note', id: el.id}));
+      sel = parsed.notes.map(n => ({type: 'note', id: n.id}));
     } else {
       sel = [
-        ...parsed.states.map(el => ({type: 'state', id: el.id})),
-        ...parsed.pseudoStates.map(el => ({type: el.type, id: el.id})),
-        ...parsed.groups.map(el => ({type: 'group', id: el.id}))
+        ...parsed.states.map(s => ({type: 'state', id: s.id})),
+        ...parsed.pseudoStates.map(p => ({type: p.type, id: p.id})),
+        ...parsed.groups.map(g => ({type: 'group', id: g.id}))
       ];
     }
     refresh();
+    return;
   }
-  if (e.ctrlKey && e.key === 'c') { copySelection(); }
-  if (e.ctrlKey && e.key === 'v') { pasteSelection(); }
-
-  // ADR-018: Arrow key nudge (1 grid for states/groups, 0.5 grid for pseudo-states)
-  if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.key) && sel.length > 0) {
+  // Arrow keys: move selected
+  if (sel.length && ['ArrowUp','ArrowDown','ArrowLeft','ArrowRight'].includes(e.key)) {
     e.preventDefault();
-    if (!parsed) return;
-    const dir = e.key === 'ArrowRight' ? 1 : e.key === 'ArrowLeft' ? -1 : e.key === 'ArrowDown' ? 1 : -1;
-    const isH = e.key === 'ArrowRight' || e.key === 'ArrowLeft';
-    pushHistory();
-    let dsl = getDsl();
-    for (const si of sel) {
-      const id = si.id;
-      if (annotationMode && !parsed.noteMap[id]) continue;
-      if (!annotationMode && parsed.noteMap[id]) continue;
-      const st = parsed.stateMap[id] || parsed.pseudoMap[id] || parsed.groupMap[id] || parsed.noteMap[id];
-      if (!st) continue;
-      const type = parsed.stateMap[id] ? 'state' : parsed.pseudoMap[id] ? parsed.pseudoMap[id].type : parsed.groupMap[id] ? 'group' : 'note';
-      const step = parsed.pseudoMap[id] ? 0.5 : 1;
-      const dx = isH ? dir * step : 0;
-      const dy = isH ? 0 : dir * step;
-      const nx = Math.max(0, (st.x || 0) + dx);
-      const ny = Math.max(0, (st.y || 0) + dy);
-      dsl = updatePos(type, id, nx, ny, dsl);
-    }
-    setDsl(dsl);
-    refresh();
+    const ax = (e.key === 'ArrowLeft' || e.key === 'ArrowRight') ? 'x' : 'y';
+    const d = (e.key === 'ArrowRight' || e.key === 'ArrowDown') ? 1 : -1;
+    if (sel.length > 1) batchNudge(ax, d); else nudge(ax, d);
+    return;
   }
+  // H: Toggle highlight
+  if (e.key === 'h' || e.key === 'H') { e.preventDefault(); toggleHighlight(); return; }
+  // N: Toggle annotations
+  if (e.key === 'n' || e.key === 'N') { e.preventDefault(); toggleAnnotations(); return; }
 });
 
 // ═══════════════════════════════════════════════

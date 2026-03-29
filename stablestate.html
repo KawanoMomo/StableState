@@ -2163,7 +2163,7 @@ function renderTable(parsed) {
         // No transition exists — show form to create one
         html += `<div class="prop-sub" style="color:#F59E0B;margin-bottom:6px">新規遷移を作成</div>`;
         html += `<div class="prop-sub">target (状態名 or ID)</div>`;
-        html += `<input class="prop-input" id="pp-table-target" placeholder="遷移先">`;
+        html += `<input class="prop-input" id="pp-table-target" placeholder="遷移先 (空=@internal)">`;
         html += `<div class="prop-sub" style="margin-top:4px">[guard]</div>`;
         html += `<input class="prop-input" id="pp-table-guard" placeholder="ガード条件">`;
         html += `<div class="prop-sub" style="margin-top:4px">/ action</div>`;
@@ -2181,10 +2181,12 @@ function renderTable(parsed) {
           const target = document.getElementById('pp-table-target').value.trim();
           const guard = document.getElementById('pp-table-guard').value.trim();
           const action = document.getElementById('pp-table-action').value.replace(/\n/g, ' ').trim();
-          // Resolve target: empty = self-transition, otherwise find by label or id
+          // Resolve target: empty = @internal (action only, no state change), otherwise find by label or id
           let targetId = null;
+          let kind = null;
           if (!target) {
             targetId = stateDotPath(stateId);
+            kind = 'internal';
           } else {
             for (const s of parsed.states) {
               if (s.label === target || s.id === target) { targetId = stateDotPath(s.id); break; }
@@ -2194,7 +2196,7 @@ function renderTable(parsed) {
           pushHistory();
           let dsl = getDsl();
           const ev = evName === '(none)' ? null : evName;
-          dsl = addTransition(stateDotPath(stateId), targetId, ev, guard || null, action || null, null, dsl);
+          dsl = addTransition(stateDotPath(stateId), targetId, ev, guard || null, action || null, kind, dsl);
           setDsl(dsl);
           refresh();
         });

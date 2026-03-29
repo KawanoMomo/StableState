@@ -1388,7 +1388,7 @@ function renderSVG(parsed) {
     const points = [fromPt];
     const margin = 20;
     const co = channelOffset || 0; // channel offset in pixels
-    const ri = (routeIndex || 0) * 20; // extra spread per route for U-shape legs (20px ≈ label height)
+    const ri = (routeIndex || 0) * 30; // extra spread per route for U-shape legs (30px ≈ multi-line label height)
 
     // same-axis opposite sides
     if (fromSide === 'right' && toSide === 'left') {
@@ -2436,31 +2436,31 @@ function renderProps() {
       const _tColors = ['#89DDFF','#94A3B8','#818CF8','#22C55E','#F59E0B','#EF4444','#EC4899','#06B6D4'];
       for (let ti = 0; ti < trans.length; ti++) {
         const t = trans[ti];
+        const tl = t.line; // DSL line number (1-based) — unique identifier
         const tf = esc(t.from), tt = esc(t.to), te = esc(t.event || ''), tg = esc(t.guard || '');
-        html += `<div style="padding:5px 6px;background:var(--surface,#1e1e3e);border-radius:4px;margin-bottom:6px;font-size:11px;color:var(--fg,#e0e0e0)">`;
-        const ta = esc(t.action || '');
-        html += `<div style="margin-bottom:3px;font-weight:600;color:#A5B4FC">${tf} &rarr; ${tt}</div>`;
-        // Event / Guard editors + Action checkbox
         const hasAction = !!(t.action);
+        html += `<div style="padding:5px 6px;background:var(--surface,#1e1e3e);border-radius:4px;margin-bottom:6px;font-size:11px;color:var(--fg,#e0e0e0)">`;
+        html += `<div style="margin-bottom:3px;font-weight:600;color:#A5B4FC">${tf} &rarr; ${tt}</div>`;
+        // Event / Guard + Action checkbox (all keyed by line number)
         html += `<div style="display:flex;gap:2px;align-items:center;margin-bottom:3px">`;
-        html += `<input class="prop-input" style="flex:2;font-size:10px;padding:2px 4px" value="${te}" placeholder="Event" data-tr-field="event" data-tr-from="${tf}" data-tr-to="${tt}" data-tr-ev="${te}" data-tr-gd="${tg}">`;
-        html += `<input class="prop-input" style="flex:1;font-size:10px;padding:2px 4px" value="${tg}" placeholder="[Guard]" data-tr-field="guard" data-tr-from="${tf}" data-tr-to="${tt}" data-tr-ev="${te}" data-tr-gd="${tg}">`;
-        html += `<label style="display:flex;align-items:center;gap:2px;font-size:9px;color:${hasAction ? '#C3E88D' : '#666'};white-space:nowrap;cursor:pointer"><input type="checkbox" ${hasAction ? 'checked' : ''} data-tr-field="action" data-tr-from="${tf}" data-tr-to="${tt}" data-tr-ev="${te}" data-tr-gd="${tg}">Act</label>`;
+        html += `<input class="prop-input" style="flex:2;font-size:10px;padding:2px 4px" value="${te}" placeholder="Event" data-tr-line="${tl}" data-tr-field="event">`;
+        html += `<input class="prop-input" style="flex:1;font-size:10px;padding:2px 4px" value="${tg}" placeholder="[Guard]" data-tr-line="${tl}" data-tr-field="guard">`;
+        html += `<label style="display:flex;align-items:center;gap:2px;font-size:9px;color:${hasAction ? '#C3E88D' : '#666'};white-space:nowrap;cursor:pointer"><input type="checkbox" ${hasAction ? 'checked' : ''} data-tr-line="${tl}" data-tr-field="action">Act</label>`;
         html += `</div>`;
         // Flip + Delete
         html += `<div style="display:flex;gap:2px;margin-bottom:4px">`;
-        html += `<button class="tb" style="flex:1;font-size:10px;padding:2px" onclick="flipTrans('${tf}','${tt}','${te}','${tg}')">⇄ 反転</button>`;
-        html += `<button class="tb" style="flex:1;font-size:10px;padding:2px;border-color:#EF4444;color:#FCA5A5" onclick="removeTransExact('${tf}','${tt}','${te}','${tg}')">✕ 削除</button>`;
+        html += `<button class="tb" style="flex:1;font-size:10px;padding:2px" onclick="flipTransByLine(${tl})">⇄ 反転</button>`;
+        html += `<button class="tb" style="flex:1;font-size:10px;padding:2px;border-color:#EF4444;color:#FCA5A5" onclick="removeTransByLine(${tl})">✕ 削除</button>`;
         html += `</div>`;
         // Color
         html += `<div style="display:flex;gap:2px;flex-wrap:wrap;margin-bottom:3px">`;
-        for (const c of _tColors) html += `<div class="color-dot" style="background:${c};width:14px;height:14px" onclick="setTransPropExact('${tf}','${tt}','${te}','${tg}','color','${c}')"></div>`;
+        for (const c of _tColors) html += `<div class="color-dot" style="background:${c};width:14px;height:14px" onclick="setTransPropByLine(${tl},'color','${c}')"></div>`;
         html += `</div>`;
         // Width + Style
         html += `<div style="display:flex;gap:2px">`;
-        for (const w of [1,2,3]) html += `<button class="tb" style="flex:1;font-size:9px;padding:1px" onclick="setTransPropExact('${tf}','${tt}','${te}','${tg}','width','${w}')">${w}px</button>`;
-        html += `<button class="tb" style="flex:1;font-size:9px;padding:1px" onclick="setTransPropExact('${tf}','${tt}','${te}','${tg}','style','solid')">solid</button>`;
-        html += `<button class="tb" style="flex:1;font-size:9px;padding:1px" onclick="setTransPropExact('${tf}','${tt}','${te}','${tg}','style','dashed')">dash</button>`;
+        for (const w of [1,2,3]) html += `<button class="tb" style="flex:1;font-size:9px;padding:1px" onclick="setTransPropByLine(${tl},'width','${w}')">${w}px</button>`;
+        html += `<button class="tb" style="flex:1;font-size:9px;padding:1px" onclick="setTransPropByLine(${tl},'style','solid')">solid</button>`;
+        html += `<button class="tb" style="flex:1;font-size:9px;padding:1px" onclick="setTransPropByLine(${tl},'style','dashed')">dash</button>`;
         html += `</div>`;
         html += `</div>`;
       }
@@ -2507,15 +2507,16 @@ function renderProps() {
 
   panel.innerHTML = html;
 
-  // ─── Transition field editors (event/guard + action checkbox) ───
-  panel.querySelectorAll('input[data-tr-field]').forEach(function(inp) {
+  // ─── Transition field editors (event/guard + action checkbox) — keyed by line number ───
+  panel.querySelectorAll('input[data-tr-line]').forEach(function(inp) {
+    const lineNum = parseInt(inp.dataset.trLine);
     if (inp.type === 'checkbox') {
       inp.addEventListener('change', function() {
-        updateTransField(this.dataset.trFrom, this.dataset.trTo, this.dataset.trEv, this.dataset.trGd, 'action', this.checked ? 'Act' : '');
+        updateTransFieldByLine(lineNum, 'action', this.checked ? 'Act' : '');
       });
     } else {
       inp.addEventListener('change', function() {
-        updateTransField(this.dataset.trFrom, this.dataset.trTo, this.dataset.trEv, this.dataset.trGd, this.dataset.trField, this.value.trim());
+        updateTransFieldByLine(lineNum, this.dataset.trField, this.value.trim());
       });
     }
   });
@@ -3778,56 +3779,24 @@ function removeTrans(a, b) {
   refresh();
 }
 
-// Remove a specific transition line matching from, to, event, guard
-function removeTransExact(from, to, event, guard) {
+// Remove a transition by DSL line number (1-based)
+function removeTransByLine(lineNum) {
   pushHistory();
   let dsl = getDsl();
   const lines = dsl.split('\n');
-  for (let i = 0; i < lines.length; i++) {
-    const t = lines[i].trim();
-    const m = t.match(/^(\S+)\s*->\s*(\S+)\s*(.*)/);
-    if (!m) continue;
-    if (m[1] !== from || m[2] !== to) continue;
-    const rest = m[3];
-    // Parse event/guard from rest: ": Event [Guard] / Action ..."
-    let lineEvent = '', lineGuard = '';
-    if (rest.startsWith(':')) {
-      const detail = rest.slice(1).trim();
-      const em = detail.match(/^(\S*)/);
-      if (em) lineEvent = em[1];
-      const gm = detail.match(/\[([^\]]*)\]/);
-      if (gm) lineGuard = gm[1];
-    }
-    if (lineEvent === (event || '') && lineGuard === (guard || '')) {
-      lines.splice(i, 1);
-      break;
-    }
-  }
+  lines.splice(lineNum - 1, 1);
   setDsl(lines.join('\n'));
   refresh();
 }
 
-function flipTrans(from, to, event, guard) {
+// Flip a transition by DSL line number (1-based)
+function flipTransByLine(lineNum) {
   pushHistory();
   let dsl = getDsl();
   const lines = dsl.split('\n');
-  for (let i = 0; i < lines.length; i++) {
-    const t = lines[i].trim();
-    const m = t.match(/^(\S+)(\s*->\s*)(\S+)(.*)/);
-    if (!m) continue;
-    if (m[1] !== from || m[3] !== to) continue;
-    // Match event/guard to identify exact transition
-    const rest = m[4];
-    let le = '', lg = '';
-    if (rest.trim().startsWith(':')) {
-      const d = rest.trim().slice(1).trim();
-      const em = d.match(/^(\S*)/); if (em) le = em[1];
-      const gm = d.match(/\[([^\]]*)\]/); if (gm) lg = gm[1];
-    }
-    if (le !== (event || '') || lg !== (guard || '')) continue;
-    lines[i] = lines[i].replace(/^(\s*)(\S+)(\s*->\s*)(\S+)/, `$1${m[3]}$3${m[1]}`);
-    break;
-  }
+  const idx = lineNum - 1;
+  const m = lines[idx].trim().match(/^(\S+)(\s*->\s*)(\S+)(.*)/);
+  if (m) lines[idx] = lines[idx].replace(/^(\s*)(\S+)(\s*->\s*)(\S+)/, `$1${m[3]}$3${m[1]}`);
   setDsl(lines.join('\n'));
   refresh();
 }
@@ -3859,77 +3828,60 @@ function setTransProp(a, b, prop, val) {
   refresh();
 }
 
-// Set property on a specific transition matching from/to/event/guard exactly
-function setTransPropExact(from, to, event, guard, prop, val) {
+// Set property on a transition by DSL line number (1-based)
+function setTransPropByLine(lineNum, prop, val) {
   pushHistory();
   let dsl = getDsl();
   const lines = dsl.split('\n');
+  const idx = lineNum - 1;
+  if (idx < 0 || idx >= lines.length) return;
   const re = new RegExp(prop + '=\\S+');
-  for (let i = 0; i < lines.length; i++) {
-    const t = lines[i].trim();
-    const m = t.match(/^(\S+)\s*->\s*(\S+)\s*(.*)/);
-    if (!m || m[1] !== from || m[2] !== to) continue;
-    const rest = m[3];
-    let le = '', lg = '';
-    if (rest.startsWith(':')) {
-      const d = rest.slice(1).trim();
-      const em = d.match(/^(\S*)/); if (em) le = em[1];
-      const gm = d.match(/\[([^\]]*)\]/); if (gm) lg = gm[1];
-    }
-    if (le !== (event || '') || lg !== (guard || '')) continue;
-    if (re.test(lines[i])) {
-      lines[i] = lines[i].replace(re, `${prop}=${val}`);
-    } else {
-      const hasColon = lines[i].match(/^[^#]*->[^:]*:/);
-      if (hasColon) lines[i] = lines[i].trimEnd() + ` ${prop}=${val}`;
-      else lines[i] = lines[i].trimEnd() + ` : ${prop}=${val}`;
-    }
-    break;
+  if (re.test(lines[idx])) {
+    lines[idx] = lines[idx].replace(re, `${prop}=${val}`);
+  } else {
+    const hasColon = lines[idx].match(/^[^#]*->[^:]*:/);
+    if (hasColon) lines[idx] = lines[idx].trimEnd() + ` ${prop}=${val}`;
+    else lines[idx] = lines[idx].trimEnd() + ` : ${prop}=${val}`;
   }
   setDsl(lines.join('\n'));
   refresh();
 }
 
-// Update event/guard/action on a specific transition line
-function updateTransField(from, to, oldEvent, oldGuard, field, newVal) {
+// Update event/guard/action on a transition by DSL line number (1-based)
+function updateTransFieldByLine(lineNum, field, newVal) {
   pushHistory();
   let dsl = getDsl();
   const lines = dsl.split('\n');
-  for (let i = 0; i < lines.length; i++) {
-    const t = lines[i].trim();
-    const m = t.match(/^(\S+)\s*->\s*(\S+)\s*(.*)/);
-    if (!m || m[1] !== from || m[2] !== to) continue;
-    const rest = m[3];
-    let le = '', lg = '', la = '', lk = '', attrs = '';
-    if (rest.startsWith(':')) {
-      const d = rest.slice(1).trim();
-      const em = d.match(/^(\S*)/); if (em) le = em[1];
-      const gm = d.match(/\[([^\]]*)\]/); if (gm) lg = gm[1];
-      const am = d.match(/\/\s*(\S+)/); if (am) la = am[1];
-      const km = d.match(/@(\S+)/); if (km) lk = km[1];
-      // Preserve trailing attributes like color=, width=, style=
-      const attrMatch = d.match(/((?:color|width|style)=\S+(?:\s+(?:color|width|style)=\S+)*)\s*$/);
-      if (attrMatch) attrs = attrMatch[1];
-    }
-    if (le !== (oldEvent || '') || lg !== (oldGuard || '')) continue;
-    // Apply field change
-    if (field === 'event') le = newVal || '';
-    if (field === 'guard') lg = newVal || '';
-    if (field === 'action') la = newVal || '';
-    // Rebuild the transition line
-    const prefix = lines[i].match(/^(\s*)/)[1]; // preserve indentation
-    let newLine = `${prefix}${from} -> ${to}`;
-    if (le || lg || la || lk || attrs) {
-      newLine += ' :';
-      if (le) newLine += ' ' + le;
-      if (lg) newLine += ' [' + lg + ']';
-      if (la) newLine += ' / ' + la;
-      if (lk) newLine += ' @' + lk;
-      if (attrs) newLine += ' ' + attrs;
-    }
-    lines[i] = newLine;
-    break;
+  const idx = lineNum - 1;
+  if (idx < 0 || idx >= lines.length) return;
+  const t = lines[idx].trim();
+  const m = t.match(/^(\S+)\s*->\s*(\S+)\s*(.*)/);
+  if (!m) return;
+  const from = m[1], to = m[2], rest = m[3];
+  let le = '', lg = '', la = '', lk = '', attrs = '';
+  if (rest.startsWith(':')) {
+    const d = rest.slice(1).trim();
+    const em = d.match(/^(\S*)/); if (em) le = em[1];
+    const gm = d.match(/\[([^\]]*)\]/); if (gm) lg = gm[1];
+    const am = d.match(/\/\s*(\S+)/); if (am) la = am[1];
+    const km = d.match(/@(\S+)/); if (km) lk = km[1];
+    const attrMatch = d.match(/((?:color|width|style)=\S+(?:\s+(?:color|width|style)=\S+)*)\s*$/);
+    if (attrMatch) attrs = attrMatch[1];
   }
+  if (field === 'event') le = newVal || '';
+  if (field === 'guard') lg = newVal || '';
+  if (field === 'action') la = newVal || '';
+  const prefix = lines[idx].match(/^(\s*)/)[1];
+  let newLine = `${prefix}${from} -> ${to}`;
+  if (le || lg || la || lk || attrs) {
+    newLine += ' :';
+    if (le) newLine += ' ' + le;
+    if (lg) newLine += ' [' + lg + ']';
+    if (la) newLine += ' / ' + la;
+    if (lk) newLine += ' @' + lk;
+    if (attrs) newLine += ' ' + attrs;
+  }
+  lines[idx] = newLine;
   setDsl(lines.join('\n'));
   refresh();
 }

@@ -3709,9 +3709,17 @@ function setTransProp(a, b, prop, val) {
     const m = lines[i].trim().match(/^(\S+)\s*->\s*(\S+)/);
     if (!m) continue;
     if ((m[1] === a && m[2] === b) || (m[1] === b && m[2] === a)) {
-      lines[i] = re.test(lines[i])
-        ? lines[i].replace(re, `${prop}=${val}`)
-        : lines[i].trimEnd() + ` ${prop}=${val}`;
+      if (re.test(lines[i])) {
+        lines[i] = lines[i].replace(re, `${prop}=${val}`);
+      } else {
+        // Ensure there's a : section for transition attributes
+        const hasColon = lines[i].match(/^[^#]*->[^:]*:/);
+        if (hasColon) {
+          lines[i] = lines[i].trimEnd() + ` ${prop}=${val}`;
+        } else {
+          lines[i] = lines[i].trimEnd() + ` : ${prop}=${val}`;
+        }
+      }
       break;
     }
   }

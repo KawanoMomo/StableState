@@ -4070,16 +4070,40 @@ function fixIds() {
   if (!parsed) return;
   pushHistory();
   let dsl = getDsl();
+  // Collect all elements: states, groups, notes, AND pseudo-states
   const allElements = [...parsed.states, ...parsed.groups, ...parsed.notes];
+  const pseudoElements = [...parsed.pseudoStates];
+
+  // Fix states/groups/notes by label
   for (const el of allElements) {
     const newId = labelToId(el.label);
     if (!newId || newId === el.id) continue;
-    // Check for conflicts
     if (parsed.stateMap[newId] || parsed.pseudoMap[newId] || parsed.groupMap[newId] || parsed.noteMap[newId]) continue;
-    // Replace ID in DSL (element definition and all transition references)
     const idRe = new RegExp('\\b' + el.id.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\b', 'g');
     dsl = dsl.replace(idRe, newId);
   }
+
+  // Fix pseudo-states by type prefix (ini, fin, choice, h, dh, fork, join)
+  const pseudoPrefix = { initial: 'ini', final: 'fin', choice: 'choice', history: 'h', deephistory: 'dh', fork: 'fork', join: 'join' };
+  const usedIds = new Set();
+  // Collect currently used IDs after state/group/note rename
+  const tmpParsed = parseDSL(dsl);
+  for (const s of tmpParsed.states) usedIds.add(s.id);
+  for (const p of tmpParsed.pseudoStates) usedIds.add(p.id);
+  for (const g of tmpParsed.groups) usedIds.add(g.id);
+  for (const n of tmpParsed.notes) usedIds.add(n.id);
+
+  for (const ps of pseudoElements) {
+    if (!ps.id.startsWith('__new_')) continue;
+    const base = pseudoPrefix[ps.type] || ps.type;
+    let newId = base;
+    let n = 1;
+    while (usedIds.has(newId)) { newId = base + '_' + n; n++; }
+    usedIds.add(newId);
+    const idRe = new RegExp('\\b' + ps.id.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\b', 'g');
+    dsl = dsl.replace(idRe, newId);
+  }
+
   setDsl(dsl);
   refresh();
 }

@@ -2181,13 +2181,16 @@ function renderTable(parsed) {
           const target = document.getElementById('pp-table-target').value.trim();
           const guard = document.getElementById('pp-table-guard').value.trim();
           const action = document.getElementById('pp-table-action').value.replace(/\n/g, ' ').trim();
-          if (!target) { document.getElementById('pp-table-target').style.borderColor = '#EF4444'; return; }
-          // Resolve target by label or id
+          // Resolve target: empty = self-transition, otherwise find by label or id
           let targetId = null;
-          for (const s of parsed.states) {
-            if (s.label === target || s.id === target) { targetId = stateDotPath(s.id); break; }
+          if (!target) {
+            targetId = stateDotPath(stateId);
+          } else {
+            for (const s of parsed.states) {
+              if (s.label === target || s.id === target) { targetId = stateDotPath(s.id); break; }
+            }
+            if (!targetId) { document.getElementById('pp-table-target').style.borderColor = '#EF4444'; return; }
           }
-          if (!targetId) { document.getElementById('pp-table-target').style.borderColor = '#EF4444'; return; }
           pushHistory();
           let dsl = getDsl();
           const ev = evName === '(none)' ? null : evName;

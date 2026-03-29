@@ -1894,16 +1894,18 @@ function renderTable(parsed) {
     }
   }
 
-  // Depth-first walk to collect leaf columns
+  // Depth-first walk to collect leaf columns + composite self columns
   function walkState(st, depth) {
     if (st.children.length === 0) {
-      // Leaf state
       leafColumns.push({ id: st.id, state: st, depth: depth, isInitial: initialTargets.has(st.id) });
     } else {
+      // Child columns first
       for (const childId of st.children) {
         const child = parsed.stateMap[childId];
         if (child) walkState(child, depth + 1);
       }
+      // Composite self column — same depth as children, unique stateId to prevent merge
+      leafColumns.push({ id: st.id, state: st, depth: depth + 1, isInitial: false, isSelf: true });
     }
   }
 
@@ -1928,16 +1930,27 @@ function renderTable(parsed) {
   }
   const totalHeaderRows = maxDepth + 1; // depth 0..maxDepth
 
-  // For each leaf, compute full ancestry chain (length = depth)
+  // For each column, compute full ancestry chain
   const ancestries = leafColumns.map(function(lc) {
     const chain = [];
-    let cur = lc.state;
-    while (cur.parent) {
-      const p = parsed.stateMap[cur.parent];
-      if (p) { chain.unshift(p); cur = p; }
-      else break;
+    if (lc.isSelf) {
+      // Self column: ancestry = parent's ancestry + parent itself (as grouping header)
+      chain.push(lc.state); // the composite state itself at its depth row
+      let cur = lc.state;
+      while (cur.parent) {
+        const p = parsed.stateMap[cur.parent];
+        if (p) { chain.unshift(p); cur = p; }
+        else break;
+      }
+    } else {
+      let cur = lc.state;
+      while (cur.parent) {
+        const p = parsed.stateMap[cur.parent];
+        if (p) { chain.unshift(p); cur = p; }
+        else break;
+      }
     }
-    return chain; // length = lc.depth
+    return chain;
   });
 
   // Build a cell grid: headerCells[row][col] = {label, colspan, rowspan, stateId} or null (covered by span)
@@ -1961,9 +1974,10 @@ function renderTable(parsed) {
     // Place leaf at its depth row, spanning down to the last header row
     const leafRow = lc.depth;
     const prefix = lc.isInitial ? '>' : '';
+    const selfSuffix = lc.isSelf ? ' ✱' : '';
     headerCells[leafRow][ci] = {
-      label: prefix + lc.state.label,
-      stateId: lc.id,
+      label: prefix + lc.state.label + selfSuffix,
+      stateId: lc.isSelf ? lc.id + '__self' : lc.id, // unique ID prevents merge with parent grouping
       colspan: 1,
       rowspan: totalHeaderRows - leafRow,
       placed: false

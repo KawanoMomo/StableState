@@ -3707,8 +3707,13 @@ function nudgeSz(axis, delta) {
 // ═══════════════════════════════════════════════
 function findTransBetween(a, b) {
   if (!parsed) return [];
+  // Match by bare ID or dot-path (e.g. "accel" matches "active.accel")
+  const dpA = stateDotPath(a), dpB = stateDotPath(b);
+  function match(tRef, id) {
+    return tRef === id || tRef === stateDotPath(id) || tRef.endsWith('.' + id);
+  }
   return parsed.transitions.filter(t =>
-    (t.from === a && t.to === b) || (t.from === b && t.to === a)
+    (match(t.from, a) && match(t.to, b)) || (match(t.from, b) && match(t.to, a))
   );
 }
 

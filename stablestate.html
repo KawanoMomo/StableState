@@ -298,8 +298,7 @@ function resolveSelType(id) {
 
 // Interaction state
 let annotationMode = false; // annotation mode: notes visible + editable, normal elements dimmed + non-interactive
-let dragState = null;      // { startX, startY, items: [{id, type, origX, origY, parent, w, h}], offsetX, offsetY }
-let resizeState = null;    // { id, type, handle, origX, origY, origW, origH, startMX, startMY }
+// dragState/resizeState replaced by setupInteractions() closures
 let undoHistory = [];      // undo stack (DSL snapshots)
 let redoFuture = [];       // redo stack
 const MAX_HISTORY = 100;
@@ -354,17 +353,10 @@ function toggleActions() {
 // Zoom
 // ═══════════════════════════════════════════════
 function setZoom(delta) {
-  zoom = Math.max(0.25, Math.min(4, zoom + delta * 0.25));
-  applyZoom();
-}
-
-function applyZoom() {
-  const svgEl = document.querySelector('#svg-wrap svg');
-  if (svgEl) {
-    svgEl.style.transform = `scale(${zoom})`;
-    svgEl.style.transformOrigin = '0 0';
-  }
+  zoom = Math.max(0.25, Math.min(3, zoom + delta * 0.25));
   document.getElementById('zoom-label').textContent = Math.round(zoom * 100) + '%';
+  document.getElementById('svg-wrap').innerHTML = renderSVG(parsed);
+  setupInteractions();
 }
 
 // ═══════════════════════════════════════════════
@@ -2921,6 +2913,7 @@ function refresh() {
   validate(parsed);
   updateErrorBar(parsed);
   document.getElementById('svg-wrap').innerHTML = renderSVG(parsed);
+  setupInteractions();
   renderTable(parsed);
   renderProps();
   updateLineNumbers();
@@ -2935,6 +2928,7 @@ function refreshView() {
   validate(parsed);
   updateErrorBar(parsed);
   document.getElementById('svg-wrap').innerHTML = renderSVG(parsed);
+  setupInteractions();
   renderTable(parsed);
   updateLineNumbers();
   updateStatus();
@@ -3042,130 +3036,13 @@ editorEl.addEventListener('scroll', function() {
 });
 
 // ═══════════════════════════════════════════════
-// Coordinate Helper (zoom-aware)
+// SVG Scale Helper (StableBlock pattern)
 // ═══════════════════════════════════════════════
-function svgCoords(e) {
-  const rect = document.getElementById('svg-wrap').getBoundingClientRect();
-  return { x: (e.clientX - rect.left) / zoom, y: (e.clientY - rect.top) / zoom };
-}
-
-// ═══════════════════════════════════════════════
-// Hit Testing
-// ═══════════════════════════════════════════════
-function hitTest(px, py) {
-  if (!parsed) return null;
-  const g = parsed.canvas.grid;
-
-  // In normal mode: pseudos first (small targets inside states), then states, then groups
-  if (!annotationMode) {
-    // Pseudo-states first (they sit inside composite states)
-    for (const ps of parsed.pseudoStates) {
-      const abs = getAbsolutePos(ps, parsed);
-      if (Math.hypot(px - abs.x, py - abs.y) < 15) {
-        return { id: ps.id, type: ps.type, element: ps };
-      }
-    }
-    // Leaf states before composite (reverse order = topmost first, leaves are later in array)
-    for (let i = parsed.states.length - 1; i >= 0; i--) {
-      const st = parsed.states[i];
-      const abs = getAbsolutePos(st, parsed);
-      if (px >= abs.x && px <= abs.x + st.w * g && py >= abs.y && py <= abs.y + st.h * g) {
-        return { id: st.id, type: 'state', element: st };
-      }
-    }
-    for (let i = parsed.groups.length - 1; i >= 0; i--) {
-      const grp = parsed.groups[i];
-      const x = grp.x * g, y = grp.y * g;
-      if (px >= x && px <= x + grp.w * g && py >= y && py <= y + grp.h * g) {
-        return { id: grp.id, type: 'group', element: grp };
-      }
-    }
-  }
-
-  // In annotation mode: only notes are interactive
-  if (annotationMode) {
-    for (const n of parsed.notes) {
-      const x = n.x * g, y = n.y * g;
-      if (px >= x && px <= x + n.w * g && py >= y && py <= y + n.h * g) {
-        return { id: n.id, type: 'note', element: n };
-      }
-    }
-  }
-
-  return null;
-}
-
-// ═══════════════════════════════════════════════
-// Resize Handle Hit Testing
-// ═══════════════════════════════════════════════
-function hitTestHandle(px, py) {
-  if (!parsed || sel.length !== 1) return null;
-  const selId = sel[0].id;
-  // In annotation mode, only allow resize for notes
-  if (annotationMode && !parsed.noteMap[selId]) return null;
-  // In normal mode, don't allow resize for notes
-  if (!annotationMode && parsed.noteMap[selId]) return null;
-  const selEl = parsed.stateMap[selId] || parsed.groupMap[selId] || parsed.noteMap[selId];
-  if (!selEl || selEl.w == null || selEl.h == null) return null;
-
-  const g = parsed.canvas.grid;
-  const pos = getAbsolutePos(selEl, parsed);
-  const pw = selEl.w * g;
-  const ph = selEl.h * g;
-  const hs = 8; // hit area radius for handles
-
-  const handles = [
-    { name: 'nw', cx: pos.x,          cy: pos.y },
-    { name: 'n',  cx: pos.x + pw / 2, cy: pos.y },
-    { name: 'ne', cx: pos.x + pw,     cy: pos.y },
-    { name: 'e',  cx: pos.x + pw,     cy: pos.y + ph / 2 },
-    { name: 'se', cx: pos.x + pw,     cy: pos.y + ph },
-    { name: 's',  cx: pos.x + pw / 2, cy: pos.y + ph },
-    { name: 'sw', cx: pos.x,          cy: pos.y + ph },
-    { name: 'w',  cx: pos.x,          cy: pos.y + ph / 2 }
-  ];
-
-  for (const h of handles) {
-    if (Math.abs(px - h.cx) <= hs && Math.abs(py - h.cy) <= hs) {
-      return { handle: h.name, id: selId, element: selEl };
-    }
-  }
-  return null;
-}
-
-// ═══════════════════════════════════════════════
-// Drag Set Collection
-// ═══════════════════════════════════════════════
-function collectDragSet(selItems) {
-  if (!parsed) return [];
-  const items = [];
-  for (const si of selItems) {
-    const id = si.id;
-    const el = parsed.stateMap[id] || parsed.pseudoMap[id] || parsed.groupMap[id] || parsed.noteMap[id];
-    if (!el) continue;
-    let type;
-    if (parsed.stateMap[id]) type = 'state';
-    else if (parsed.pseudoMap[id]) type = el.type;
-    else if (parsed.groupMap[id]) type = 'group';
-    else if (parsed.noteMap[id]) type = 'note';
-    else type = 'state';
-    items.push({ id, type, origX: el.x, origY: el.y, parent: el.parent || null, w: el.w, h: el.h });
-  }
-
-  // If a group is selected, include states inside it (center-point containment)
-  for (const si of selItems) {
-    const grp = parsed.groupMap[si.id];
-    if (!grp) continue;
-    for (const st of parsed.states) {
-      const cx = st.x + (st.w || 0) / 2, cy = st.y + (st.h || 0) / 2;
-      if (cx >= grp.x && cx <= grp.x + grp.w && cy >= grp.y && cy <= grp.y + grp.h) {
-        if (!items.some(it => it.id === st.id)) {
-          items.push({ id: st.id, type: 'state', origX: st.x, origY: st.y, parent: st.parent, w: st.w, h: st.h });
-        }
-      }
-    }
-  }
-  return items;
+function getSvgScale() {
+  const svg = document.querySelector('#svg-wrap svg');
+  if (!svg) return { sx: 1, sy: 1 };
+  const r = svg.getBoundingClientRect();
+  return { sx: parsed.canvas.width / r.width, sy: parsed.canvas.height / r.height };
 }
 
 // ═══════════════════════════════════════════════
@@ -3261,231 +3138,259 @@ function redo() {
 }
 
 // ═══════════════════════════════════════════════
-// Mouse Event Handlers (Drag, Resize)
+// DOM-based Interaction Setup (StableBlock pattern)
 // ═══════════════════════════════════════════════
-(function setupMouseHandlers() {
+function setupInteractions() {
   const svgWrap = document.getElementById('svg-wrap');
+  if (!svgWrap || !parsed) return;
+  const g = parsed.canvas.grid;
 
-  svgWrap.addEventListener('mousedown', function(e) {
-    if (e.button !== 0) return; // left button only
-    const pt = svgCoords(e);
-
-    // Check resize handle first (if single selection)
-    const handleHit = hitTestHandle(pt.x, pt.y);
-    if (handleHit) {
-      const el = handleHit.element;
-      const g = parsed.canvas.grid;
-      pushHistory();
-      resizeState = {
-        id: handleHit.id,
-        type: parsed.stateMap[handleHit.id] ? 'state' : parsed.groupMap[handleHit.id] ? 'group' : 'note',
-        handle: handleHit.handle,
-        origX: el.x,
-        origY: el.y,
-        origW: el.w,
-        origH: el.h,
-        startMX: pt.x,
-        startMY: pt.y
-      };
+  // ─── a) Resize handlers on [data-resize] elements ───
+  svgWrap.querySelectorAll('[data-resize]').forEach(function(handle) {
+    handle.addEventListener('mousedown', function(e) {
+      if (e.button !== 0) return;
       e.preventDefault();
-      return;
-    }
+      e.stopPropagation();
+      const edge = handle.dataset.resize;
+      const rid = handle.dataset.rid;
+      const rtype = handle.dataset.rtype;
+      const el = parsed.stateMap[rid] || parsed.groupMap[rid] || parsed.noteMap[rid];
+      if (!el) return;
+      pushHistory();
+      const origX = el.x, origY = el.y, origW = el.w, origH = el.h;
+      const sc = getSvgScale();
+      const startMX = e.clientX, startMY = e.clientY;
 
-    // Hit test elements
-    const hit = hitTest(pt.x, pt.y);
+      function onMove(ev) {
+        const dx = (ev.clientX - startMX) * sc.sx;
+        const dy = (ev.clientY - startMY) * sc.sy;
+        const dxGrid = Math.round(dx / g);
+        const dyGrid = Math.round(dy / g);
 
-    // Connect mode: click source, then click target to create transition
-    if (currentTool === 'connect') {
-      if (!hit) {
-        // Click empty area: cancel connect mode
-        connectFrom = null;
-        setTool('select');
-        return;
+        let newX = origX, newY = origY, newW = origW, newH = origH;
+        if (edge.includes('w')) { newX = origX + dxGrid; newW = origW - dxGrid; }
+        if (edge.includes('e') && !edge.includes('w')) { newW = origW + dxGrid; }
+        if (edge.includes('n')) { newY = origY + dyGrid; newH = origH - dyGrid; }
+        if (edge.includes('s') && !edge.includes('n')) { newH = origH + dyGrid; }
+
+        newW = Math.max(1, newW);
+        newH = Math.max(1, newH);
+        if (newW === 1 && edge.includes('w')) newX = origX + origW - 1;
+        if (newH === 1 && edge.includes('n')) newY = origY + origH - 1;
+
+        let dsl = getDsl();
+        dsl = updatePos(rtype, rid, newX, newY, dsl);
+        dsl = updateSize(rtype, rid, newW, newH, dsl);
+        setDsl(dsl);
+        parsed = parseDSL(getDsl());
+        document.getElementById('svg-wrap').innerHTML = renderSVG(parsed);
+        setupInteractions();
       }
-      if (!connectFrom) {
-        // First click: set source, highlight it
-        connectFrom = hit.id;
-        sel = [{type: resolveSelType(hit.id), id: hit.id}];
+      function onUp() {
+        document.removeEventListener('mousemove', onMove);
+        document.removeEventListener('mouseup', onUp);
         refresh();
-        return;
-      } else {
-        // Second click: create transition from connectFrom to hit.id
-        if (hit.id !== connectFrom) {
-          const event = prompt('Event name (optional):');
-          pushHistory();
-          let dsl = getDsl();
-          dsl = addTransition(connectFrom, hit.id, event || null, null, null, null, dsl);
-          setDsl(dsl);
+      }
+      document.addEventListener('mousemove', onMove);
+      document.addEventListener('mouseup', onUp);
+    });
+  });
+
+  // ─── b) Drag handlers on g[data-id] elements ───
+  svgWrap.querySelectorAll('g[data-id]').forEach(function(gEl) {
+    gEl.addEventListener('mousedown', function(e) {
+      if (e.button !== 0) return;
+      e.preventDefault();
+      e.stopPropagation();
+      const id = gEl.dataset.id;
+      const type = gEl.dataset.type;
+
+      // Annotation mode filter
+      if (annotationMode && type !== 'note') return;
+      if (!annotationMode && type === 'note') return;
+
+      // Connect mode handling
+      if (currentTool === 'connect') {
+        if (!connectFrom) {
+          connectFrom = id;
+          sel = [{type: resolveSelType(id), id: id}];
+          document.getElementById('svg-wrap').innerHTML = renderSVG(parsed);
+          setupInteractions();
+          renderProps();
+          updateStatus();
+          return;
+        } else {
+          if (id !== connectFrom) {
+            const evName = prompt('Event name (optional):');
+            pushHistory();
+            let dsl = getDsl();
+            dsl = addTransition(connectFrom, id, evName || null, null, null, null, dsl);
+            setDsl(dsl);
+          }
+          connectFrom = null;
+          sel = [];
+          setTool('select');
+          refresh();
+          return;
         }
-        connectFrom = null;
-        sel = [];
-        setTool('select');
-        refresh();
+      }
+
+      // Selection logic
+      if (e.shiftKey) {
+        if (isSel(id)) {
+          sel = sel.filter(s => s.id !== id);
+        } else {
+          sel.push({type: resolveSelType(id), id: id});
+        }
+        document.getElementById('svg-wrap').innerHTML = renderSVG(parsed);
+        setupInteractions();
+        renderProps();
         return;
       }
-    }
 
-    if (!hit) {
-      // Click on empty area: clear selection
+      if (!isSel(id)) {
+        sel = [{type: resolveSelType(id), id: id}];
+        document.getElementById('svg-wrap').innerHTML = renderSVG(parsed);
+        setupInteractions();
+        renderProps();
+      }
+
+      // Collect drag set
+      pushHistory();
+      const dragItems = [];
+      for (const si of sel) {
+        const el = parsed.stateMap[si.id] || parsed.pseudoMap[si.id] || parsed.groupMap[si.id] || parsed.noteMap[si.id];
+        if (!el) continue;
+        let elType;
+        if (parsed.stateMap[si.id]) elType = 'state';
+        else if (parsed.pseudoMap[si.id]) elType = el.type;
+        else if (parsed.groupMap[si.id]) elType = 'group';
+        else if (parsed.noteMap[si.id]) elType = 'note';
+        else elType = 'state';
+        dragItems.push({ id: si.id, type: elType, origX: el.x, origY: el.y, parent: el.parent || null, w: el.w, h: el.h });
+      }
+      // Groups drag contained states
+      for (const si of sel) {
+        const grp = parsed.groupMap[si.id];
+        if (!grp) continue;
+        for (const st of parsed.states) {
+          const cx = st.x + (st.w || 0) / 2, cy = st.y + (st.h || 0) / 2;
+          if (cx >= grp.x && cx <= grp.x + grp.w && cy >= grp.y && cy <= grp.y + grp.h) {
+            if (!dragItems.some(it => it.id === st.id)) {
+              dragItems.push({ id: st.id, type: 'state', origX: st.x, origY: st.y, parent: st.parent, w: st.w, h: st.h });
+            }
+          }
+        }
+      }
+      // Composite states drag children + pseudo-states
+      for (const si of sel) {
+        const st = parsed.stateMap[si.id];
+        if (!st || st.children.length === 0) continue;
+        function addChildren(parentId) {
+          const parent = parsed.stateMap[parentId];
+          if (!parent) return;
+          for (const cid of parent.children) {
+            if (!dragItems.some(it => it.id === cid)) {
+              const child = parsed.stateMap[cid];
+              if (child) dragItems.push({ id: cid, type: 'state', origX: child.x, origY: child.y, parent: child.parent, w: child.w, h: child.h });
+            }
+          }
+          // Include pseudo-states parented to this state
+          for (const ps of parsed.pseudoStates) {
+            if (ps.parent === parentId && !dragItems.some(it => it.id === ps.id)) {
+              dragItems.push({ id: ps.id, type: ps.type, origX: ps.x, origY: ps.y, parent: ps.parent, w: ps.w, h: ps.h });
+            }
+          }
+        }
+        addChildren(si.id);
+      }
+
+      const sc = getSvgScale();
+      const startMX = e.clientX, startMY = e.clientY;
+      let lastDxGrid = 0, lastDyGrid = 0;
+      let moved = false;
+
+      function onMove(ev) {
+        const dx = (ev.clientX - startMX) * sc.sx;
+        const dy = (ev.clientY - startMY) * sc.sy;
+        const isPseudo = dragItems.length === 1 && parsed.pseudoMap[dragItems[0].id];
+        const snapUnit = isPseudo ? g / 2 : g;
+        const dxGrid = Math.round(dx / snapUnit) * (isPseudo ? 0.5 : 1);
+        const dyGrid = Math.round(dy / snapUnit) * (isPseudo ? 0.5 : 1);
+        if (dxGrid === lastDxGrid && dyGrid === lastDyGrid) return;
+        lastDxGrid = dxGrid;
+        lastDyGrid = dyGrid;
+        moved = true;
+
+        let dsl = getDsl();
+        for (const item of dragItems) {
+          const elType = item.type === 'state' ? 'state' :
+                         item.type === 'group' ? 'group' :
+                         item.type === 'note' ? 'note' : item.type;
+          if (item.parent) {
+            const parentSt = parsed.stateMap[item.parent];
+            if (parentSt) {
+              const newX = Math.max(0, Math.min(parentSt.w - (item.w || 1), item.origX + dxGrid));
+              const newY = Math.max(0, Math.min(parentSt.h - (item.h || 1), item.origY + dyGrid));
+              dsl = updatePos(elType, item.id, newX, newY, dsl);
+            } else {
+              dsl = updatePos(elType, item.id, item.origX + dxGrid, item.origY + dyGrid, dsl);
+            }
+          } else {
+            const newX = Math.max(0, item.origX + dxGrid);
+            const newY = Math.max(0, item.origY + dyGrid);
+            dsl = updatePos(elType, item.id, newX, newY, dsl);
+          }
+        }
+        setDsl(dsl);
+        parsed = parseDSL(getDsl());
+        snapGuides = computeSnapGuides(dragItems);
+        document.getElementById('svg-wrap').innerHTML = renderSVG(parsed);
+        setupInteractions();
+      }
+
+      function onUp() {
+        document.removeEventListener('mousemove', onMove);
+        document.removeEventListener('mouseup', onUp);
+        if (!moved) {
+          undoHistory.pop(); // nothing changed, pop the history
+        }
+        snapGuides = [];
+        refresh();
+      }
+      document.addEventListener('mousemove', onMove);
+      document.addEventListener('mouseup', onUp);
+    });
+  });
+
+  // ─── c) Blank click deselect on SVG element ───
+  const svgEl = svgWrap.querySelector('svg');
+  if (svgEl) {
+    svgEl.addEventListener('mousedown', function(e) {
+      if (e.button !== 0) return;
+      // Only trigger if clicked directly on svg or a background rect not inside g[data-id]
+      const target = e.target;
+      if (target.closest('g[data-id]') || target.closest('[data-resize]')) return;
+
+      // Cancel connect mode if active
+      if (currentTool === 'connect') {
+        connectFrom = null;
+        setTool('select');
+      }
+
       sel = [];
       snapGuides = [];
       refresh();
-      return;
-    }
-
-    // Shift-click: toggle in selection
-    if (e.shiftKey) {
-      if (isSel(hit.id)) {
-        sel = sel.filter(s => s.id !== hit.id);
-      } else {
-        if (!isSel(hit.id)) sel.push({type: resolveSelType(hit.id), id: hit.id});
-      }
-      refresh();
-      return;
-    }
-
-    // Normal click: if not already selected, replace selection
-    if (!isSel(hit.id)) {
-      sel = [{type: resolveSelType(hit.id), id: hit.id}];
-      refresh();
-    }
-
-    // Start drag
-    pushHistory();
-    const items = collectDragSet(sel);
-    dragState = {
-      startX: pt.x,
-      startY: pt.y,
-      items: items,
-      lastDxGrid: 0,
-      lastDyGrid: 0
-    };
-    e.preventDefault();
-  });
-
-  // ADR-015: RAF batching for mousemove
-  let rafPending = false;
-  let lastMouseEvent = null;
-
-  function processDragFrame() {
-    rafPending = false;
-    const e = lastMouseEvent;
-    if (!e || !parsed) return;
-    const g = parsed.canvas.grid;
-
-    if (dragState) {
-      const pt = svgCoords(e);
-      const dx = pt.x - dragState.startX;
-      const dy = pt.y - dragState.startY;
-      // Use half-grid snapping for pseudo-states, full-grid for others
-      const isPseudo = dragState.items.length === 1 && parsed.pseudoMap[dragState.items[0].id];
-      const snapUnit = isPseudo ? g / 2 : g;
-      const dxGrid = Math.round(dx / snapUnit) * (isPseudo ? 0.5 : 1);
-      const dyGrid = Math.round(dy / snapUnit) * (isPseudo ? 0.5 : 1);
-
-      if (dxGrid === dragState.lastDxGrid && dyGrid === dragState.lastDyGrid) return;
-      dragState.lastDxGrid = dxGrid;
-      dragState.lastDyGrid = dyGrid;
-
-      let dsl = getDsl();
-      for (const item of dragState.items) {
-        const elType = item.type === 'state' ? 'state' :
-                       item.type === 'group' ? 'group' :
-                       item.type === 'note' ? 'note' : item.type;
-
-        if (item.parent) {
-          const parentSt = parsed.stateMap[item.parent];
-          if (parentSt) {
-            const newX = Math.max(0, Math.min(parentSt.w - (item.w || 1), item.origX + dxGrid));
-            const newY = Math.max(0, Math.min(parentSt.h - (item.h || 1), item.origY + dyGrid));
-            dsl = updatePos(elType, item.id, newX, newY, dsl);
-          } else {
-            dsl = updatePos(elType, item.id, item.origX + dxGrid, item.origY + dyGrid, dsl);
-          }
-        } else {
-          const newX = Math.max(0, item.origX + dxGrid);
-          const newY = Math.max(0, item.origY + dyGrid);
-          dsl = updatePos(elType, item.id, newX, newY, dsl);
-        }
-      }
-      setDsl(dsl);
-
-      parsed = parseDSL(getDsl());
-      snapGuides = computeSnapGuides(dragState.items);
-
-      document.getElementById('svg-wrap').innerHTML = renderSVG(parsed);
-      applyZoom();
-      return;
-    }
-
-    if (resizeState) {
-      const pt = svgCoords(e);
-      const dx = pt.x - resizeState.startMX;
-      const dy = pt.y - resizeState.startMY;
-      const dxGrid = Math.round(dx / g);
-      const dyGrid = Math.round(dy / g);
-      const h = resizeState.handle;
-
-      let newX = resizeState.origX;
-      let newY = resizeState.origY;
-      let newW = resizeState.origW;
-      let newH = resizeState.origH;
-
-      if (h === 'nw' || h === 'w' || h === 'sw') { newX = resizeState.origX + dxGrid; newW = resizeState.origW - dxGrid; }
-      if (h === 'ne' || h === 'e' || h === 'se') { newW = resizeState.origW + dxGrid; }
-      if (h === 'nw' || h === 'n' || h === 'ne') { newY = resizeState.origY + dyGrid; newH = resizeState.origH - dyGrid; }
-      if (h === 'sw' || h === 's' || h === 'se') { newH = resizeState.origH + dyGrid; }
-
-      const minSize = 2;
-      if (newW < minSize) { newW = minSize; if (h.includes('w')) newX = resizeState.origX + resizeState.origW - minSize; }
-      if (newH < minSize) { newH = minSize; if (h.includes('n')) newY = resizeState.origY + resizeState.origH - minSize; }
-
-      let dsl = getDsl();
-      const elType = resizeState.type;
-      dsl = updatePos(elType, resizeState.id, newX, newY, dsl);
-      dsl = updateSize(elType, resizeState.id, newW, newH, dsl);
-      setDsl(dsl);
-
-      parsed = parseDSL(getDsl());
-      document.getElementById('svg-wrap').innerHTML = renderSVG(parsed);
-      applyZoom();
-      return;
-    }
+    });
   }
-
-  document.addEventListener('mousemove', function(e) {
-    if (!dragState && !resizeState) return;
-    lastMouseEvent = e;
-    if (!rafPending) {
-      rafPending = true;
-      requestAnimationFrame(processDragFrame);
-    }
-  });
-
-  document.addEventListener('mouseup', function(e) {
-    if (dragState) {
-      // If nothing actually moved, pop the history entry
-      if (dragState.lastDxGrid === 0 && dragState.lastDyGrid === 0) {
-        undoHistory.pop();
-      }
-      dragState = null;
-      snapGuides = [];
-      refresh();
-    }
-    if (resizeState) {
-      resizeState = null;
-      refresh();
-    }
-  });
-})();
+}
 
 // ═══════════════════════════════════════════════
-// Zoom (mouse wheel on SVG area)
+// Zoom (mouse wheel on SVG area — attached ONCE)
 // ═══════════════════════════════════════════════
 document.getElementById('svg-wrap').addEventListener('wheel', function(e) {
   e.preventDefault();
-  zoom = Math.max(0.25, Math.min(4, zoom + (e.deltaY > 0 ? -0.1 : 0.1)));
-  applyZoom();
+  setZoom(e.deltaY > 0 ? -1 : 1);
 }, { passive: false });
 
 // ═══════════════════════════════════════════════

@@ -2132,21 +2132,30 @@ function renderTable(parsed) {
       const stateId = this.dataset.state;
       const evName = this.dataset.event;
       const currentText = this.textContent === '-' ? '' : this.textContent;
-      const input = document.createElement('input');
-      input.type = 'text';
-      input.value = currentText;
-      input.className = 'prop-input';
-      input.style.cssText = 'width:100%;margin:0;padding:2px 4px;font-size:12px;';
+      const isAction = (field === 'entry' || field === 'do' || field === 'exit' || field === 'action');
+      let input;
+      if (isAction) {
+        input = document.createElement('textarea');
+        input.value = currentText;
+        input.className = 'prop-input';
+        input.style.cssText = 'width:100%;margin:0;padding:4px;font-size:11px;line-height:1.4;resize:vertical;min-height:40px;text-align:left;';
+      } else {
+        input = document.createElement('input');
+        input.type = 'text';
+        input.value = currentText;
+        input.className = 'prop-input';
+        input.style.cssText = 'width:100%;margin:0;padding:2px 4px;font-size:12px;';
+      }
       this.textContent = '';
       this.appendChild(input);
       input.focus();
-      input.select();
+      if (!isAction) input.select();
 
       let committed = false;
       const commitEdit = function() {
         if (committed) return;
         committed = true;
-        const newVal = input.value.trim();
+        const newVal = input.value.replace(/\n/g, ' ').trim();
         input.remove();
 
         if (field === 'entry' || field === 'do' || field === 'exit') {

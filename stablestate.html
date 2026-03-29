@@ -1288,10 +1288,14 @@ function renderSVG(parsed) {
 
 
   // ─── 6. Transitions ───
-  // Arrow marker definition
+  // Arrow markers: one per unique transition color
+  const _arrowColors = new Set();
+  for (const tr of parsed.transitions) _arrowColors.add(tr.color || '#89DDFF');
   svg += `<defs>`;
-  svg += `<marker id="arrowHead" markerWidth="10" markerHeight="8" refX="10" refY="4" orient="auto">`;
-  svg += `<path d="M0,0 L10,4 L0,8 Z" fill="#89DDFF"/></marker>`;
+  for (const c of _arrowColors) {
+    const mid = 'ah_' + c.replace(/[^a-zA-Z0-9]/g, '');
+    svg += `<marker id="${mid}" markerWidth="10" markerHeight="8" refX="10" refY="4" orient="auto"><path d="M0,0 L10,4 L0,8 Z" fill="${c}"/></marker>`;
+  }
   svg += `</defs>`;
 
   // Helper: get bounding box {x, y, w, h} in pixels for a state or pseudo-state
@@ -1650,10 +1654,11 @@ function renderSVG(parsed) {
     const sw = tr.width || 1.5;
     const sc = tr.color || '#89DDFF';
     const dashAttr = tr.style === 'dashed' ? ' stroke-dasharray="6 3"' : '';
+    const _amid = 'ah_' + sc.replace(/[^a-zA-Z0-9]/g, '');
     if (crossings.length === 0) {
       // Simple polyline
       const pts = route.map(p => `${p.x},${p.y}`).join(' ');
-      svg += `<polyline points="${pts}" fill="none" stroke="${sc}" stroke-width="${sw}"${dashAttr} marker-end="url(#arrowHead)"/>`;
+      svg += `<polyline points="${pts}" fill="none" stroke="${sc}" stroke-width="${sw}"${dashAttr} marker-end="url(#${_amid})"/>`;
     } else {
       // Path with bridge arcs (handles both horizontal and vertical crossings)
       let d = `M ${route[0].x},${route[0].y}`;
@@ -1684,13 +1689,20 @@ function renderSVG(parsed) {
           d += ` L ${a2.x},${a2.y}`;
         }
       }
-      svg += `<path d="${d}" fill="none" stroke="${sc}" stroke-width="${sw}"${dashAttr} marker-end="url(#arrowHead)"/>`;
+      svg += `<path d="${d}" fill="none" stroke="${sc}" stroke-width="${sw}"${dashAttr} marker-end="url(#${_amid})"/>`;
     }
 
     // Store route for future crossing detection
     allRoutes.push(route);
 
     // Labels — position along route with direction-aware offset
+    // Offset labels for multiple transitions between same state pair
+    const _pk = pairKey(tr.from, tr.to);
+    const _pairList = pairMap[_pk] || [ti];
+    const _pairIdx = _pairList.indexOf(ti);
+    const _pairN = _pairList.length;
+    const _labelShift = _pairN <= 1 ? 0 : (_pairIdx - (_pairN - 1) / 2) * 16;
+
     const hasLabel = tr.event || tr.guard || tr.action;
     if (hasLabel) {
       const mid = routeMidpoint(route);
@@ -1721,17 +1733,15 @@ function renderSVG(parsed) {
         labelLines.push({ text: '@' + tr.kind, color: '#F59E0B', size: 8 });
       }
       if (midSegHoriz) {
-        // Stack labels above the line
         for (let li = 0; li < labelLines.length; li++) {
           const ll = labelLines[li];
-          const ly = mid.y - 6 - (labelLines.length - 1 - li) * 13;
+          const ly = mid.y - 6 - (labelLines.length - 1 - li) * 13 + _labelShift;
           svg += `<text x="${mid.x}" y="${ly}" text-anchor="middle" font-family="${sans}" font-size="${ll.size}" fill="${ll.color}" style="pointer-events:none">${esc(ll.text)}</text>`;
         }
       } else {
-        // Place labels to the right of the line for vertical segments
         for (let li = 0; li < labelLines.length; li++) {
           const ll = labelLines[li];
-          const ly = mid.y + li * 13;
+          const ly = mid.y + li * 13 + _labelShift;
           svg += `<text x="${mid.x + 8}" y="${ly}" text-anchor="start" font-family="${sans}" font-size="${ll.size}" fill="${ll.color}" style="pointer-events:none">${esc(ll.text)}</text>`;
         }
       }
@@ -2398,16 +2408,33 @@ function renderProps() {
       const trans = findTransBetween(idA, idB);
       html += `<div class="prop-section" style="border-top:1px solid var(--border);padding-top:8px;margin-top:8px">`;
       html += `<div class="prop-label">遷移 (${trans.length})</div>`;
-      // List existing transitions
+      // List existing transitions with per-transition controls
+      const _tColors = ['#89DDFF','#94A3B8','#818CF8','#22C55E','#F59E0B','#EF4444','#EC4899','#06B6D4'];
       for (let ti = 0; ti < trans.length; ti++) {
         const t = trans[ti];
-        const evLabel = t.event ? t.event : '(none)';
-        html += `<div style="padding:4px 6px;background:var(--surface,#1e1e3e);border-radius:4px;margin-bottom:4px;font-size:11px;color:var(--fg,#e0e0e0)">`;
-        html += `<div>${esc(t.from)} &rarr; ${esc(t.to)}${t.event ? ' : ' + esc(t.event) : ''}${t.guard ? ' [' + esc(t.guard) + ']' : ''}${t.action ? ' / ' + esc(t.action) : ''}</div>`;
-        html += `<div style="display:flex;gap:2px;margin-top:3px">`;
-        html += `<button class="tb" style="flex:1;font-size:10px;padding:2px" onclick="flipTrans('${esc(t.from)}','${esc(t.to)}')" title="反転">⇄</button>`;
-        html += `<button class="tb" style="flex:1;font-size:10px;padding:2px;border-color:#EF4444;color:#FCA5A5" onclick="removeTransExact('${esc(t.from)}','${esc(t.to)}','${esc(t.event || '')}','${esc(t.guard || '')}')" title="削除">✕</button>`;
-        html += `</div></div>`;
+        const tf = esc(t.from), tt = esc(t.to), te = esc(t.event || ''), tg = esc(t.guard || '');
+        html += `<div style="padding:5px 6px;background:var(--surface,#1e1e3e);border-radius:4px;margin-bottom:6px;font-size:11px;color:var(--fg,#e0e0e0)">`;
+        html += `<div style="margin-bottom:3px">${tf} &rarr; ${tt}`;
+        if (t.event) html += ` : <span style="color:#FFCB6B">${te}</span>`;
+        if (t.guard) html += ` [${tg}]`;
+        if (t.action) html += ` / ${esc(t.action)}`;
+        html += `</div>`;
+        // Flip + Delete
+        html += `<div style="display:flex;gap:2px;margin-bottom:4px">`;
+        html += `<button class="tb" style="flex:1;font-size:10px;padding:2px" onclick="flipTrans('${tf}','${tt}')">⇄ 反転</button>`;
+        html += `<button class="tb" style="flex:1;font-size:10px;padding:2px;border-color:#EF4444;color:#FCA5A5" onclick="removeTransExact('${tf}','${tt}','${te}','${tg}')">✕ 削除</button>`;
+        html += `</div>`;
+        // Color
+        html += `<div style="display:flex;gap:2px;flex-wrap:wrap;margin-bottom:3px">`;
+        for (const c of _tColors) html += `<div class="color-dot" style="background:${c};width:14px;height:14px" onclick="setTransPropExact('${tf}','${tt}','${te}','${tg}','color','${c}')"></div>`;
+        html += `</div>`;
+        // Width + Style
+        html += `<div style="display:flex;gap:2px">`;
+        for (const w of [1,2,3]) html += `<button class="tb" style="flex:1;font-size:9px;padding:1px" onclick="setTransPropExact('${tf}','${tt}','${te}','${tg}','width','${w}')">${w}px</button>`;
+        html += `<button class="tb" style="flex:1;font-size:9px;padding:1px" onclick="setTransPropExact('${tf}','${tt}','${te}','${tg}','style','solid')">solid</button>`;
+        html += `<button class="tb" style="flex:1;font-size:9px;padding:1px" onclick="setTransPropExact('${tf}','${tt}','${te}','${tg}','style','dashed')">dash</button>`;
+        html += `</div>`;
+        html += `</div>`;
       }
       // Always show connect buttons (multiple transitions allowed)
       html += `<div style="display:flex;gap:4px;margin-top:6px">`;
@@ -3763,6 +3790,37 @@ function setTransProp(a, b, prop, val) {
       }
       break;
     }
+  }
+  setDsl(lines.join('\n'));
+  refresh();
+}
+
+// Set property on a specific transition matching from/to/event/guard exactly
+function setTransPropExact(from, to, event, guard, prop, val) {
+  pushHistory();
+  let dsl = getDsl();
+  const lines = dsl.split('\n');
+  const re = new RegExp(prop + '=\\S+');
+  for (let i = 0; i < lines.length; i++) {
+    const t = lines[i].trim();
+    const m = t.match(/^(\S+)\s*->\s*(\S+)\s*(.*)/);
+    if (!m || m[1] !== from || m[2] !== to) continue;
+    const rest = m[3];
+    let le = '', lg = '';
+    if (rest.startsWith(':')) {
+      const d = rest.slice(1).trim();
+      const em = d.match(/^(\S*)/); if (em) le = em[1];
+      const gm = d.match(/\[([^\]]*)\]/); if (gm) lg = gm[1];
+    }
+    if (le !== (event || '') || lg !== (guard || '')) continue;
+    if (re.test(lines[i])) {
+      lines[i] = lines[i].replace(re, `${prop}=${val}`);
+    } else {
+      const hasColon = lines[i].match(/^[^#]*->[^:]*:/);
+      if (hasColon) lines[i] = lines[i].trimEnd() + ` ${prop}=${val}`;
+      else lines[i] = lines[i].trimEnd() + ` : ${prop}=${val}`;
+    }
+    break;
   }
   setDsl(lines.join('\n'));
   refresh();

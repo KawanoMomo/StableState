@@ -34,13 +34,30 @@ def get_port_point(box: dict, side: str, idx: int = 0, count: int = 1) -> dict:
     return {"x": box["x"] + box["w"] / 2, "y": box["y"] + box["h"] / 2}
 
 
-def build_route(from_pt: dict, to_pt: dict, from_side: str, to_side: str) -> list[dict]:
+def build_route(from_pt: dict, to_pt: dict, from_side: str, to_side: str,
+                channel_offset: float = 0, route_index: int = 0) -> list[dict]:
     """Build orthogonal route (L-shape, U-shape, or straight)."""
     fx, fy = from_pt["x"], from_pt["y"]
     tx, ty = to_pt["x"], to_pt["y"]
     margin = 1.0  # 1 grid unit margin
+    ri = route_index * 1.5  # U-shape spread per route index
 
-    # Straight (same axis)
+    # U-shape (same side)
+    if from_side == to_side:
+        if from_side == "right":
+            out_x = max(fx, tx) + margin + ri
+            return [from_pt, {"x": out_x, "y": fy}, {"x": out_x, "y": ty}, to_pt]
+        if from_side == "left":
+            out_x = min(fx, tx) - margin - ri
+            return [from_pt, {"x": out_x, "y": fy}, {"x": out_x, "y": ty}, to_pt]
+        if from_side == "top":
+            out_y = min(fy, ty) - margin - ri
+            return [from_pt, {"x": fx, "y": out_y}, {"x": tx, "y": out_y}, to_pt]
+        if from_side == "bottom":
+            out_y = max(fy, ty) + margin + ri
+            return [from_pt, {"x": fx, "y": out_y}, {"x": tx, "y": out_y}, to_pt]
+
+    # Straight (same axis, opposite sides)
     if from_side in ("left", "right") and to_side in ("left", "right"):
         if abs(fy - ty) < 0.01:
             return [from_pt, to_pt]

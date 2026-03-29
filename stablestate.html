@@ -2212,6 +2212,18 @@ function renderProps() {
       html += `</div>`;
     } else {
       html += `<div class="prop-section"><div class="prop-label">Selected</div><div class="prop-sub">Select an element to edit</div></div>`;
+      html += `<div class="prop-section">`;
+      html += `<button class="tb tb-accent" style="width:100%;margin-bottom:4px" onclick="addNewElement('state')">+ 状態追加</button>`;
+      html += `<button class="tb" style="width:100%" onclick="addNewElement('group')">+ グループ追加</button>`;
+      html += `</div>`;
+      html += `<div class="prop-section" style="margin-top:8px;border-top:1px solid var(--border);padding-top:8px">`;
+      html += `<div class="prop-label">Shortcuts</div>`;
+      html += `<div class="prop-sub" style="line-height:1.8">`;
+      html += `Ctrl+Z Undo<br>Ctrl+Y / Ctrl+Shift+Z Redo<br>`;
+      html += `Ctrl+C Copy<br>Ctrl+X Cut<br>Ctrl+V Paste<br>`;
+      html += `Del Delete<br>Ctrl+A Select All<br>`;
+      html += `Arrow Move<br>H Highlight<br>N Notes`;
+      html += `</div></div>`;
     }
   } else if (selArr.length === 1) {
     const id = selArr[0];
@@ -2256,6 +2268,7 @@ function renderProps() {
       // Round
       html += `<div class="prop-section"><div class="prop-label">Round</div>`;
       html += `<div class="prop-row"><input type="number" class="prop-input" id="pp-round" value="${st.round != null ? st.round : ''}" placeholder="10"></div></div>`;
+      html += `<div style="margin-top:16px"><button class="tb" onclick="deleteSelected()" style="width:100%;border-color:#EF4444;color:#FCA5A5">削除</button></div>`;
     } else if (parsed.pseudoMap[id]) {
       // ── Pseudo-state selected ──
       const ps = parsed.pseudoMap[id];
@@ -2265,6 +2278,7 @@ function renderProps() {
       html += `<div class="prop-section"><div class="prop-label">Position</div>`;
       html += `<div class="prop-row"><input type="number" step="0.5" class="prop-input" id="pp-x" value="${ps.x}" placeholder="X" style="width:50%"><input type="number" step="0.5" class="prop-input" id="pp-y" value="${ps.y}" placeholder="Y" style="width:50%"></div>`;
       html += `</div>`;
+      html += `<div style="margin-top:16px"><button class="tb" onclick="deleteSelected()" style="width:100%;border-color:#EF4444;color:#FCA5A5">削除</button></div>`;
     } else if (parsed.groupMap[id]) {
       // ── Group selected ──
       const grp = parsed.groupMap[id];
@@ -2288,6 +2302,7 @@ function renderProps() {
       html += `</div></div>`;
       html += `<div class="prop-section"><div class="prop-label">Border Color</div>`;
       html += `<div class="prop-row"><input class="prop-input" id="pp-border" value="${esc(grp.borderColor || '')}" placeholder="#3a3a5a"></div></div>`;
+      html += `<div style="margin-top:16px"><button class="tb" onclick="deleteSelected()" style="width:100%;border-color:#EF4444;color:#FCA5A5">削除</button></div>`;
     } else if (parsed.noteMap[id]) {
       // ── Note selected ──
       const n = parsed.noteMap[id];
@@ -2320,13 +2335,89 @@ function renderProps() {
         html += `<div class="color-dot${active}" style="background:${c}" data-prop="text" data-val="${c}"></div>`;
       }
       html += `</div></div>`;
+      html += `<div style="margin-top:16px"><button class="tb" onclick="deleteSelected()" style="width:100%;border-color:#EF4444;color:#FCA5A5">削除</button></div>`;
     }
   } else if (selArr.length >= 2) {
-    html += `<div class="prop-section"><div class="prop-label">Selected: ${selArr.length} elements</div>`;
-    if (selArr.length === 2) {
-      html += `<button class="tb tb-accent" style="margin-top:8px;width:100%" onclick="connectSelected()">Connect</button>`;
+    html += `<div class="prop-section"><div class="prop-label">Selected: ${selArr.length} elements</div></div>`;
+
+    // Batch position nudge
+    html += `<div class="prop-section"><div class="prop-label">Position</div>`;
+    html += `<div class="prop-row"><span class="prop-sub" style="width:20px;line-height:26px">X</span>`;
+    html += `<button class="tb" style="flex:1" onclick="batchNudge('x',-1)">&minus;1</button>`;
+    html += `<button class="tb" style="flex:1" onclick="batchNudge('x',1)">+1</button></div>`;
+    html += `<div class="prop-row"><span class="prop-sub" style="width:20px;line-height:26px">Y</span>`;
+    html += `<button class="tb" style="flex:1" onclick="batchNudge('y',-1)">&minus;1</button>`;
+    html += `<button class="tb" style="flex:1" onclick="batchNudge('y',1)">+1</button></div>`;
+    html += `</div>`;
+
+    // Batch size nudge
+    html += `<div class="prop-section"><div class="prop-label">Size</div>`;
+    html += `<div class="prop-row"><span class="prop-sub" style="width:20px;line-height:26px">W</span>`;
+    html += `<button class="tb" style="flex:1" onclick="batchNudgeSz('w',-1)">&minus;1</button>`;
+    html += `<button class="tb" style="flex:1" onclick="batchNudgeSz('w',1)">+1</button></div>`;
+    html += `<div class="prop-row"><span class="prop-sub" style="width:20px;line-height:26px">H</span>`;
+    html += `<button class="tb" style="flex:1" onclick="batchNudgeSz('h',-1)">&minus;1</button>`;
+    html += `<button class="tb" style="flex:1" onclick="batchNudgeSz('h',1)">+1</button></div>`;
+    html += `</div>`;
+
+    // Batch color
+    const batchColors = ['#6366F1','#818CF8','#4338CA','#22C55E','#F59E0B','#EF4444','#EC4899','#8B5CF6'];
+    html += `<div class="prop-section"><div class="prop-label">Color</div><div class="color-grid">`;
+    for (const c of batchColors) {
+      html += `<div class="color-dot" style="background:${c}" onclick="batchProp('color','${c}')"></div>`;
     }
-    html += `<button class="tb" style="margin-top:4px;width:100%" onclick="groupSelected()">Group Selection</button>`;
+    html += `</div></div>`;
+
+    // Batch style (states only)
+    html += `<div class="prop-section"><div class="prop-label">Style</div>`;
+    html += `<div class="prop-row">`;
+    html += `<button class="style-btn" style="flex:1" onclick="batchProp('style','')">solid</button>`;
+    html += `<button class="style-btn" style="flex:1" onclick="batchProp('style','dashed')">dashed</button>`;
+    html += `<button class="style-btn" style="flex:1" onclick="batchProp('style','bold')">bold</button>`;
+    html += `</div></div>`;
+
+    // Transition management (2-select)
+    if (selArr.length === 2) {
+      const idA = selArr[0], idB = selArr[1];
+      const trans = findTransBetween(idA, idB);
+      html += `<div class="prop-section" style="border-top:1px solid var(--border);padding-top:8px;margin-top:8px">`;
+      html += `<div class="prop-label">Transition</div>`;
+      if (trans.length > 0) {
+        html += `<div class="prop-sub" style="margin-bottom:4px">${trans[0].from} &rarr; ${trans[0].to}</div>`;
+        html += `<div class="prop-row">`;
+        html += `<button class="tb" style="flex:1" onclick="flipTrans('${idA}','${idB}')" title="Flip direction">&#8646; Flip</button>`;
+        html += `<button class="tb" style="flex:1;border-color:#EF4444;color:#FCA5A5" onclick="removeTrans('${idA}','${idB}')" title="Remove transition">&#10005; Remove</button>`;
+        html += `</div>`;
+        // Transition color
+        const transColors = ['#94A3B8','#818CF8','#22C55E','#F59E0B','#EF4444','#EC4899'];
+        html += `<div class="prop-label" style="margin-top:6px">Line Color</div><div class="color-grid">`;
+        for (const c of transColors) {
+          html += `<div class="color-dot" style="background:${c}" onclick="setTransProp('${idA}','${idB}','color','${c}')"></div>`;
+        }
+        html += `</div>`;
+        // Transition width
+        html += `<div class="prop-label" style="margin-top:4px">Line Width</div>`;
+        html += `<div class="prop-row">`;
+        html += `<button class="style-btn" style="flex:1" onclick="setTransProp('${idA}','${idB}','width','1')">1</button>`;
+        html += `<button class="style-btn" style="flex:1" onclick="setTransProp('${idA}','${idB}','width','2')">2</button>`;
+        html += `<button class="style-btn" style="flex:1" onclick="setTransProp('${idA}','${idB}','width','3')">3</button>`;
+        html += `</div>`;
+        // Transition style
+        html += `<div class="prop-label" style="margin-top:4px">Line Style</div>`;
+        html += `<div class="prop-row">`;
+        html += `<button class="style-btn" style="flex:1" onclick="setTransProp('${idA}','${idB}','style','solid')">solid</button>`;
+        html += `<button class="style-btn" style="flex:1" onclick="setTransProp('${idA}','${idB}','style','dashed')">dashed</button>`;
+        html += `</div>`;
+      } else {
+        html += `<button class="tb tb-accent" style="width:100%" onclick="connectTwo('${idA}','${idB}')">&#8599; Connect</button>`;
+      }
+      html += `</div>`;
+    }
+
+    // Group selection + batch delete
+    html += `<div class="prop-section" style="margin-top:8px">`;
+    html += `<button class="tb" style="width:100%;margin-bottom:4px" onclick="groupSelected()">Group Selection</button>`;
+    html += `<button class="tb" onclick="batchDelete()" style="width:100%;border-color:#EF4444;color:#FCA5A5">削除 (${selArr.length})</button>`;
     html += `</div>`;
   }
 
@@ -3485,6 +3576,146 @@ function deleteSelected() {
   }
   sel = [];
   setDsl(dsl);
+  refresh();
+}
+
+// ═══════════════════════════════════════════════
+// Batch Operations
+// ═══════════════════════════════════════════════
+function batchNudge(axis, delta) {
+  pushHistory();
+  let dsl = getDsl();
+  sel.forEach(si => {
+    const it = getItem(si); if (!it) return;
+    const step = parsed.pseudoMap && parsed.pseudoMap[si.id] ? 0.5 : 1;
+    const d = delta * step;
+    const nx = Math.max(0, it.x + (axis === 'x' ? d : 0));
+    const ny = Math.max(0, it.y + (axis === 'y' ? d : 0));
+    dsl = updatePos(si.type, si.id, nx, ny, dsl);
+  });
+  setDsl(dsl);
+  refresh();
+}
+
+function batchNudgeSz(axis, delta) {
+  pushHistory();
+  let dsl = getDsl();
+  sel.forEach(si => {
+    const it = getItem(si); if (!it || it.w == null) return;
+    const nw = axis === 'w' ? Math.max(1, it.w + delta) : it.w;
+    const nh = axis === 'h' ? Math.max(1, it.h + delta) : it.h;
+    dsl = updateSize(si.type, si.id, nw, nh, dsl);
+  });
+  setDsl(dsl);
+  refresh();
+}
+
+function batchProp(prop, val) {
+  pushHistory();
+  let dsl = getDsl();
+  sel.forEach(si => {
+    dsl = updateProp(si.type, si.id, prop, val, dsl);
+  });
+  setDsl(dsl);
+  refresh();
+}
+
+function batchDelete() {
+  pushHistory();
+  let dsl = getDsl();
+  sel.forEach(si => { dsl = removeDSLElement(si.id, dsl); });
+  sel = [];
+  setDsl(dsl);
+  refresh();
+}
+
+function nudge(axis, delta) {
+  if (!sel.length) return;
+  pushHistory();
+  const si = sel[0];
+  const it = getItem(si); if (!it) return;
+  const step = parsed.pseudoMap && parsed.pseudoMap[si.id] ? 0.5 : 1;
+  const d = delta * step;
+  let dsl = getDsl();
+  dsl = updatePos(si.type, si.id, Math.max(0, it.x + (axis === 'x' ? d : 0)), Math.max(0, it.y + (axis === 'y' ? d : 0)), dsl);
+  setDsl(dsl);
+  refresh();
+}
+
+function nudgeSz(axis, delta) {
+  if (!sel.length) return;
+  pushHistory();
+  const si = sel[0];
+  const it = getItem(si); if (!it || it.w == null) return;
+  let dsl = getDsl();
+  dsl = updateSize(si.type, si.id, axis === 'w' ? Math.max(1, it.w + delta) : it.w, axis === 'h' ? Math.max(1, it.h + delta) : it.h, dsl);
+  setDsl(dsl);
+  refresh();
+}
+
+// ═══════════════════════════════════════════════
+// Transition Management
+// ═══════════════════════════════════════════════
+function findTransBetween(a, b) {
+  if (!parsed) return [];
+  return parsed.transitions.filter(t =>
+    (t.from === a && t.to === b) || (t.from === b && t.to === a)
+  );
+}
+
+function connectTwo(a, b) {
+  pushHistory();
+  let dsl = getDsl();
+  dsl = addTransition(a, b, null, null, null, null, dsl);
+  setDsl(dsl);
+  refresh();
+}
+
+function removeTrans(a, b) {
+  pushHistory();
+  let dsl = getDsl();
+  const lines = dsl.split('\n');
+  dsl = lines.filter(l => {
+    const m = l.trim().match(/^(\S+)\s*->\s*(\S+)/);
+    if (!m) return true;
+    return !((m[1] === a && m[2] === b) || (m[1] === b && m[2] === a));
+  }).join('\n');
+  setDsl(dsl);
+  refresh();
+}
+
+function flipTrans(a, b) {
+  pushHistory();
+  let dsl = getDsl();
+  const lines = dsl.split('\n');
+  for (let i = 0; i < lines.length; i++) {
+    const m = lines[i].trim().match(/^(\S+)(\s*->\s*)(\S+)(.*)/);
+    if (!m) continue;
+    if ((m[1] === a && m[3] === b) || (m[1] === b && m[3] === a)) {
+      lines[i] = lines[i].replace(/^(\s*)(\S+)(\s*->\s*)(\S+)/, `$1${m[3]}$3${m[1]}`);
+      break;
+    }
+  }
+  setDsl(lines.join('\n'));
+  refresh();
+}
+
+function setTransProp(a, b, prop, val) {
+  pushHistory();
+  let dsl = getDsl();
+  const lines = dsl.split('\n');
+  const re = new RegExp(prop + '=\\S+');
+  for (let i = 0; i < lines.length; i++) {
+    const m = lines[i].trim().match(/^(\S+)\s*->\s*(\S+)/);
+    if (!m) continue;
+    if ((m[1] === a && m[2] === b) || (m[1] === b && m[2] === a)) {
+      lines[i] = re.test(lines[i])
+        ? lines[i].replace(re, `${prop}=${val}`)
+        : lines[i].trimEnd() + ` ${prop}=${val}`;
+      break;
+    }
+  }
+  setDsl(lines.join('\n'));
   refresh();
 }
 

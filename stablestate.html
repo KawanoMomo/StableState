@@ -1912,7 +1912,11 @@ function renderTable(parsed) {
     walkState(rs, 0);
   }
 
-  if (leafColumns.length === 0) {
+  // Insert virtual ROOT column at the beginning (table only, not in diagram)
+  const rootVirtual = { id: '__ROOT__', label: '', parent: null, children: [], entry: null, do: null, exit: null };
+  leafColumns.unshift({ id: '__ROOT__', state: rootVirtual, depth: 0, isInitial: false, isRoot: true });
+
+  if (leafColumns.length <= 1) {
     headEl.innerHTML = ''; bodyEl.innerHTML = '';
     emptyEl.style.display = 'flex';
     emptyEl.textContent = 'DSLをパースして状態遷移表を生成します';
@@ -1962,7 +1966,7 @@ function renderTable(parsed) {
     const leafRow = lc.depth;
     const prefix = lc.isInitial ? '>' : '';
     headerCells[leafRow][ci] = {
-      label: lc.isSelf ? '' : prefix + lc.state.label,
+      label: (lc.isSelf || lc.isRoot) ? '' : prefix + lc.state.label,
       stateId: lc.isSelf ? lc.id + '_self' : lc.id,
       colspan: 1,
       rowspan: totalHeaderRows - leafRow,

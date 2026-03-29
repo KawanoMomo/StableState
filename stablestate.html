@@ -2160,9 +2160,41 @@ function renderTable(parsed) {
       html += `<div class="prop-sub" style="margin-bottom:4px">${esc(field)}${evName ? ' (' + esc(evName) + ')' : ''}</div>`;
 
       if (!hasTransition && !isStateField) {
-        html += `<div class="prop-sub" style="color:#F59E0B">この状態からの遷移がありません</div>`;
+        // No transition exists — show form to create one
+        html += `<div class="prop-sub" style="color:#F59E0B;margin-bottom:6px">新規遷移を作成</div>`;
+        html += `<div class="prop-sub">target (状態名 or ID)</div>`;
+        html += `<input class="prop-input" id="pp-table-target" placeholder="遷移先">`;
+        html += `<div class="prop-sub" style="margin-top:4px">[guard]</div>`;
+        html += `<input class="prop-input" id="pp-table-guard" placeholder="ガード条件">`;
+        html += `<div class="prop-sub" style="margin-top:4px">/ action</div>`;
+        html += `<textarea class="prop-input" id="pp-table-action" style="height:40px;resize:vertical;font-size:11px;line-height:1.4;text-align:left" placeholder="アクション"></textarea>`;
+        html += `<button class="tb tb-accent" id="pp-table-create" style="width:100%;margin-top:6px">遷移を作成</button>`;
         html += `</div>`;
         panel.innerHTML = html;
+
+        // Pre-fill the clicked field
+        if (field === 'target') document.getElementById('pp-table-target').focus();
+        else if (field === 'guard') document.getElementById('pp-table-guard').focus();
+        else if (field === 'action') document.getElementById('pp-table-action').focus();
+
+        document.getElementById('pp-table-create').addEventListener('click', function() {
+          const target = document.getElementById('pp-table-target').value.trim();
+          const guard = document.getElementById('pp-table-guard').value.trim();
+          const action = document.getElementById('pp-table-action').value.replace(/\n/g, ' ').trim();
+          if (!target) { document.getElementById('pp-table-target').style.borderColor = '#EF4444'; return; }
+          // Resolve target by label or id
+          let targetId = null;
+          for (const s of parsed.states) {
+            if (s.label === target || s.id === target) { targetId = stateDotPath(s.id); break; }
+          }
+          if (!targetId) { document.getElementById('pp-table-target').style.borderColor = '#EF4444'; return; }
+          pushHistory();
+          let dsl = getDsl();
+          const ev = evName === '(none)' ? null : evName;
+          dsl = addTransition(stateDotPath(stateId), targetId, ev, guard || null, action || null, null, dsl);
+          setDsl(dsl);
+          refresh();
+        });
         return;
       }
 

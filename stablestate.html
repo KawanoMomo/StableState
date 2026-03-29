@@ -3412,7 +3412,9 @@ function setupInteractions() {
           return;
         } else {
           if (id !== connectFrom) {
-            const evName = prompt('Event name (optional):');
+            const isPseudo = parsed && (parsed.pseudoMap[connectFrom] || parsed.pseudoMap[id]);
+            const evName = isPseudo ? null : prompt('Event name (optional):');
+            if (!isPseudo && evName === null) { connectFrom = null; setTool('select'); refresh(); return; }
             pushHistory();
             let dsl = getDsl();
             dsl = addTransition(stateDotPath(connectFrom), stateDotPath(id), evName || null, null, null, null, dsl);
@@ -3571,7 +3573,9 @@ function connectSelected() {
   if (sel.length !== 2) return;
   const a = stateDotPath(sel[0].id);
   const b = stateDotPath(sel[1].id);
-  const event = prompt('Event name (optional):');
+  const isPseudo = parsed && (parsed.pseudoMap[sel[0].id] || parsed.pseudoMap[sel[1].id]);
+  const event = isPseudo ? null : prompt('Event name (optional):');
+  if (!isPseudo && event === null) return;
   pushHistory();
   let dsl = getDsl();
   dsl = addTransition(a, b, event || null, null, null, null, dsl);
@@ -3729,7 +3733,10 @@ function findTransBetween(a, b) {
 }
 
 function connectTwo(a, b) {
-  const event = prompt('Event name (optional):');
+  // Skip event prompt for pseudo-states (initial, final, choice, etc.)
+  const isPseudo = parsed && (parsed.pseudoMap[a] || parsed.pseudoMap[b]);
+  const event = isPseudo ? null : prompt('Event name (optional):');
+  if (!isPseudo && event === null) return; // user cancelled prompt
   pushHistory();
   let dsl = getDsl();
   dsl = addTransition(stateDotPath(a), stateDotPath(b), event || null, null, null, null, dsl);

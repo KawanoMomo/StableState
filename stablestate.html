@@ -2125,41 +2125,45 @@ function renderTable(parsed) {
     headWrap.scrollLeft = bodyWrap.scrollLeft;
   });
 
-  // ─── Wire up double-click editing ───
+  // ─── Wire up cell click → show editor in property panel ───
+  let selectedCell = null;
   bodyEl.querySelectorAll('.table-editable').forEach(function(cell) {
-    cell.addEventListener('dblclick', function() {
+    cell.addEventListener('click', function() {
+      // Highlight selected cell
+      if (selectedCell) selectedCell.style.outline = '';
+      selectedCell = this;
+      this.style.outline = '2px solid var(--accent)';
+
       const field = this.dataset.field;
       const stateId = this.dataset.state;
       const evName = this.dataset.event;
       const currentText = this.textContent === '-' ? '' : this.textContent;
-      const isAction = (field === 'entry' || field === 'do' || field === 'exit' || field === 'action');
-      let input;
-      if (isAction) {
-        input = document.createElement('textarea');
-        input.value = currentText;
-        input.className = 'prop-input';
-        input.style.cssText = 'width:100%;margin:0;padding:4px;font-size:11px;line-height:1.4;resize:vertical;min-height:40px;text-align:left;';
-      } else {
-        input = document.createElement('input');
-        input.type = 'text';
-        input.value = currentText;
-        input.className = 'prop-input';
-        input.style.cssText = 'width:100%;margin:0;padding:2px 4px;font-size:12px;';
-      }
-      this.textContent = '';
-      this.appendChild(input);
-      input.focus();
-      if (!isAction) input.select();
 
-      let committed = false;
-      const commitEdit = function() {
-        if (committed) return;
-        committed = true;
+      // Render editor in property panel
+      const panel = document.getElementById('prop-content');
+      const isAction = (field === 'entry' || field === 'do' || field === 'exit' || field === 'action');
+      const st = parsed.stateMap[stateId];
+      const stLabel = st ? st.label : stateId;
+      let html = `<div class="prop-section"><div class="prop-label">${esc(stLabel)}</div>`;
+      html += `<div class="prop-sub" style="margin-bottom:4px">${esc(field)}${evName ? ' (' + esc(evName) + ')' : ''}</div>`;
+      if (isAction) {
+        html += `<textarea class="prop-input" id="pp-table-edit" style="height:80px;resize:vertical;font-size:11px;line-height:1.4;text-align:left">${esc(currentText)}</textarea>`;
+      } else {
+        html += `<input class="prop-input" id="pp-table-edit" value="${esc(currentText)}">`;
+      }
+      html += `<button class="tb tb-accent" id="pp-table-apply" style="width:100%;margin-top:6px">適用</button>`;
+      html += `</div>`;
+      panel.innerHTML = html;
+
+      document.getElementById('pp-table-edit').focus();
+
+      // Apply handler
+      function applyEdit() {
+        const input = document.getElementById('pp-table-edit');
+        if (!input) return;
         const newVal = input.value.replace(/\n/g, ' ').trim();
-        input.remove();
 
         if (field === 'entry' || field === 'do' || field === 'exit') {
-          // State action edit
           pushHistory();
           let dsl = getDsl();
           if (newVal) {
@@ -2171,7 +2175,6 @@ function renderTable(parsed) {
           setDsl(dsl);
           refresh();
         } else if (field === 'guard' || field === 'action') {
-          // Transition field edit
           const matchingTrans = parsed.transitions.filter(function(t) {
             const fromEl = resolveStateRef(t.from, parsed);
             return fromEl && fromEl.id === stateId && (t.event || '(none)') === evName;
@@ -2185,13 +2188,11 @@ function renderTable(parsed) {
             refresh();
           }
         } else if (field === 'target') {
-          // Target change
           const matchingTrans = parsed.transitions.filter(function(t) {
             const fromEl = resolveStateRef(t.from, parsed);
             return fromEl && fromEl.id === stateId && (t.event || '(none)') === evName;
           });
           if (newVal && (!currentText || currentText === '-') && matchingTrans.length === 0) {
-            // New transition: find target state by label or id
             let targetId = null;
             for (const s of parsed.states) {
               if (s.label === newVal || s.id === newVal) { targetId = s.id; break; }
@@ -2205,7 +2206,6 @@ function renderTable(parsed) {
               refresh();
             }
           } else if ((!newVal || newVal === '-') && matchingTrans.length > 0) {
-            // Remove transition
             const mt = matchingTrans[0];
             pushHistory();
             let dsl = getDsl();
@@ -2213,7 +2213,6 @@ function renderTable(parsed) {
             setDsl(dsl);
             refresh();
           } else if (newVal && matchingTrans.length > 0) {
-            // Change target (remove old, add new)
             let targetId = null;
             for (const s of parsed.states) {
               if (s.label === newVal || s.id === newVal) { targetId = s.id; break; }
@@ -2230,12 +2229,11 @@ function renderTable(parsed) {
             }
           }
         }
-      };
+      }
 
-      input.addEventListener('blur', commitEdit);
-      input.addEventListener('keydown', function(e) {
-        if (e.key === 'Enter') { e.preventDefault(); input.blur(); }
-        if (e.key === 'Escape') { input.value = currentText; input.blur(); }
+      document.getElementById('pp-table-apply').addEventListener('click', applyEdit);
+      document.getElementById('pp-table-edit').addEventListener('keydown', function(e) {
+        if (e.key === 'Enter' && !e.shiftKey && !isAction) { e.preventDefault(); applyEdit(); }
       });
     });
   });

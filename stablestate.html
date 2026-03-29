@@ -2440,11 +2440,12 @@ function renderProps() {
         html += `<div style="padding:5px 6px;background:var(--surface,#1e1e3e);border-radius:4px;margin-bottom:6px;font-size:11px;color:var(--fg,#e0e0e0)">`;
         const ta = esc(t.action || '');
         html += `<div style="margin-bottom:3px;font-weight:600;color:#A5B4FC">${tf} &rarr; ${tt}</div>`;
-        // Event / Guard / Action editors
-        html += `<div style="display:flex;gap:2px;margin-bottom:3px">`;
+        // Event / Guard editors + Action checkbox
+        const hasAction = !!(t.action);
+        html += `<div style="display:flex;gap:2px;align-items:center;margin-bottom:3px">`;
         html += `<input class="prop-input" style="flex:2;font-size:10px;padding:2px 4px" value="${te}" placeholder="Event" data-tr-field="event" data-tr-from="${tf}" data-tr-to="${tt}" data-tr-ev="${te}" data-tr-gd="${tg}">`;
         html += `<input class="prop-input" style="flex:1;font-size:10px;padding:2px 4px" value="${tg}" placeholder="[Guard]" data-tr-field="guard" data-tr-from="${tf}" data-tr-to="${tt}" data-tr-ev="${te}" data-tr-gd="${tg}">`;
-        html += `<input class="prop-input" style="flex:1;font-size:10px;padding:2px 4px" value="${ta}" placeholder="/ Action" data-tr-field="action" data-tr-from="${tf}" data-tr-to="${tt}" data-tr-ev="${te}" data-tr-gd="${tg}">`;
+        html += `<label style="display:flex;align-items:center;gap:2px;font-size:9px;color:${hasAction ? '#C3E88D' : '#666'};white-space:nowrap;cursor:pointer"><input type="checkbox" ${hasAction ? 'checked' : ''} data-tr-field="action" data-tr-from="${tf}" data-tr-to="${tt}" data-tr-ev="${te}" data-tr-gd="${tg}">Act</label>`;
         html += `</div>`;
         // Flip + Delete
         html += `<div style="display:flex;gap:2px;margin-bottom:4px">`;
@@ -2506,11 +2507,17 @@ function renderProps() {
 
   panel.innerHTML = html;
 
-  // ─── Transition field editors (event/guard/action) ───
+  // ─── Transition field editors (event/guard + action checkbox) ───
   panel.querySelectorAll('input[data-tr-field]').forEach(function(inp) {
-    inp.addEventListener('change', function() {
-      updateTransField(this.dataset.trFrom, this.dataset.trTo, this.dataset.trEv, this.dataset.trGd, this.dataset.trField, this.value.trim());
-    });
+    if (inp.type === 'checkbox') {
+      inp.addEventListener('change', function() {
+        updateTransField(this.dataset.trFrom, this.dataset.trTo, this.dataset.trEv, this.dataset.trGd, 'action', this.checked ? 'Act' : '');
+      });
+    } else {
+      inp.addEventListener('change', function() {
+        updateTransField(this.dataset.trFrom, this.dataset.trTo, this.dataset.trEv, this.dataset.trGd, this.dataset.trField, this.value.trim());
+      });
+    }
   });
 
   // ─── Canvas size change handlers ───

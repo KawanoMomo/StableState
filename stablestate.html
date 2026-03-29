@@ -1913,6 +1913,19 @@ function renderTable(parsed) {
     walkState(rs, 0);
   }
 
+  // Add composite states that are transition sources as extra columns (depth 0, no ancestry)
+  const leafIds = new Set(leafColumns.map(lc => lc.id));
+  const compositeTransSources = new Set();
+  for (const t of parsed.transitions) {
+    const fromEl = resolveStateRef(t.from, parsed);
+    if (fromEl && fromEl.children && fromEl.children.length > 0) compositeTransSources.add(fromEl.id);
+  }
+  for (const cid of compositeTransSources) {
+    if (leafIds.has(cid)) continue; // already a column
+    const st = parsed.stateMap[cid];
+    if (st) leafColumns.push({ id: st.id, state: st, depth: 0, isInitial: false });
+  }
+
   if (leafColumns.length === 0) {
     headEl.innerHTML = ''; bodyEl.innerHTML = '';
     emptyEl.style.display = 'flex';

@@ -5,3 +5,10 @@ __pycache__/
 *.pyc
 .pytest_cache/
 *.egg-info/
+
+# Internal development files
+CLAUDE.md
+docs/superpowers/
+docs/ecn-analysis/
+docs/ecn/
+docs/issues/

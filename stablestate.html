@@ -3575,6 +3575,19 @@ function removeDSLElement(id, dsl) {
     }
     result.push(line);
   }
+  // Clean up empty composite states: "state X ... {" followed by "}" → remove braces
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (let i = 0; i < result.length - 1; i++) {
+      if (result[i].trim().match(/^state\s+\S+\s+.*\{$/) && result[i + 1].trim() === '}') {
+        result[i] = result[i].replace(/\s*\{$/, '');
+        result.splice(i + 1, 1);
+        changed = true;
+        break;
+      }
+    }
+  }
   return result.join('\n');
 }
 

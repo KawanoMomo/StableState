@@ -92,10 +92,25 @@ E:/00_Git/04_StableState/
 ### インタラクション
 | 関数 | 責務 |
 |---|---|
-| `svgCoords(e)` | マウスイベントからズーム補正済みSVG座標を算出 |
-| `hitTest(px, py)` | クリック座標から要素を特定（状態→擬似→グループ→注釈の順） |
-| `hitTestHandle(px, py)` | リサイズハンドルのヒットテスト |
-| `collectDragSet(selectionSet)` | 選択要素+グループ内包要素のドラッグ対象一覧を収集 |
+| `getSvgScale()` | SVGのBoundingClientRectからviewBox座標変換比率を算出 |
+| `setupInteractions()` | DOM要素ベースのイベントハンドラ（ドラッグ・リサイズ・選択・空白クリック）を再アタッチ |
+| `isSel(id)` / `isSelected(id)` | 選択状態チェック |
+| `getItem(si)` | sel要素からparsedオブジェクトを取得 |
+| `resolveSelType(id)` | IDからtype文字列を解決 |
+| `cutSelection()` | 選択要素を切り取り |
+| `toggleHighlight()` | ハイライトモード切替 |
+| `getConnectedIds()` | 遷移で接続されたIDのSetを取得 |
+| `batchNudge(axis, delta)` | 複数選択の一括位置移動 |
+| `batchNudgeSz(axis, delta)` | 複数選択の一括サイズ変更 |
+| `batchProp(prop, val)` | 複数選択の一括プロパティ変更 |
+| `batchDelete()` | 複数選択の一括削除 |
+| `nudge(axis, delta)` | 単一選択の位置ナッジ |
+| `nudgeSz(axis, delta)` | 単一選択のサイズナッジ |
+| `findTransBetween(a, b)` | 2要素間の遷移を検索 |
+| `connectTwo(a, b)` | 遷移を作成 |
+| `removeTrans(a, b)` | 遷移を削除 |
+| `flipTrans(a, b)` | 遷移の方向を反転 |
+| `setTransProp(a, b, prop, val)` | 遷移のプロパティ（色/幅/スタイル）を設定 |
 | `computeSnapGuides(dragItems)` | ドラッグ中のスナップガイドライン算出 |
 | `connectSelected()` | 2要素選択時の接続（遷移追加） |
 | `deleteSelected()` | 選択要素の削除 |

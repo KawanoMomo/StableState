@@ -158,6 +158,7 @@ input[type=number]::-webkit-inner-spin-button { -webkit-appearance:none; }
     <div class="sep"></div>
     <button class="tb" id="btn-actions" onclick="toggleActions()">Actions</button>
     <button class="tb" id="btn-annotations" onclick="toggleAnnotations()">Notes</button>
+    <button class="tb" id="btn-highlight" onclick="toggleHighlight()" title="Highlight connected (H)">&#9678; HL</button>
     <button class="tb" onclick="autoRoute()" title="遷移線の交差を最小化">AutoRoute</button>
     <div class="sep"></div>
     <button class="tb tb-accent" onclick="exportSVG()">SVG</button>
@@ -275,13 +276,46 @@ let currentTool = 'select';
 let connectFrom = null; // first element ID in connect mode
 let showActions = false;
 let zoomLevel = 100;
-let selection = new Set();
-function isSelected(id) { return selection.has(id); }
+let sel = []; // [{type, id}, ...] — StableBlock compatible
+function isSel(id) { return sel.some(s => s.id === id); }
+function isSelected(id) { return isSel(id); } // renderSVG compat wrapper
+
+function getItem(si) {
+  if (!parsed) return null;
+  if (si.type === 'state') return parsed.stateMap[si.id] || null;
+  if (si.type === 'group') return parsed.groupMap[si.id] || null;
+  if (si.type === 'note') return parsed.noteMap[si.id] || null;
+  return parsed.pseudoMap[si.id] || null;
+}
+
+function resolveSelType(id) {
+  if (!parsed) return 'state';
+  if (parsed.stateMap[id]) return 'state';
+  if (parsed.pseudoMap[id]) return parsed.pseudoMap[id].type;
+  if (parsed.groupMap[id]) return 'group';
+  if (parsed.noteMap[id]) return 'note';
+  return 'state';
+}
+
+// Build dot-path reference for a state/pseudo (e.g. "active.accel")
+function stateDotPath(id) {
+  if (!parsed) return id;
+  const el = parsed.stateMap[id] || parsed.pseudoMap[id];
+  if (!el || !el.parent) return id;
+  // Walk up parent chain
+  const parts = [id];
+  let pid = el.parent;
+  while (pid) {
+    parts.unshift(pid);
+    const p = parsed.stateMap[pid];
+    pid = p ? p.parent : null;
+  }
+  return parts.join('.');
+}
 
 // Interaction state
 let annotationMode = false; // annotation mode: notes visible + editable, normal elements dimmed + non-interactive
-let dragState = null;      // { startX, startY, items: [{id, type, origX, origY, parent, w, h}], offsetX, offsetY }
-let resizeState = null;    // { id, type, handle, origX, origY, origW, origH, startMX, startMY }
+// dragState/resizeState replaced by setupInteractions() closures
 let undoHistory = [];      // undo stack (DSL snapshots)
 let redoFuture = [];       // redo stack
 const MAX_HISTORY = 100;
@@ -290,6 +324,26 @@ let zoom = 1.0;
 let snapGuides = [];       // [{axis:'x'|'y', pos:number}] for rendering
 let searchFilter = '';     // ADR-026: search/filter string
 let searchMatchIds = null; // Set of matching IDs, or null if no filter
+let highlight = false;
+
+function getConnectedIds() {
+  if (!parsed) return new Set();
+  const ids = new Set();
+  for (const t of parsed.transitions) {
+    const fromEl = resolveStateRef(t.from, parsed);
+    const toEl = resolveStateRef(t.to, parsed);
+    if (fromEl) ids.add(fromEl.id);
+    if (toEl) ids.add(toEl.id);
+  }
+  return ids;
+}
+
+function toggleHighlight() {
+  highlight = !highlight;
+  const btn = document.getElementById('btn-highlight');
+  if (btn) btn.classList.toggle('active', highlight);
+  refresh();
+}
 
 // ═══════════════════════════════════════════════
 // Tab Switching
@@ -336,17 +390,10 @@ function toggleActions() {
 // Zoom
 // ═══════════════════════════════════════════════
 function setZoom(delta) {
-  zoom = Math.max(0.25, Math.min(4, zoom + delta * 0.25));
-  applyZoom();
-}
-
-function applyZoom() {
-  const svgEl = document.querySelector('#svg-wrap svg');
-  if (svgEl) {
-    svgEl.style.transform = `scale(${zoom})`;
-    svgEl.style.transformOrigin = '0 0';
-  }
+  zoom = Math.max(0.25, Math.min(3, zoom + delta * 0.25));
   document.getElementById('zoom-label').textContent = Math.round(zoom * 100) + '%';
+  document.getElementById('svg-wrap').innerHTML = renderSVG(parsed);
+  setupInteractions();
 }
 
 // ═══════════════════════════════════════════════
@@ -724,7 +771,11 @@ function resolveStateRef(dotPath, parsed) {
   if (parsed.pseudoMap[dotPath]) return parsed.pseudoMap[dotPath];
   const parts = dotPath.split('.');
   const leafId = parts[parts.length - 1];
-  const candidates = parsed.states.filter(s => s.id === leafId);
+  // Search states and pseudo-states for dot-path match
+  const candidates = [
+    ...parsed.states.filter(s => s.id === leafId),
+    ...parsed.pseudoStates.filter(s => s.id === leafId)
+  ];
   for (const c of candidates) {
     let match = true, cur = c;
     for (let i = parts.length - 2; i >= 0; i--) {
@@ -1062,11 +1113,12 @@ function renderSVG(parsed) {
   if (!parsed) return '';
   const { canvas } = parsed;
   const g = canvas.grid;
+  const hlIds = highlight ? getConnectedIds() : null;
   const sans = "'IBM Plex Sans','Noto Sans JP',sans-serif";
   const mono = "'IBM Plex Mono',monospace";
   const shadow = 'filter="drop-shadow(2px 2px 4px rgba(0,0,0,0.4))"';
 
-  let svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${canvas.width}" height="${canvas.height}">`;
+  let svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${canvas.width*zoom}" height="${canvas.height*zoom}" viewBox="0 0 ${canvas.width} ${canvas.height}">`;
 
   // ─── 1. Grid pattern ───
   svg += `<defs>`;
@@ -1085,10 +1137,14 @@ function renderSVG(parsed) {
     const fill = grp.color || '#1a1a3e';
     const border = grp.borderColor || '#3a3a5a';
     const textClr = grp.textColor || '#888888';
-    const dimGrp = searchMatchIds && !searchMatchIds.has(grp.id) ? ' opacity="0.2"' : '';
-    svg += `<g${dimGrp}>`;
-    svg += `<rect x="${px}" y="${py}" width="${pw}" height="${ph}" rx="6" ry="6" fill="${esc(fill)}" fill-opacity="0.3" stroke="${esc(border)}" stroke-width="1"/>`;
-    svg += `<text x="${px + 10}" y="${py + 16}" font-family="${sans}" font-size="11" font-weight="600" fill="${esc(textClr)}">${esc(grp.label)}</text>`;
+    const dimGrpSearch = searchMatchIds && !searchMatchIds.has(grp.id) ? 0.2 : null;
+    const dimGrpHl = hlIds && !hlIds.has(grp.id) ? 0.15 : null;
+    const dimGrpVal = dimGrpSearch || dimGrpHl;
+    const dimGrp = dimGrpVal ? ` opacity="${dimGrpVal}"` : '';
+    const grpShadow = isSelected(grp.id) ? 'filter="drop-shadow(0 4px 12px rgba(99,102,241,0.5))"' : '';
+    svg += `<g data-type="group" data-id="${grp.id}" style="cursor:${annotationMode?'default':'grab'}"${dimGrp}>`;
+    svg += `<rect x="${px}" y="${py}" width="${pw}" height="${ph}" rx="6" ry="6" fill="${esc(fill)}" fill-opacity="0.3" stroke="${esc(border)}" stroke-width="1" ${grpShadow}/>`;
+    svg += `<text x="${px + 10}" y="${py + 16}" font-family="${sans}" font-size="11" font-weight="600" fill="${esc(textClr)}" style="pointer-events:none">${esc(grp.label)}</text>`;
     svg += `</g>`;
   }
 
@@ -1101,29 +1157,33 @@ function renderSVG(parsed) {
     const border = st.borderColor || '#6366F1';
     const textClr = st.textColor || '#e0e0e0';
     const round = st.round != null ? st.round : 10;
-    const sel = isSelected(st.id);
-    const strokeClr = sel ? 'white' : border;
-    const strokeW = sel ? 2.5 : 1.5;
+    const elSel = isSelected(st.id);
+    const strokeClr = elSel ? 'white' : border;
+    const strokeW = elSel ? 2.5 : 1.5;
     const dashAttr = st.style === 'dashed' ? ' stroke-dasharray="6 3"' : '';
-    const dimSt = searchMatchIds && !searchMatchIds.has(st.id) ? ' opacity="0.2"' : '';
+    const dimStSearch = searchMatchIds && !searchMatchIds.has(st.id) ? 0.2 : null;
+    const dimStHl = hlIds && !hlIds.has(st.id) ? 0.15 : null;
+    const dimStVal = dimStSearch || dimStHl;
+    const dimSt = dimStVal ? ` opacity="${dimStVal}"` : '';
+    const stShadow = elSel ? 'filter="drop-shadow(0 4px 12px rgba(99,102,241,0.5))"' : shadow;
 
-    svg += `<g${dimSt}>`;
-    svg += `<rect x="${pos.x}" y="${pos.y}" width="${pw}" height="${ph}" rx="${round}" ry="${round}" fill="${esc(fill)}" stroke="${esc(strokeClr)}" stroke-width="${strokeW}"${dashAttr} ${shadow}/>`;
-    svg += `<text x="${pos.x + 10}" y="${pos.y + 18}" font-family="${sans}" font-size="12" font-weight="600" fill="${esc(textClr)}">${esc(st.label)}</text>`;
+    svg += `<g data-type="state" data-id="${st.id}" style="cursor:${annotationMode?'default':'grab'}"${dimSt}>`;
+    svg += `<rect x="${pos.x}" y="${pos.y}" width="${pw}" height="${ph}" rx="${round}" ry="${round}" fill="${esc(fill)}" stroke="${esc(strokeClr)}" stroke-width="${strokeW}"${dashAttr} ${stShadow}/>`;
+    svg += `<text x="${pos.x + 10}" y="${pos.y + 18}" font-family="${sans}" font-size="12" font-weight="600" fill="${esc(textClr)}" style="pointer-events:none">${esc(st.label)}</text>`;
 
     // If showActions and composite has actions, render them below label
     if (showActions && (st.entry || st.do || st.exit)) {
       let ay = pos.y + 32;
       if (st.entry) {
-        svg += `<text x="${pos.x + 10}" y="${ay}" font-family="${mono}" font-size="10" fill="#888888">entry / ${esc(st.entry)}</text>`;
+        svg += `<text x="${pos.x + 10}" y="${ay}" font-family="${mono}" font-size="10" fill="#888888" style="pointer-events:none">entry / ${esc(st.entry)}</text>`;
         ay += 14;
       }
       if (st.do) {
-        svg += `<text x="${pos.x + 10}" y="${ay}" font-family="${mono}" font-size="10" fill="#888888">do / ${esc(st.do)}</text>`;
+        svg += `<text x="${pos.x + 10}" y="${ay}" font-family="${mono}" font-size="10" fill="#888888" style="pointer-events:none">do / ${esc(st.do)}</text>`;
         ay += 14;
       }
       if (st.exit) {
-        svg += `<text x="${pos.x + 10}" y="${ay}" font-family="${mono}" font-size="10" fill="#888888">exit / ${esc(st.exit)}</text>`;
+        svg += `<text x="${pos.x + 10}" y="${ay}" font-family="${mono}" font-size="10" fill="#888888" style="pointer-events:none">exit / ${esc(st.exit)}</text>`;
       }
     }
     // Region separators (dashed horizontal lines between orthogonal regions)
@@ -1137,7 +1197,7 @@ function renderSVG(parsed) {
       // Region labels
       for (let ri = 0; ri < stRegions.length; ri++) {
         const ry = pos.y + regionH * ri + 14;
-        svg += `<text x="${pos.x + pw - 6}" y="${ry}" text-anchor="end" font-family="${sans}" font-size="9" font-style="italic" fill="${esc(border)}" opacity="0.7">${esc(stRegions[ri].label)}</text>`;
+        svg += `<text x="${pos.x + pw - 6}" y="${ry}" text-anchor="end" font-family="${sans}" font-size="9" font-style="italic" fill="${esc(border)}" opacity="0.7" style="pointer-events:none">${esc(stRegions[ri].label)}</text>`;
       }
     }
     svg += `</g>`;
@@ -1152,38 +1212,42 @@ function renderSVG(parsed) {
     const border = st.borderColor || '#818CF8';
     const textClr = st.textColor || '#e0e0e0';
     const round = st.round != null ? st.round : 10;
-    const sel = isSelected(st.id);
-    const strokeClr = sel ? 'white' : border;
-    const strokeW = sel ? 2.5 : 1.5;
+    const elSel = isSelected(st.id);
+    const strokeClr = elSel ? 'white' : border;
+    const strokeW = elSel ? 2.5 : 1.5;
     const dashAttr = st.style === 'dashed' ? ' stroke-dasharray="6 3"' : '';
     const hasActions = showActions && (st.entry || st.do || st.exit);
-    const dimSt = searchMatchIds && !searchMatchIds.has(st.id) ? ' opacity="0.2"' : '';
+    const dimStSearch = searchMatchIds && !searchMatchIds.has(st.id) ? 0.2 : null;
+    const dimStHl = hlIds && !hlIds.has(st.id) ? 0.15 : null;
+    const dimStVal = dimStSearch || dimStHl;
+    const dimSt = dimStVal ? ` opacity="${dimStVal}"` : '';
+    const stShadow = elSel ? 'filter="drop-shadow(0 4px 12px rgba(99,102,241,0.5))"' : shadow;
 
-    svg += `<g${dimSt}>`;
-    svg += `<rect x="${pos.x}" y="${pos.y}" width="${pw}" height="${ph}" rx="${round}" ry="${round}" fill="${esc(fill)}" stroke="${esc(strokeClr)}" stroke-width="${strokeW}"${dashAttr} ${shadow}/>`;
+    svg += `<g data-type="state" data-id="${st.id}" style="cursor:${annotationMode?'default':'grab'}"${dimSt}>`;
+    svg += `<rect x="${pos.x}" y="${pos.y}" width="${pw}" height="${ph}" rx="${round}" ry="${round}" fill="${esc(fill)}" stroke="${esc(strokeClr)}" stroke-width="${strokeW}"${dashAttr} ${stShadow}/>`;
 
     if (hasActions) {
       // Label at top
-      svg += `<text x="${pos.x + pw/2}" y="${pos.y + 20}" text-anchor="middle" font-family="${sans}" font-size="13" font-weight="600" fill="${esc(textClr)}">${esc(st.label)}</text>`;
+      svg += `<text x="${pos.x + pw/2}" y="${pos.y + 20}" text-anchor="middle" font-family="${sans}" font-size="13" font-weight="600" fill="${esc(textClr)}" style="pointer-events:none">${esc(st.label)}</text>`;
       // Separator line
       const sepY = pos.y + 28;
       svg += `<line x1="${pos.x + 4}" y1="${sepY}" x2="${pos.x + pw - 4}" y2="${sepY}" stroke="${esc(border)}" stroke-width="0.5" opacity="0.5"/>`;
       // Action text
       let ay = sepY + 16;
       if (st.entry) {
-        svg += `<text x="${pos.x + 8}" y="${ay}" font-family="${mono}" font-size="10" fill="#888888">entry / ${esc(st.entry)}</text>`;
+        svg += `<text x="${pos.x + 8}" y="${ay}" font-family="${mono}" font-size="10" fill="#888888" style="pointer-events:none">entry / ${esc(st.entry)}</text>`;
         ay += 14;
       }
       if (st.do) {
-        svg += `<text x="${pos.x + 8}" y="${ay}" font-family="${mono}" font-size="10" fill="#888888">do / ${esc(st.do)}</text>`;
+        svg += `<text x="${pos.x + 8}" y="${ay}" font-family="${mono}" font-size="10" fill="#888888" style="pointer-events:none">do / ${esc(st.do)}</text>`;
         ay += 14;
       }
       if (st.exit) {
-        svg += `<text x="${pos.x + 8}" y="${ay}" font-family="${mono}" font-size="10" fill="#888888">exit / ${esc(st.exit)}</text>`;
+        svg += `<text x="${pos.x + 8}" y="${ay}" font-family="${mono}" font-size="10" fill="#888888" style="pointer-events:none">exit / ${esc(st.exit)}</text>`;
       }
     } else {
       // Centered label only
-      svg += `<text x="${pos.x + pw/2}" y="${pos.y + ph/2 + 5}" text-anchor="middle" font-family="${sans}" font-size="13" font-weight="600" fill="${esc(textClr)}">${esc(st.label)}</text>`;
+      svg += `<text x="${pos.x + pw/2}" y="${pos.y + ph/2 + 5}" text-anchor="middle" font-family="${sans}" font-size="13" font-weight="600" fill="${esc(textClr)}" style="pointer-events:none">${esc(st.label)}</text>`;
     }
     svg += `</g>`;
   }
@@ -1191,9 +1255,13 @@ function renderSVG(parsed) {
   // ─── 5. Pseudo-states ───
   for (const ps of parsed.pseudoStates) {
     const pos = getAbsolutePos(ps, parsed);
-    const dimPs = searchMatchIds && !searchMatchIds.has(ps.id) ? ' opacity="0.2"' : '';
+    const dimPsSearch = searchMatchIds && !searchMatchIds.has(ps.id) ? 0.2 : null;
+    const dimPsHl = hlIds && !hlIds.has(ps.id) ? 0.15 : null;
+    const dimPsVal = dimPsSearch || dimPsHl;
+    const dimPs = dimPsVal ? ` opacity="${dimPsVal}"` : '';
     const psSel = isSelected(ps.id);
-    svg += `<g${dimPs}>`;
+    const psShadow = psSel ? 'filter="drop-shadow(0 4px 12px rgba(99,102,241,0.5))"' : shadow;
+    svg += `<g data-type="${ps.type}" data-id="${ps.id}" style="cursor:grab"${dimPs}>`;
 
     // Selection highlight ring
     if (psSel) {
@@ -1203,35 +1271,35 @@ function renderSVG(parsed) {
 
     switch (ps.type) {
       case 'initial': {
-        svg += `<circle cx="${pos.x}" cy="${pos.y}" r="10" fill="#e0e0e0" ${shadow}/>`;
+        svg += `<circle cx="${pos.x}" cy="${pos.y}" r="10" fill="#e0e0e0" ${psShadow}/>`;
         break;
       }
       case 'final': {
-        svg += `<circle cx="${pos.x}" cy="${pos.y}" r="12" fill="none" stroke="#e0e0e0" stroke-width="2" ${shadow}/>`;
+        svg += `<circle cx="${pos.x}" cy="${pos.y}" r="12" fill="none" stroke="#e0e0e0" stroke-width="2" ${psShadow}/>`;
         svg += `<circle cx="${pos.x}" cy="${pos.y}" r="7" fill="#e0e0e0"/>`;
         break;
       }
       case 'choice': {
         const cx = pos.x;
         const cy = pos.y;
-        svg += `<polygon points="${cx},${cy-10} ${cx+10},${cy} ${cx},${cy+10} ${cx-10},${cy}" fill="#1e293b" stroke="${psSel ? 'white' : '#818CF8'}" stroke-width="${psSel ? 2.5 : 1.5}" ${shadow}/>`;
+        svg += `<polygon points="${cx},${cy-10} ${cx+10},${cy} ${cx},${cy+10} ${cx-10},${cy}" fill="#1e293b" stroke="${psSel ? 'white' : '#818CF8'}" stroke-width="${psSel ? 2.5 : 1.5}" ${psShadow}/>`;
         break;
       }
       case 'history': {
-        svg += `<circle cx="${pos.x}" cy="${pos.y}" r="16" fill="#1e293b" stroke="${psSel ? 'white' : '#818CF8'}" stroke-width="${psSel ? 2.5 : 1.5}" ${shadow}/>`;
-        svg += `<text x="${pos.x}" y="${pos.y + 5}" text-anchor="middle" font-family="${sans}" font-size="14" font-weight="700" fill="#e0e0e0">H</text>`;
+        svg += `<circle cx="${pos.x}" cy="${pos.y}" r="16" fill="#1e293b" stroke="${psSel ? 'white' : '#818CF8'}" stroke-width="${psSel ? 2.5 : 1.5}" ${psShadow}/>`;
+        svg += `<text x="${pos.x}" y="${pos.y + 5}" text-anchor="middle" font-family="${sans}" font-size="14" font-weight="700" fill="#e0e0e0" style="pointer-events:none">H</text>`;
         break;
       }
       case 'deephistory': {
-        svg += `<circle cx="${pos.x}" cy="${pos.y}" r="16" fill="#1e293b" stroke="${psSel ? 'white' : '#818CF8'}" stroke-width="${psSel ? 2.5 : 1.5}" ${shadow}/>`;
-        svg += `<text x="${pos.x}" y="${pos.y + 5}" text-anchor="middle" font-family="${sans}" font-size="14" font-weight="700" fill="#e0e0e0">H*</text>`;
+        svg += `<circle cx="${pos.x}" cy="${pos.y}" r="16" fill="#1e293b" stroke="${psSel ? 'white' : '#818CF8'}" stroke-width="${psSel ? 2.5 : 1.5}" ${psShadow}/>`;
+        svg += `<text x="${pos.x}" y="${pos.y + 5}" text-anchor="middle" font-family="${sans}" font-size="14" font-weight="700" fill="#e0e0e0" style="pointer-events:none">H*</text>`;
         break;
       }
       case 'fork':
       case 'join': {
         const pw = ps.w != null ? ps.w * g : 6;
         const ph = ps.h != null ? ps.h * g : 40;
-        svg += `<rect x="${pos.x - pw/2}" y="${pos.y - ph/2}" width="${pw}" height="${ph}" rx="2" ry="2" fill="${psSel ? 'white' : '#e0e0e0'}" ${shadow}/>`;
+        svg += `<rect x="${pos.x - pw/2}" y="${pos.y - ph/2}" width="${pw}" height="${ph}" rx="2" ry="2" fill="${psSel ? 'white' : '#e0e0e0'}" ${psShadow}/>`;
         break;
       }
     }
@@ -1240,10 +1308,14 @@ function renderSVG(parsed) {
 
 
   // ─── 6. Transitions ───
-  // Arrow marker definition
+  // Arrow markers: one per unique transition color
+  const _arrowColors = new Set();
+  for (const tr of parsed.transitions) _arrowColors.add(tr.color || '#89DDFF');
   svg += `<defs>`;
-  svg += `<marker id="arrowHead" markerWidth="10" markerHeight="8" refX="10" refY="4" orient="auto">`;
-  svg += `<path d="M0,0 L10,4 L0,8 Z" fill="#89DDFF"/></marker>`;
+  for (const c of _arrowColors) {
+    const mid = 'ah_' + c.replace(/[^a-zA-Z0-9]/g, '');
+    svg += `<marker id="${mid}" markerWidth="10" markerHeight="8" refX="10" refY="4" orient="auto"><path d="M0,0 L10,4 L0,8 Z" fill="${c}"/></marker>`;
+  }
   svg += `</defs>`;
 
   // Helper: get bounding box {x, y, w, h} in pixels for a state or pseudo-state
@@ -1312,10 +1384,11 @@ function renderSVG(parsed) {
   // Helper: build orthogonal route between two points
   // channelOffset: pixel offset for the intermediate channel to avoid overlap
   //   when multiple transitions share the same routing corridor
-  function buildRoute(fromPt, toPt, fromSide, toSide, channelOffset) {
+  function buildRoute(fromPt, toPt, fromSide, toSide, channelOffset, routeIndex) {
     const points = [fromPt];
     const margin = 20;
     const co = channelOffset || 0; // channel offset in pixels
+    const ri = (routeIndex || 0) * 30; // extra spread per route for U-shape legs (30px ≈ multi-line label height)
 
     // same-axis opposite sides
     if (fromSide === 'right' && toSide === 'left') {
@@ -1355,24 +1428,24 @@ function renderSVG(parsed) {
         points.push(toPt);
       }
     }
-    // same sides — U-shape
+    // same sides — U-shape (ri spreads legs for multiple routes)
     else if (fromSide === 'right' && toSide === 'right') {
-      const outX = Math.max(fromPt.x, toPt.x) + margin + Math.abs(co);
+      const outX = Math.max(fromPt.x, toPt.x) + margin + ri;
       points.push({ x: outX, y: fromPt.y });
       points.push({ x: outX, y: toPt.y });
       points.push(toPt);
     } else if (fromSide === 'left' && toSide === 'left') {
-      const outX = Math.min(fromPt.x, toPt.x) - margin - Math.abs(co);
+      const outX = Math.min(fromPt.x, toPt.x) - margin - ri;
       points.push({ x: outX, y: fromPt.y });
       points.push({ x: outX, y: toPt.y });
       points.push(toPt);
     } else if (fromSide === 'top' && toSide === 'top') {
-      const outY = Math.min(fromPt.y, toPt.y) - margin - Math.abs(co);
+      const outY = Math.min(fromPt.y, toPt.y) - margin - ri;
       points.push({ x: fromPt.x, y: outY });
       points.push({ x: toPt.x, y: outY });
       points.push(toPt);
     } else if (fromSide === 'bottom' && toSide === 'bottom') {
-      const outY = Math.max(fromPt.y, toPt.y) + margin + Math.abs(co);
+      const outY = Math.max(fromPt.y, toPt.y) + margin + ri;
       points.push({ x: fromPt.x, y: outY });
       points.push({ x: toPt.x, y: outY });
       points.push(toPt);
@@ -1483,15 +1556,20 @@ function renderSVG(parsed) {
     if (!pairMap[pk]) pairMap[pk] = [];
     pairMap[pk].push(ti);
   }
-  // Mark the second transition in each bidirectional pair for alternate routing
+  // Mark reverse-direction transitions for alternate routing.
+  // For each state pair, find the "forward" direction (first encountered),
+  // then mark ALL transitions in the opposite direction as reverse.
   const reverseSet = new Set();
   for (const pk of Object.keys(pairMap)) {
     const indices = pairMap[pk];
     if (indices.length < 2) continue;
+    // Determine forward direction from first transition
+    const t0 = parsed.transitions[indices[0]];
+    const fwdFrom = t0.from, fwdTo = t0.to;
     for (let i = 1; i < indices.length; i++) {
-      const t0 = parsed.transitions[indices[0]];
       const ti2 = parsed.transitions[indices[i]];
-      if (t0.from === ti2.to && t0.to === ti2.from) {
+      // Opposite direction → reverse
+      if (ti2.from === fwdTo && ti2.to === fwdFrom) {
         reverseSet.add(indices[i]);
       }
     }
@@ -1500,6 +1578,8 @@ function renderSVG(parsed) {
   // First pass: compute sides for all transitions and build unified edge groups
   for (let ti = 0; ti < parsed.transitions.length; ti++) {
     const tr = parsed.transitions[ti];
+    // Skip @internal transitions — they have no visual representation in diagram
+    if (tr.kind === 'internal') { transitionSides.push(null); continue; }
     const srcBox = getBox(tr.from);
     const tgtBox = getBox(tr.to);
     if (!srcBox || !tgtBox) {
@@ -1572,7 +1652,12 @@ function renderSVG(parsed) {
       const channelSpacing = 10;
       const channelOffset = srcEdge.length <= 1 ? 0
         : (srcIdx - (srcEdge.length - 1) / 2) * channelSpacing;
-      route = buildRoute(fromPt, toPt, srcSide, tgtSide, channelOffset);
+      // Route index: count same-direction transitions between this pair for U-shape leg spread
+      const dirKey = tr.from + '\u2192' + tr.to;
+      if (!_dirIdx) var _dirIdx = {};
+      if (_dirIdx[dirKey] == null) _dirIdx[dirKey] = 0;
+      const routeIdx = _dirIdx[dirKey]++;
+      route = buildRoute(fromPt, toPt, srcSide, tgtSide, channelOffset, routeIdx);
     }
 
     // Crossing detection: check this route against all previously rendered routes
@@ -1602,10 +1687,11 @@ function renderSVG(parsed) {
     const sw = tr.width || 1.5;
     const sc = tr.color || '#89DDFF';
     const dashAttr = tr.style === 'dashed' ? ' stroke-dasharray="6 3"' : '';
+    const _amid = 'ah_' + sc.replace(/[^a-zA-Z0-9]/g, '');
     if (crossings.length === 0) {
       // Simple polyline
       const pts = route.map(p => `${p.x},${p.y}`).join(' ');
-      svg += `<polyline points="${pts}" fill="none" stroke="${sc}" stroke-width="${sw}"${dashAttr} marker-end="url(#arrowHead)"/>`;
+      svg += `<polyline points="${pts}" fill="none" stroke="${sc}" stroke-width="${sw}"${dashAttr} marker-end="url(#${_amid})"/>`;
     } else {
       // Path with bridge arcs (handles both horizontal and vertical crossings)
       let d = `M ${route[0].x},${route[0].y}`;
@@ -1636,13 +1722,13 @@ function renderSVG(parsed) {
           d += ` L ${a2.x},${a2.y}`;
         }
       }
-      svg += `<path d="${d}" fill="none" stroke="${sc}" stroke-width="${sw}"${dashAttr} marker-end="url(#arrowHead)"/>`;
+      svg += `<path d="${d}" fill="none" stroke="${sc}" stroke-width="${sw}"${dashAttr} marker-end="url(#${_amid})"/>`;
     }
 
     // Store route for future crossing detection
     allRoutes.push(route);
 
-    // Labels — position along route with direction-aware offset
+    // Labels — positioned at each route's own midpoint (routes are separated by port distribution)
     const hasLabel = tr.event || tr.guard || tr.action;
     if (hasLabel) {
       const mid = routeMidpoint(route);
@@ -1673,18 +1759,16 @@ function renderSVG(parsed) {
         labelLines.push({ text: '@' + tr.kind, color: '#F59E0B', size: 8 });
       }
       if (midSegHoriz) {
-        // Stack labels above the line
         for (let li = 0; li < labelLines.length; li++) {
           const ll = labelLines[li];
           const ly = mid.y - 6 - (labelLines.length - 1 - li) * 13;
-          svg += `<text x="${mid.x}" y="${ly}" text-anchor="middle" font-family="${sans}" font-size="${ll.size}" fill="${ll.color}">${esc(ll.text)}</text>`;
+          svg += `<text x="${mid.x}" y="${ly}" text-anchor="middle" font-family="${sans}" font-size="${ll.size}" fill="${ll.color}" style="pointer-events:none">${esc(ll.text)}</text>`;
         }
       } else {
-        // Place labels to the right of the line for vertical segments
         for (let li = 0; li < labelLines.length; li++) {
           const ll = labelLines[li];
           const ly = mid.y + li * 13;
-          svg += `<text x="${mid.x + 8}" y="${ly}" text-anchor="start" font-family="${sans}" font-size="${ll.size}" fill="${ll.color}">${esc(ll.text)}</text>`;
+          svg += `<text x="${mid.x + 8}" y="${ly}" text-anchor="start" font-family="${sans}" font-size="${ll.size}" fill="${ll.color}" style="pointer-events:none">${esc(ll.text)}</text>`;
         }
       }
     }
@@ -1709,30 +1793,28 @@ function renderSVG(parsed) {
     }
   }
 
-  // ─── 8. Resize handles (when exactly 1 element selected) ───
-  if (selection.size === 1) {
-    const selId = [...selection][0];
-    let selEl = parsed.stateMap[selId] || parsed.groupMap[selId] || parsed.noteMap[selId];
-    if (selEl && selEl.w != null && selEl.h != null) {
-      const pos = getAbsolutePos(selEl, parsed);
-      const pw = selEl.w * g;
-      const ph = selEl.h * g;
-      const hs = 6; // handle size (half)
-      const handles = [
-        { name: 'nw', cx: pos.x,          cy: pos.y },
-        { name: 'n',  cx: pos.x + pw / 2, cy: pos.y },
-        { name: 'ne', cx: pos.x + pw,     cy: pos.y },
-        { name: 'e',  cx: pos.x + pw,     cy: pos.y + ph / 2 },
-        { name: 'se', cx: pos.x + pw,     cy: pos.y + ph },
-        { name: 's',  cx: pos.x + pw / 2, cy: pos.y + ph },
-        { name: 'sw', cx: pos.x,          cy: pos.y + ph },
-        { name: 'w',  cx: pos.x,          cy: pos.y + ph / 2 }
-      ];
-      for (const h of handles) {
-        svg += `<rect x="${h.cx - hs}" y="${h.cy - hs}" width="${hs * 2}" height="${hs * 2}" fill="#818CF8" stroke="#fff" stroke-width="1" rx="1" data-handle="${h.name}" style="cursor:pointer"/>`;
-      }
-    }
-  }
+  // ─── 8. Resize handles (for selected elements) ───
+  sel.forEach(si => {
+    const it = getItem(si);
+    if (!it || it.w == null || it.h == null) return;
+    const isNote = si.type === 'note';
+    if (isNote && !annotationMode) return;
+    if (!isNote && annotationMode) return;
+    const pos = getAbsolutePos(it, parsed);
+    const w = it.w * g, h = it.h * g;
+    const hs = 10, hitS = 20;
+    const hColor = isNote ? '#F59E0B' : '#6366F1';
+    const handles = [
+      {cx:pos.x,cy:pos.y,cur:'nw-resize',edge:'nw'},{cx:pos.x+w,cy:pos.y,cur:'ne-resize',edge:'ne'},
+      {cx:pos.x,cy:pos.y+h,cur:'sw-resize',edge:'sw'},{cx:pos.x+w,cy:pos.y+h,cur:'se-resize',edge:'se'},
+      {cx:pos.x+w/2,cy:pos.y,cur:'n-resize',edge:'n'},{cx:pos.x+w/2,cy:pos.y+h,cur:'s-resize',edge:'s'},
+      {cx:pos.x,cy:pos.y+h/2,cur:'w-resize',edge:'w'},{cx:pos.x+w,cy:pos.y+h/2,cur:'e-resize',edge:'e'},
+    ];
+    handles.forEach(hd => {
+      svg += `<rect data-resize="${hd.edge}" data-rid="${si.id}" data-rtype="${si.type}" x="${hd.cx-hitS/2}" y="${hd.cy-hitS/2}" width="${hitS}" height="${hitS}" fill="transparent" style="cursor:${hd.cur}"/>`;
+      svg += `<rect x="${hd.cx-hs/2}" y="${hd.cy-hs/2}" width="${hs}" height="${hs}" fill="${hColor}" stroke="#fff" stroke-width="1.5" rx="2" style="pointer-events:none"/>`;
+    });
+  });
 
   // ─── 9. Snap guides ───
   if (snapGuides && snapGuides.length > 0) {
@@ -1754,23 +1836,26 @@ function renderSVG(parsed) {
       const fill = n.color || '#FEF3C7';
       const borderClr = n.borderColor || '#D97706';
       const textClr = n.textColor || '#92400E';
-      const sel = isSelected(n.id);
-      const strokeClr = sel ? '#F59E0B' : borderClr;
-      const strokeW = sel ? 2.5 : 1;
-      svg += `<rect x="${pos.x}" y="${pos.y}" width="${pw}" height="${ph}" rx="0" ry="0" fill="${esc(fill)}" stroke="${esc(strokeClr)}" stroke-width="${strokeW}" stroke-dasharray="4,2" style="filter:drop-shadow(0 1px 2px rgba(0,0,0,0.08))"/>`;
+      const elSel = isSelected(n.id);
+      const strokeClr = elSel ? '#F59E0B' : borderClr;
+      const strokeW = elSel ? 2.5 : 1;
+      const noteShadow = elSel ? 'filter:drop-shadow(0 4px 12px rgba(245,158,11,0.5))' : 'filter:drop-shadow(0 1px 2px rgba(0,0,0,0.08))';
+      svg += `<g data-type="note" data-id="${n.id}" style="cursor:${annotationMode?'grab':'default'}">`;
+      svg += `<rect x="${pos.x}" y="${pos.y}" width="${pw}" height="${ph}" rx="0" ry="0" fill="${esc(fill)}" stroke="${esc(strokeClr)}" stroke-width="${strokeW}" stroke-dasharray="4,2" style="${noteShadow}"/>`;
       const lines = n.label.split('\\n');
       for (let li = 0; li < lines.length; li++) {
         const ty = pos.y + 6 + li * 14 + 10;
         svg += `<text x="${pos.x + 6}" y="${ty}" text-anchor="start" font-family="${sans}" font-size="11" font-weight="400" fill="${esc(textClr)}" style="pointer-events:none">${esc(lines[li])}</text>`;
       }
+      svg += `</g>`;
     }
   }
 
   // ─── 9. Annotation mode indicator (top banner, excluded from export) ───
   if (annotationMode) {
-    svg += `<g id="annotation-banner">`;
+    svg += `<g id="annotation-banner" style="pointer-events:none">`;
     svg += `<rect x="0" y="0" width="${canvas.width}" height="24" fill="#F59E0B" fill-opacity="0.15"/>`;
-    svg += `<text x="${canvas.width/2}" y="16" text-anchor="middle" font-family="${sans}" font-size="11" font-weight="600" fill="#F59E0B">ANNOTATION MODE — states are locked, press N to exit</text>`;
+    svg += `<text x="${canvas.width/2}" y="16" text-anchor="middle" font-family="${sans}" font-size="11" font-weight="600" fill="#F59E0B" style="pointer-events:none">ANNOTATION MODE — states are locked, press N to exit</text>`;
     svg += `</g>`;
   }
 
@@ -1811,12 +1896,12 @@ function renderTable(parsed) {
     }
   }
 
-  // Depth-first walk to collect leaf columns
+  // Depth-first walk: composite states also get a self-column at child depth
   function walkState(st, depth) {
     if (st.children.length === 0) {
-      // Leaf state
       leafColumns.push({ id: st.id, state: st, depth: depth, isInitial: initialTargets.has(st.id) });
     } else {
+      leafColumns.push({ id: st.id, state: st, depth: depth + 1, isInitial: false, isSelf: true });
       for (const childId of st.children) {
         const child = parsed.stateMap[childId];
         if (child) walkState(child, depth + 1);
@@ -1824,13 +1909,16 @@ function renderTable(parsed) {
     }
   }
 
-  // Start with root-level states (no parent)
   const rootStates = parsed.states.filter(s => s.parent === null);
   for (const rs of rootStates) {
     walkState(rs, 0);
   }
 
-  if (leafColumns.length === 0) {
+  // Insert virtual ROOT column at the beginning (table only, not in diagram)
+  const rootVirtual = { id: '__ROOT__', label: 'ROOT', parent: null, children: [], entry: null, do: null, exit: null };
+  leafColumns.unshift({ id: '__ROOT__', state: rootVirtual, depth: 0, isInitial: false, isRoot: true });
+
+  if (leafColumns.length <= 1) {
     headEl.innerHTML = ''; bodyEl.innerHTML = '';
     emptyEl.style.display = 'flex';
     emptyEl.textContent = 'DSLをパースして状態遷移表を生成します';
@@ -1845,16 +1933,17 @@ function renderTable(parsed) {
   }
   const totalHeaderRows = maxDepth + 1; // depth 0..maxDepth
 
-  // For each leaf, compute full ancestry chain (length = depth)
+  // For each column, compute ancestry chain (chain.length must equal lc.depth)
   const ancestries = leafColumns.map(function(lc) {
     const chain = [];
+    if (lc.isSelf) chain.push(lc.state); // self column includes itself as ancestor
     let cur = lc.state;
     while (cur.parent) {
       const p = parsed.stateMap[cur.parent];
       if (p) { chain.unshift(p); cur = p; }
       else break;
     }
-    return chain; // length = lc.depth
+    return chain;
   });
 
   // Build a cell grid: headerCells[row][col] = {label, colspan, rowspan, stateId} or null (covered by span)
@@ -1879,8 +1968,8 @@ function renderTable(parsed) {
     const leafRow = lc.depth;
     const prefix = lc.isInitial ? '>' : '';
     headerCells[leafRow][ci] = {
-      label: prefix + lc.state.label,
-      stateId: lc.id,
+      label: lc.isSelf ? '' : prefix + lc.state.label,
+      stateId: lc.isSelf ? lc.id + '_self' : lc.id,
       colspan: 1,
       rowspan: totalHeaderRows - leafRow,
       placed: false
@@ -1996,11 +2085,14 @@ function renderTable(parsed) {
       });
       let val = '-';
       if (matching.length > 0) {
-        const tgtEl = resolveStateRef(matching[0].to, parsed);
-        val = tgtEl ? tgtEl.label || tgtEl.id : matching[0].to;
-        // Append @kind if non-default (spec: "Active @external")
-        if (matching[0].kind && matching[0].kind !== parsed.config.transition) {
-          val += ' @' + matching[0].kind;
+        if (matching[0].kind === 'internal') {
+          val = '-';
+        } else {
+          const tgtEl = resolveStateRef(matching[0].to, parsed);
+          val = tgtEl ? tgtEl.label || tgtEl.id : matching[0].to;
+          if (matching[0].kind && matching[0].kind !== parsed.config.transition) {
+            val += ' @' + matching[0].kind;
+          }
         }
       }
       bodyHtml += `<td class="table-editable" data-field="target" data-state="${lc.id}" data-event="${esc(evName)}" style="cursor:pointer">${esc(val)}</td>`;
@@ -2038,109 +2130,104 @@ function renderTable(parsed) {
     headWrap.scrollLeft = bodyWrap.scrollLeft;
   });
 
-  // ─── Wire up double-click editing ───
+  // ─── Wire up cell click → show editor in property panel ───
+  let selectedCell = null;
   bodyEl.querySelectorAll('.table-editable').forEach(function(cell) {
-    cell.addEventListener('dblclick', function() {
+    cell.addEventListener('click', function() {
+      // Highlight selected cell
+      if (selectedCell) selectedCell.style.outline = '';
+      selectedCell = this;
+      this.style.outline = '2px solid var(--accent)';
+
       const field = this.dataset.field;
       const stateId = this.dataset.state;
       const evName = this.dataset.event;
       const currentText = this.textContent === '-' ? '' : this.textContent;
-      const input = document.createElement('input');
-      input.type = 'text';
-      input.value = currentText;
-      input.className = 'prop-input';
-      input.style.cssText = 'width:100%;margin:0;padding:2px 4px;font-size:12px;';
-      this.textContent = '';
-      this.appendChild(input);
-      input.focus();
-      input.select();
 
-      let committed = false;
-      const commitEdit = function() {
-        if (committed) return;
-        committed = true;
-        const newVal = input.value.trim();
-        input.remove();
+      // Render editor in property panel
+      const panel = document.getElementById('prop-content');
+      const isStateField = (field === 'entry' || field === 'do' || field === 'exit');
+      const isAction = isStateField || field === 'action';
+      const st = parsed.stateMap[stateId];
+      const stLabel = st ? st.label : stateId;
 
-        if (field === 'entry' || field === 'do' || field === 'exit') {
-          // State action edit
+      let html = `<div class="prop-section"><div class="prop-label">${esc(stLabel)}</div>`;
+
+      if (isStateField) {
+        // entry/do/exit — single textarea
+        html += `<div class="prop-sub" style="margin-bottom:4px">${esc(field)}</div>`;
+        html += `<textarea class="prop-input" id="pp-table-edit" style="height:80px;resize:vertical;font-size:11px;line-height:1.4;text-align:left">${esc(currentText)}</textarea>`;
+        html += `<button class="tb tb-accent" id="pp-table-apply" style="width:100%;margin-top:6px">適用</button>`;
+        html += `</div>`;
+        panel.innerHTML = html;
+        document.getElementById('pp-table-edit').focus();
+        document.getElementById('pp-table-apply').addEventListener('click', function() {
+          const newVal = document.getElementById('pp-table-edit').value.replace(/\n/g, ' ').trim();
           pushHistory();
           let dsl = getDsl();
-          if (newVal) {
-            dsl = updateProp('state', stateId, field, newVal, dsl);
-          } else {
-            const re = new RegExp(`(^\\s*state\\s+${stateId}\\s+.*)\\b${field}=\\S+`, 'm');
-            dsl = dsl.replace(re, '$1');
-          }
+          if (newVal) { dsl = updateProp('state', stateId, field, newVal, dsl); }
+          else { dsl = dsl.replace(new RegExp(`(^\\s*state\\s+${stateId}\\s+.*)\\b${field}=\\S+`, 'm'), '$1'); }
           setDsl(dsl);
           refresh();
-        } else if (field === 'guard' || field === 'action') {
-          // Transition field edit
-          const matchingTrans = parsed.transitions.filter(function(t) {
-            const fromEl = resolveStateRef(t.from, parsed);
-            return fromEl && fromEl.id === stateId && (t.event || '(none)') === evName;
-          });
-          if (matchingTrans.length > 0) {
-            const mt = matchingTrans[0];
-            pushHistory();
-            let dsl = getDsl();
-            dsl = updateTransition(mt.from, mt.to, mt.event, mt.guard, field, newVal || null, dsl);
-            setDsl(dsl);
-            refresh();
-          }
-        } else if (field === 'target') {
-          // Target change
-          const matchingTrans = parsed.transitions.filter(function(t) {
-            const fromEl = resolveStateRef(t.from, parsed);
-            return fromEl && fromEl.id === stateId && (t.event || '(none)') === evName;
-          });
-          if (newVal && (!currentText || currentText === '-') && matchingTrans.length === 0) {
-            // New transition: find target state by label or id
-            let targetId = null;
-            for (const s of parsed.states) {
-              if (s.label === newVal || s.id === newVal) { targetId = s.id; break; }
-            }
-            if (targetId) {
-              pushHistory();
-              let dsl = getDsl();
-              const ev = evName === '(none)' ? null : evName;
-              dsl = addTransition(stateId, targetId, ev, null, null, null, dsl);
-              setDsl(dsl);
-              refresh();
-            }
-          } else if ((!newVal || newVal === '-') && matchingTrans.length > 0) {
-            // Remove transition
-            const mt = matchingTrans[0];
-            pushHistory();
-            let dsl = getDsl();
-            dsl = removeTransition(mt.from, mt.to, mt.event, mt.guard, dsl);
-            setDsl(dsl);
-            refresh();
-          } else if (newVal && matchingTrans.length > 0) {
-            // Change target (remove old, add new)
-            let targetId = null;
-            for (const s of parsed.states) {
-              if (s.label === newVal || s.id === newVal) { targetId = s.id; break; }
-            }
-            if (targetId) {
-              const mt = matchingTrans[0];
-              pushHistory();
-              let dsl = getDsl();
-              dsl = removeTransition(mt.from, mt.to, mt.event, mt.guard, dsl);
-              const ev = evName === '(none)' ? mt.event : evName;
-              dsl = addTransition(mt.from, targetId, ev, mt.guard, mt.action, mt.kind, dsl);
-              setDsl(dsl);
-              refresh();
-            }
-          }
-        }
-      };
+        });
+        return;
+      }
 
-      input.addEventListener('blur', commitEdit);
-      input.addEventListener('keydown', function(e) {
-        if (e.key === 'Enter') { e.preventDefault(); input.blur(); }
-        if (e.key === 'Escape') { input.value = currentText; input.blur(); }
+      // Transition fields — unified target/guard/action form
+      const mt = parsed.transitions.filter(function(t) {
+        const fromEl = resolveStateRef(t.from, parsed);
+        return fromEl && fromEl.id === stateId && (t.event || '(none)') === evName;
       });
+      const existing = mt.length > 0 ? mt[0] : null;
+      const curGuard = existing ? existing.guard || '' : '';
+      const curAction = existing ? existing.action || '' : '';
+      const curTargetId = existing ? (existing.kind === 'internal' ? '' : (resolveStateRef(existing.to, parsed) || {}).id || '') : '';
+
+      html += `<div class="prop-sub" style="margin-bottom:4px">${esc(evName || '')}</div>`;
+      html += `<div class="prop-sub">target</div>`;
+      html += `<select class="prop-select" id="pp-table-target"><option value="">- (@internal)</option>`;
+      for (const s of parsed.states) {
+        const isSel = s.id === curTargetId ? ' selected' : '';
+        html += `<option value="${esc(s.id)}"${isSel}>${esc(s.label)} (${esc(s.id)})</option>`;
+      }
+      html += `</select>`;
+      html += `<div class="prop-sub" style="margin-top:4px">[guard]</div>`;
+      html += `<input class="prop-input" id="pp-table-guard" value="${esc(curGuard)}" placeholder="ガード条件">`;
+      html += `<div class="prop-sub" style="margin-top:4px">/ action</div>`;
+      html += `<textarea class="prop-input" id="pp-table-action" style="height:60px;resize:vertical;font-size:11px;line-height:1.4;text-align:left" placeholder="アクション">${esc(curAction)}</textarea>`;
+      html += `<button class="tb tb-accent" id="pp-table-apply" style="width:100%;margin-top:6px">適用</button>`;
+      if (existing) html += `<button class="tb" id="pp-table-delete" style="width:100%;margin-top:4px;border-color:#EF4444;color:#FCA5A5">遷移を削除</button>`;
+      html += `</div>`;
+      panel.innerHTML = html;
+
+      if (field === 'guard') document.getElementById('pp-table-guard').focus();
+      else if (field === 'action') document.getElementById('pp-table-action').focus();
+      else document.getElementById('pp-table-target').focus();
+
+      document.getElementById('pp-table-apply').addEventListener('click', function() {
+        const target = document.getElementById('pp-table-target').value;
+        const guard = document.getElementById('pp-table-guard').value.trim();
+        const action = document.getElementById('pp-table-action').value.replace(/\n/g, ' ').trim();
+        let targetId, kind = null;
+        if (!target) { targetId = stateDotPath(stateId); kind = 'internal'; }
+        else { targetId = stateDotPath(target); }
+        const ev = evName === '(none)' ? null : evName;
+        pushHistory();
+        let dsl = getDsl();
+        if (existing) dsl = removeTransition(existing.from, existing.to, existing.event, existing.guard, dsl);
+        dsl = addTransition(stateDotPath(stateId), targetId, ev, guard || null, action || null, kind, dsl);
+        setDsl(dsl);
+        refresh();
+      });
+      if (existing) {
+        document.getElementById('pp-table-delete').addEventListener('click', function() {
+          pushHistory();
+          let dsl = getDsl();
+          dsl = removeTransition(existing.from, existing.to, existing.event, existing.guard, dsl);
+          setDsl(dsl);
+          refresh();
+        });
+      }
     });
   });
 }
@@ -2154,7 +2241,7 @@ function renderProps() {
   let html = '';
 
   // ─── Selection-dependent section ───
-  const selArr = [...selection];
+  const selArr = sel.map(s => s.id);
 
   if (selArr.length === 0) {
     if (annotationMode) {
@@ -2162,7 +2249,29 @@ function renderProps() {
       html += `<div class="prop-sub">Click notes to select. States are locked.</div>`;
       html += `</div>`;
     } else {
-      html += `<div class="prop-section"><div class="prop-label">Selected</div><div class="prop-sub">Select an element to edit</div></div>`;
+      // Canvas size editor
+      const cv = parsed.canvas;
+      html += `<div class="prop-section"><div class="prop-label">Canvas</div>`;
+      html += `<div class="prop-row">`;
+      html += `<div style="flex:1"><div class="prop-sub">W</div><input type="number" class="prop-input" id="pp-canvas-w" value="${cv.width}" min="100" step="20"></div>`;
+      html += `<div style="flex:1"><div class="prop-sub">H</div><input type="number" class="prop-input" id="pp-canvas-h" value="${cv.height}" min="100" step="20"></div>`;
+      html += `</div>`;
+      html += `<div class="prop-row" style="margin-top:4px">`;
+      html += `<div style="flex:1"><div class="prop-sub">Grid</div><input type="number" class="prop-input" id="pp-canvas-g" value="${cv.grid}" min="5" step="5"></div>`;
+      html += `</div></div>`;
+      // Add element buttons
+      html += `<div class="prop-section">`;
+      html += `<button class="tb tb-accent" style="width:100%;margin-bottom:4px" onclick="addNewElement('state')">+ 状態追加</button>`;
+      html += `<button class="tb" style="width:100%" onclick="addNewElement('group')">+ グループ追加</button>`;
+      html += `</div>`;
+      html += `<div class="prop-section" style="margin-top:8px;border-top:1px solid var(--border);padding-top:8px">`;
+      html += `<div class="prop-label">Shortcuts</div>`;
+      html += `<div class="prop-sub" style="line-height:1.8">`;
+      html += `Ctrl+Z Undo<br>Ctrl+Y / Ctrl+Shift+Z Redo<br>`;
+      html += `Ctrl+C Copy<br>Ctrl+X Cut<br>Ctrl+V Paste<br>`;
+      html += `Del Delete<br>Ctrl+A Select All<br>`;
+      html += `Arrow Move<br>H Highlight<br>N Notes`;
+      html += `</div></div>`;
     }
   } else if (selArr.length === 1) {
     const id = selArr[0];
@@ -2207,6 +2316,13 @@ function renderProps() {
       // Round
       html += `<div class="prop-section"><div class="prop-label">Round</div>`;
       html += `<div class="prop-row"><input type="number" class="prop-input" id="pp-round" value="${st.round != null ? st.round : ''}" placeholder="10"></div></div>`;
+      // Add child element buttons (any state can become composite)
+      html += `<div class="prop-section" style="border-top:1px solid var(--border);padding-top:8px"><div class="prop-label">子要素追加</div>`;
+      html += `<button class="tb tb-accent" style="width:100%;margin-bottom:4px" onclick="addNewElement('state')">+ 子状態</button>`;
+      html += `<button class="tb" style="width:100%;margin-bottom:4px" onclick="addNewElement('initial')">+ 開始</button>`;
+      html += `<button class="tb" style="width:100%" onclick="addNewElement('final')">+ 終了</button>`;
+      html += `</div>`;
+      html += `<div style="margin-top:16px"><button class="tb" onclick="deleteSelected()" style="width:100%;border-color:#EF4444;color:#FCA5A5">削除</button></div>`;
     } else if (parsed.pseudoMap[id]) {
       // ── Pseudo-state selected ──
       const ps = parsed.pseudoMap[id];
@@ -2216,6 +2332,7 @@ function renderProps() {
       html += `<div class="prop-section"><div class="prop-label">Position</div>`;
       html += `<div class="prop-row"><input type="number" step="0.5" class="prop-input" id="pp-x" value="${ps.x}" placeholder="X" style="width:50%"><input type="number" step="0.5" class="prop-input" id="pp-y" value="${ps.y}" placeholder="Y" style="width:50%"></div>`;
       html += `</div>`;
+      html += `<div style="margin-top:16px"><button class="tb" onclick="deleteSelected()" style="width:100%;border-color:#EF4444;color:#FCA5A5">削除</button></div>`;
     } else if (parsed.groupMap[id]) {
       // ── Group selected ──
       const grp = parsed.groupMap[id];
@@ -2239,6 +2356,7 @@ function renderProps() {
       html += `</div></div>`;
       html += `<div class="prop-section"><div class="prop-label">Border Color</div>`;
       html += `<div class="prop-row"><input class="prop-input" id="pp-border" value="${esc(grp.borderColor || '')}" placeholder="#3a3a5a"></div></div>`;
+      html += `<div style="margin-top:16px"><button class="tb" onclick="deleteSelected()" style="width:100%;border-color:#EF4444;color:#FCA5A5">削除</button></div>`;
     } else if (parsed.noteMap[id]) {
       // ── Note selected ──
       const n = parsed.noteMap[id];
@@ -2271,13 +2389,98 @@ function renderProps() {
         html += `<div class="color-dot${active}" style="background:${c}" data-prop="text" data-val="${c}"></div>`;
       }
       html += `</div></div>`;
+      html += `<div style="margin-top:16px"><button class="tb" onclick="deleteSelected()" style="width:100%;border-color:#EF4444;color:#FCA5A5">削除</button></div>`;
     }
   } else if (selArr.length >= 2) {
-    html += `<div class="prop-section"><div class="prop-label">Selected: ${selArr.length} elements</div>`;
-    if (selArr.length === 2) {
-      html += `<button class="tb tb-accent" style="margin-top:8px;width:100%" onclick="connectSelected()">Connect</button>`;
+    html += `<div class="prop-section"><div class="prop-label">Selected: ${selArr.length} elements</div></div>`;
+
+    // Batch position nudge
+    html += `<div class="prop-section"><div class="prop-label">Position</div>`;
+    html += `<div class="prop-row"><span class="prop-sub" style="width:20px;line-height:26px">X</span>`;
+    html += `<button class="tb" style="flex:1" onclick="batchNudge('x',-1)">&minus;1</button>`;
+    html += `<button class="tb" style="flex:1" onclick="batchNudge('x',1)">+1</button></div>`;
+    html += `<div class="prop-row"><span class="prop-sub" style="width:20px;line-height:26px">Y</span>`;
+    html += `<button class="tb" style="flex:1" onclick="batchNudge('y',-1)">&minus;1</button>`;
+    html += `<button class="tb" style="flex:1" onclick="batchNudge('y',1)">+1</button></div>`;
+    html += `</div>`;
+
+    // Batch size nudge
+    html += `<div class="prop-section"><div class="prop-label">Size</div>`;
+    html += `<div class="prop-row"><span class="prop-sub" style="width:20px;line-height:26px">W</span>`;
+    html += `<button class="tb" style="flex:1" onclick="batchNudgeSz('w',-1)">&minus;1</button>`;
+    html += `<button class="tb" style="flex:1" onclick="batchNudgeSz('w',1)">+1</button></div>`;
+    html += `<div class="prop-row"><span class="prop-sub" style="width:20px;line-height:26px">H</span>`;
+    html += `<button class="tb" style="flex:1" onclick="batchNudgeSz('h',-1)">&minus;1</button>`;
+    html += `<button class="tb" style="flex:1" onclick="batchNudgeSz('h',1)">+1</button></div>`;
+    html += `</div>`;
+
+    // Batch color
+    const batchColors = ['#6366F1','#818CF8','#4338CA','#22C55E','#F59E0B','#EF4444','#EC4899','#8B5CF6'];
+    html += `<div class="prop-section"><div class="prop-label">Color</div><div class="color-grid">`;
+    for (const c of batchColors) {
+      html += `<div class="color-dot" style="background:${c}" onclick="batchProp('color','${c}')"></div>`;
     }
-    html += `<button class="tb" style="margin-top:4px;width:100%" onclick="groupSelected()">Group Selection</button>`;
+    html += `</div></div>`;
+
+    // Batch style (states only)
+    html += `<div class="prop-section"><div class="prop-label">Style</div>`;
+    html += `<div class="prop-row">`;
+    html += `<button class="style-btn" style="flex:1" onclick="batchProp('style','')">solid</button>`;
+    html += `<button class="style-btn" style="flex:1" onclick="batchProp('style','dashed')">dashed</button>`;
+    html += `<button class="style-btn" style="flex:1" onclick="batchProp('style','bold')">bold</button>`;
+    html += `</div></div>`;
+
+    // Transition management (2-select)
+    if (selArr.length === 2) {
+      const idA = selArr[0], idB = selArr[1];
+      const trans = findTransBetween(idA, idB);
+      html += `<div class="prop-section" style="border-top:1px solid var(--border);padding-top:8px;margin-top:8px">`;
+      html += `<div class="prop-label">遷移 (${trans.length})</div>`;
+      // List existing transitions with per-transition controls
+      const _tColors = ['#89DDFF','#94A3B8','#818CF8','#22C55E','#F59E0B','#EF4444','#EC4899','#06B6D4'];
+      for (let ti = 0; ti < trans.length; ti++) {
+        const t = trans[ti];
+        const tl = t.line; // DSL line number (1-based) — unique identifier
+        const tf = esc(t.from), tt = esc(t.to), te = esc(t.event || ''), tg = esc(t.guard || '');
+        const hasAction = !!(t.action);
+        html += `<div style="padding:5px 6px;background:var(--surface,#1e1e3e);border-radius:4px;margin-bottom:6px;font-size:11px;color:var(--fg,#e0e0e0)">`;
+        html += `<div style="margin-bottom:3px;font-weight:600;color:#A5B4FC">${tf} &rarr; ${tt}</div>`;
+        // Event / Guard + Action checkbox (all keyed by line number)
+        html += `<div style="display:flex;gap:2px;align-items:center;margin-bottom:3px">`;
+        html += `<input class="prop-input" style="flex:2;font-size:10px;padding:2px 4px" value="${te}" placeholder="Event" data-tr-line="${tl}" data-tr-field="event">`;
+        html += `<input class="prop-input" style="flex:1;font-size:10px;padding:2px 4px" value="${tg}" placeholder="[Guard]" data-tr-line="${tl}" data-tr-field="guard">`;
+        html += `<label style="display:flex;align-items:center;gap:2px;font-size:9px;color:${hasAction ? '#C3E88D' : '#666'};white-space:nowrap;cursor:pointer"><input type="checkbox" ${hasAction ? 'checked' : ''} data-tr-line="${tl}" data-tr-field="action">Act</label>`;
+        html += `</div>`;
+        // Flip + Delete
+        html += `<div style="display:flex;gap:2px;margin-bottom:4px">`;
+        html += `<button class="tb" style="flex:1;font-size:10px;padding:2px" onclick="flipTransByLine(${tl})">⇄ 反転</button>`;
+        html += `<button class="tb" style="flex:1;font-size:10px;padding:2px;border-color:#EF4444;color:#FCA5A5" onclick="removeTransByLine(${tl})">✕ 削除</button>`;
+        html += `</div>`;
+        // Color
+        html += `<div style="display:flex;gap:2px;flex-wrap:wrap;margin-bottom:3px">`;
+        for (const c of _tColors) html += `<div class="color-dot" style="background:${c};width:14px;height:14px" onclick="setTransPropByLine(${tl},'color','${c}')"></div>`;
+        html += `</div>`;
+        // Width + Style
+        html += `<div style="display:flex;gap:2px">`;
+        for (const w of [1,2,3]) html += `<button class="tb" style="flex:1;font-size:9px;padding:1px" onclick="setTransPropByLine(${tl},'width','${w}')">${w}px</button>`;
+        html += `<button class="tb" style="flex:1;font-size:9px;padding:1px" onclick="setTransPropByLine(${tl},'style','solid')">solid</button>`;
+        html += `<button class="tb" style="flex:1;font-size:9px;padding:1px" onclick="setTransPropByLine(${tl},'style','dashed')">dash</button>`;
+        html += `</div>`;
+        html += `</div>`;
+      }
+      // Always show connect buttons (multiple transitions allowed)
+      html += `<div style="display:flex;gap:4px;margin-top:6px">`;
+      const dpA = esc(stateDotPath(idA)), dpB = esc(stateDotPath(idB));
+      html += `<button class="tb tb-accent" style="flex:1;font-size:11px" onclick="connectTwo('${idA}','${idB}')">${dpA} &rarr; ${dpB}</button>`;
+      html += `<button class="tb tb-accent" style="flex:1;font-size:11px" onclick="connectTwo('${idB}','${idA}')">${dpB} &rarr; ${dpA}</button>`;
+      html += `</div>`;
+      html += `</div>`;
+    }
+
+    // Group selection + batch delete
+    html += `<div class="prop-section" style="margin-top:8px">`;
+    html += `<button class="tb" style="width:100%;margin-bottom:4px" onclick="groupSelected()">Group Selection</button>`;
+    html += `<button class="tb" onclick="batchDelete()" style="width:100%;border-color:#EF4444;color:#FCA5A5">削除 (${selArr.length})</button>`;
     html += `</div>`;
   }
 
@@ -2307,6 +2510,35 @@ function renderProps() {
   html += `</div>`;
 
   panel.innerHTML = html;
+
+  // ─── Transition field editors (event/guard + action checkbox) — keyed by line number ───
+  panel.querySelectorAll('input[data-tr-line]').forEach(function(inp) {
+    const lineNum = parseInt(inp.dataset.trLine);
+    if (inp.type === 'checkbox') {
+      inp.addEventListener('change', function() {
+        updateTransFieldByLine(lineNum, 'action', this.checked ? 'Act' : '');
+      });
+    } else {
+      inp.addEventListener('change', function() {
+        updateTransFieldByLine(lineNum, this.dataset.trField, this.value.trim());
+      });
+    }
+  });
+
+  // ─── Canvas size change handlers ───
+  ['pp-canvas-w', 'pp-canvas-h', 'pp-canvas-g'].forEach(function(inputId) {
+    const el = document.getElementById(inputId);
+    if (el) el.addEventListener('change', function() {
+      pushHistory();
+      let dsl = getDsl();
+      const w = parseInt(document.getElementById('pp-canvas-w')?.value) || parsed.canvas.width;
+      const h = parseInt(document.getElementById('pp-canvas-h')?.value) || parsed.canvas.height;
+      const g = parseInt(document.getElementById('pp-canvas-g')?.value) || parsed.canvas.grid;
+      dsl = dsl.replace(/^@canvas\s+.*$/m, `@canvas width=${w} height=${h} grid=${g}`);
+      setDsl(dsl);
+      refresh();
+    });
+  });
 
   // ─── Wire up property change event listeners ───
   function propChange(inputId, handler) {
@@ -2792,8 +3024,8 @@ function buildExcelData(p) {
           if (subField === 'guard') val = matching[0].guard || '-';
           else if (subField === 'action') val = matching[0].action || '-';
           else {
-            const tgtEl = resolveStateRef(matching[0].to, data);
-            val = tgtEl ? tgtEl.label || tgtEl.id : matching[0].to;
+            if (matching[0].kind === 'internal') { val = '-'; }
+            else { const tgtEl = resolveStateRef(matching[0].to, data); val = tgtEl ? tgtEl.label || tgtEl.id : matching[0].to; }
           }
         }
         row.push(val);
@@ -2892,12 +3124,31 @@ function updateHighlight() {
 // ═══════════════════════════════════════════════
 // Refresh Pipeline
 // ═══════════════════════════════════════════════
+function cleanupInternalTransitions() {
+  // Remove @internal transitions that have no action (they serve no purpose)
+  let dsl = getDsl();
+  let changed = false;
+  const lines = dsl.split('\n');
+  const result = [];
+  for (const line of lines) {
+    const t = line.trim();
+    if (t.match(/^(\S+)\s*->\s*(\S+)\s*:.*@internal/) && !t.match(/\/\s*\S+/)) {
+      changed = true;
+      continue; // skip this line
+    }
+    result.push(line);
+  }
+  if (changed) setDsl(result.join('\n'));
+}
+
 function refresh() {
+  cleanupInternalTransitions();
   const text = document.getElementById('editor').value;
   parsed = parseDSL(text);
   validate(parsed);
   updateErrorBar(parsed);
   document.getElementById('svg-wrap').innerHTML = renderSVG(parsed);
+  setupInteractions();
   renderTable(parsed);
   renderProps();
   updateLineNumbers();
@@ -2912,6 +3163,7 @@ function refreshView() {
   validate(parsed);
   updateErrorBar(parsed);
   document.getElementById('svg-wrap').innerHTML = renderSVG(parsed);
+  setupInteractions();
   renderTable(parsed);
   updateLineNumbers();
   updateStatus();
@@ -3019,129 +3271,13 @@ editorEl.addEventListener('scroll', function() {
 });
 
 // ═══════════════════════════════════════════════
-// Coordinate Helper (zoom-aware)
+// SVG Scale Helper (StableBlock pattern)
 // ═══════════════════════════════════════════════
-function svgCoords(e) {
-  const rect = document.getElementById('svg-wrap').getBoundingClientRect();
-  return { x: (e.clientX - rect.left) / zoom, y: (e.clientY - rect.top) / zoom };
-}
-
-// ═══════════════════════════════════════════════
-// Hit Testing
-// ═══════════════════════════════════════════════
-function hitTest(px, py) {
-  if (!parsed) return null;
-  const g = parsed.canvas.grid;
-
-  // In normal mode: pseudos first (small targets inside states), then states, then groups
-  if (!annotationMode) {
-    // Pseudo-states first (they sit inside composite states)
-    for (const ps of parsed.pseudoStates) {
-      const abs = getAbsolutePos(ps, parsed);
-      if (Math.hypot(px - abs.x, py - abs.y) < 15) {
-        return { id: ps.id, type: ps.type, element: ps };
-      }
-    }
-    // Leaf states before composite (reverse order = topmost first, leaves are later in array)
-    for (let i = parsed.states.length - 1; i >= 0; i--) {
-      const st = parsed.states[i];
-      const abs = getAbsolutePos(st, parsed);
-      if (px >= abs.x && px <= abs.x + st.w * g && py >= abs.y && py <= abs.y + st.h * g) {
-        return { id: st.id, type: 'state', element: st };
-      }
-    }
-    for (let i = parsed.groups.length - 1; i >= 0; i--) {
-      const grp = parsed.groups[i];
-      const x = grp.x * g, y = grp.y * g;
-      if (px >= x && px <= x + grp.w * g && py >= y && py <= y + grp.h * g) {
-        return { id: grp.id, type: 'group', element: grp };
-      }
-    }
-  }
-
-  // In annotation mode: only notes are interactive
-  if (annotationMode) {
-    for (const n of parsed.notes) {
-      const x = n.x * g, y = n.y * g;
-      if (px >= x && px <= x + n.w * g && py >= y && py <= y + n.h * g) {
-        return { id: n.id, type: 'note', element: n };
-      }
-    }
-  }
-
-  return null;
-}
-
-// ═══════════════════════════════════════════════
-// Resize Handle Hit Testing
-// ═══════════════════════════════════════════════
-function hitTestHandle(px, py) {
-  if (!parsed || selection.size !== 1) return null;
-  const selId = [...selection][0];
-  // In annotation mode, only allow resize for notes
-  if (annotationMode && !parsed.noteMap[selId]) return null;
-  // In normal mode, don't allow resize for notes
-  if (!annotationMode && parsed.noteMap[selId]) return null;
-  const selEl = parsed.stateMap[selId] || parsed.groupMap[selId] || parsed.noteMap[selId];
-  if (!selEl || selEl.w == null || selEl.h == null) return null;
-
-  const g = parsed.canvas.grid;
-  const pos = getAbsolutePos(selEl, parsed);
-  const pw = selEl.w * g;
-  const ph = selEl.h * g;
-  const hs = 8; // hit area radius for handles
-
-  const handles = [
-    { name: 'nw', cx: pos.x,          cy: pos.y },
-    { name: 'n',  cx: pos.x + pw / 2, cy: pos.y },
-    { name: 'ne', cx: pos.x + pw,     cy: pos.y },
-    { name: 'e',  cx: pos.x + pw,     cy: pos.y + ph / 2 },
-    { name: 'se', cx: pos.x + pw,     cy: pos.y + ph },
-    { name: 's',  cx: pos.x + pw / 2, cy: pos.y + ph },
-    { name: 'sw', cx: pos.x,          cy: pos.y + ph },
-    { name: 'w',  cx: pos.x,          cy: pos.y + ph / 2 }
-  ];
-
-  for (const h of handles) {
-    if (Math.abs(px - h.cx) <= hs && Math.abs(py - h.cy) <= hs) {
-      return { handle: h.name, id: selId, element: selEl };
-    }
-  }
-  return null;
-}
-
-// ═══════════════════════════════════════════════
-// Drag Set Collection
-// ═══════════════════════════════════════════════
-function collectDragSet(selectionSet) {
-  if (!parsed) return [];
-  const items = [];
-  for (const id of selectionSet) {
-    const el = parsed.stateMap[id] || parsed.pseudoMap[id] || parsed.groupMap[id] || parsed.noteMap[id];
-    if (!el) continue;
-    let type;
-    if (parsed.stateMap[id]) type = 'state';
-    else if (parsed.pseudoMap[id]) type = el.type;
-    else if (parsed.groupMap[id]) type = 'group';
-    else if (parsed.noteMap[id]) type = 'note';
-    else type = 'state';
-    items.push({ id, type, origX: el.x, origY: el.y, parent: el.parent || null, w: el.w, h: el.h });
-  }
-
-  // If a group is selected, include states inside it (center-point containment)
-  for (const id of selectionSet) {
-    const grp = parsed.groupMap[id];
-    if (!grp) continue;
-    for (const st of parsed.states) {
-      const cx = st.x + (st.w || 0) / 2, cy = st.y + (st.h || 0) / 2;
-      if (cx >= grp.x && cx <= grp.x + grp.w && cy >= grp.y && cy <= grp.y + grp.h) {
-        if (!items.some(it => it.id === st.id)) {
-          items.push({ id: st.id, type: 'state', origX: st.x, origY: st.y, parent: st.parent, w: st.w, h: st.h });
-        }
-      }
-    }
-  }
-  return items;
+function getSvgScale() {
+  const svg = document.querySelector('#svg-wrap svg');
+  if (!svg) return { sx: 1, sy: 1 };
+  const r = svg.getBoundingClientRect();
+  return { sx: parsed.canvas.width / r.width, sy: parsed.canvas.height / r.height };
 }
 
 // ═══════════════════════════════════════════════
@@ -3237,245 +3373,256 @@ function redo() {
 }
 
 // ═══════════════════════════════════════════════
-// Mouse Event Handlers (Drag, Resize)
+// DOM-based Interaction Setup (StableBlock pattern)
 // ═══════════════════════════════════════════════
-(function setupMouseHandlers() {
+function setupInteractions() {
   const svgWrap = document.getElementById('svg-wrap');
+  if (!svgWrap || !parsed) return;
+  const g = parsed.canvas.grid;
 
-  svgWrap.addEventListener('mousedown', function(e) {
-    if (e.button !== 0) return; // left button only
-    const pt = svgCoords(e);
-
-    // Check resize handle first (if single selection)
-    const handleHit = hitTestHandle(pt.x, pt.y);
-    if (handleHit) {
-      const el = handleHit.element;
-      const g = parsed.canvas.grid;
-      pushHistory();
-      resizeState = {
-        id: handleHit.id,
-        type: parsed.stateMap[handleHit.id] ? 'state' : parsed.groupMap[handleHit.id] ? 'group' : 'note',
-        handle: handleHit.handle,
-        origX: el.x,
-        origY: el.y,
-        origW: el.w,
-        origH: el.h,
-        startMX: pt.x,
-        startMY: pt.y
-      };
+  // ─── a) Resize handlers on [data-resize] elements ───
+  svgWrap.querySelectorAll('[data-resize]').forEach(function(handle) {
+    handle.addEventListener('mousedown', function(e) {
+      if (e.button !== 0) return;
       e.preventDefault();
-      return;
-    }
+      e.stopPropagation();
+      const edge = handle.dataset.resize;
+      const rid = handle.dataset.rid;
+      const rtype = handle.dataset.rtype;
+      const el = parsed.stateMap[rid] || parsed.groupMap[rid] || parsed.noteMap[rid];
+      if (!el) return;
+      pushHistory();
+      const origX = el.x, origY = el.y, origW = el.w, origH = el.h;
+      const sc = getSvgScale();
+      const startMX = e.clientX, startMY = e.clientY;
 
-    // Hit test elements
-    const hit = hitTest(pt.x, pt.y);
+      function onMove(ev) {
+        const dx = (ev.clientX - startMX) * sc.sx;
+        const dy = (ev.clientY - startMY) * sc.sy;
+        const dxGrid = Math.round(dx / g);
+        const dyGrid = Math.round(dy / g);
 
-    // Connect mode: click source, then click target to create transition
-    if (currentTool === 'connect') {
-      if (!hit) {
-        // Click empty area: cancel connect mode
-        connectFrom = null;
-        setTool('select');
-        return;
+        let newX = origX, newY = origY, newW = origW, newH = origH;
+        if (edge.includes('w')) { newX = origX + dxGrid; newW = origW - dxGrid; }
+        if (edge.includes('e') && !edge.includes('w')) { newW = origW + dxGrid; }
+        if (edge.includes('n')) { newY = origY + dyGrid; newH = origH - dyGrid; }
+        if (edge.includes('s') && !edge.includes('n')) { newH = origH + dyGrid; }
+
+        newW = Math.max(1, newW);
+        newH = Math.max(1, newH);
+        if (newW === 1 && edge.includes('w')) newX = origX + origW - 1;
+        if (newH === 1 && edge.includes('n')) newY = origY + origH - 1;
+
+        let dsl = getDsl();
+        dsl = updatePos(rtype, rid, newX, newY, dsl);
+        dsl = updateSize(rtype, rid, newW, newH, dsl);
+        setDsl(dsl);
+        parsed = parseDSL(getDsl());
+        document.getElementById('svg-wrap').innerHTML = renderSVG(parsed);
+        setupInteractions();
       }
-      if (!connectFrom) {
-        // First click: set source, highlight it
-        connectFrom = hit.id;
-        selection.clear();
-        selection.add(hit.id);
+      function onUp() {
+        document.removeEventListener('mousemove', onMove);
+        document.removeEventListener('mouseup', onUp);
         refresh();
-        return;
-      } else {
-        // Second click: create transition from connectFrom to hit.id
-        if (hit.id !== connectFrom) {
-          const event = prompt('Event name (optional):');
-          pushHistory();
-          let dsl = getDsl();
-          dsl = addTransition(connectFrom, hit.id, event || null, null, null, null, dsl);
-          setDsl(dsl);
-        }
-        connectFrom = null;
-        selection.clear();
-        setTool('select');
-        refresh();
-        return;
       }
-    }
-
-    if (!hit) {
-      // Click on empty area: clear selection
-      selection.clear();
-      snapGuides = [];
-      refresh();
-      return;
-    }
-
-    // Shift-click: toggle in selection
-    if (e.shiftKey) {
-      if (selection.has(hit.id)) {
-        selection.delete(hit.id);
-      } else {
-        selection.add(hit.id);
-      }
-      refresh();
-      return;
-    }
-
-    // Normal click: if not already selected, replace selection
-    if (!selection.has(hit.id)) {
-      selection.clear();
-      selection.add(hit.id);
-      refresh();
-    }
-
-    // Start drag
-    pushHistory();
-    const items = collectDragSet(selection);
-    dragState = {
-      startX: pt.x,
-      startY: pt.y,
-      items: items,
-      lastDxGrid: 0,
-      lastDyGrid: 0
-    };
-    e.preventDefault();
+      document.addEventListener('mousemove', onMove);
+      document.addEventListener('mouseup', onUp);
+    });
   });
 
-  // ADR-015: RAF batching for mousemove
-  let rafPending = false;
-  let lastMouseEvent = null;
+  // ─── b) Drag handlers on g[data-id] elements ───
+  svgWrap.querySelectorAll('g[data-id]').forEach(function(gEl) {
+    gEl.addEventListener('mousedown', function(e) {
+      if (e.button !== 0) return;
+      e.preventDefault();
+      e.stopPropagation();
+      const id = gEl.dataset.id;
+      const type = gEl.dataset.type;
 
-  function processDragFrame() {
-    rafPending = false;
-    const e = lastMouseEvent;
-    if (!e || !parsed) return;
-    const g = parsed.canvas.grid;
+      // Annotation mode filter
+      if (annotationMode && type !== 'note') return;
+      if (!annotationMode && type === 'note') return;
 
-    if (dragState) {
-      const pt = svgCoords(e);
-      const dx = pt.x - dragState.startX;
-      const dy = pt.y - dragState.startY;
-      // Use half-grid snapping for pseudo-states, full-grid for others
-      const isPseudo = dragState.items.length === 1 && parsed.pseudoMap[dragState.items[0].id];
-      const snapUnit = isPseudo ? g / 2 : g;
-      const dxGrid = Math.round(dx / snapUnit) * (isPseudo ? 0.5 : 1);
-      const dyGrid = Math.round(dy / snapUnit) * (isPseudo ? 0.5 : 1);
-
-      if (dxGrid === dragState.lastDxGrid && dyGrid === dragState.lastDyGrid) return;
-      dragState.lastDxGrid = dxGrid;
-      dragState.lastDyGrid = dyGrid;
-
-      let dsl = getDsl();
-      for (const item of dragState.items) {
-        const elType = item.type === 'state' ? 'state' :
-                       item.type === 'group' ? 'group' :
-                       item.type === 'note' ? 'note' : item.type;
-
-        if (item.parent) {
-          const parentSt = parsed.stateMap[item.parent];
-          if (parentSt) {
-            const newX = Math.max(0, Math.min(parentSt.w - (item.w || 1), item.origX + dxGrid));
-            const newY = Math.max(0, Math.min(parentSt.h - (item.h || 1), item.origY + dyGrid));
-            dsl = updatePos(elType, item.id, newX, newY, dsl);
-          } else {
-            dsl = updatePos(elType, item.id, item.origX + dxGrid, item.origY + dyGrid, dsl);
-          }
+      // Connect mode handling
+      if (currentTool === 'connect') {
+        if (!connectFrom) {
+          connectFrom = id;
+          sel = [{type: resolveSelType(id), id: id}];
+          document.getElementById('svg-wrap').innerHTML = renderSVG(parsed);
+          setupInteractions();
+          renderProps();
+          updateStatus();
+          return;
         } else {
-          const newX = Math.max(0, item.origX + dxGrid);
-          const newY = Math.max(0, item.origY + dyGrid);
-          dsl = updatePos(elType, item.id, newX, newY, dsl);
+          if (id !== connectFrom) {
+            const isPseudo = parsed && (parsed.pseudoMap[connectFrom] || parsed.pseudoMap[id]);
+            const evName = isPseudo ? null : prompt('Event name (optional):');
+            if (!isPseudo && evName === null) { connectFrom = null; setTool('select'); refresh(); return; }
+            pushHistory();
+            let dsl = getDsl();
+            dsl = addTransition(stateDotPath(connectFrom), stateDotPath(id), evName || null, null, null, null, dsl);
+            setDsl(dsl);
+          }
+          connectFrom = null;
+          sel = [];
+          setTool('select');
+          refresh();
+          return;
         }
       }
-      setDsl(dsl);
 
-      parsed = parseDSL(getDsl());
-      snapGuides = computeSnapGuides(dragState.items);
+      // Selection logic
+      if (e.shiftKey) {
+        if (isSel(id)) {
+          sel = sel.filter(s => s.id !== id);
+        } else {
+          sel.push({type: resolveSelType(id), id: id});
+        }
+        document.getElementById('svg-wrap').innerHTML = renderSVG(parsed);
+        setupInteractions();
+        renderProps();
+        return;
+      }
 
-      document.getElementById('svg-wrap').innerHTML = renderSVG(parsed);
-      applyZoom();
-      return;
-    }
+      if (!isSel(id)) {
+        sel = [{type: resolveSelType(id), id: id}];
+        document.getElementById('svg-wrap').innerHTML = renderSVG(parsed);
+        setupInteractions();
+        renderProps();
+      }
 
-    if (resizeState) {
-      const pt = svgCoords(e);
-      const dx = pt.x - resizeState.startMX;
-      const dy = pt.y - resizeState.startMY;
-      const dxGrid = Math.round(dx / g);
-      const dyGrid = Math.round(dy / g);
-      const h = resizeState.handle;
+      // Collect drag set
+      pushHistory();
+      const dragItems = [];
+      for (const si of sel) {
+        const el = parsed.stateMap[si.id] || parsed.pseudoMap[si.id] || parsed.groupMap[si.id] || parsed.noteMap[si.id];
+        if (!el) continue;
+        let elType;
+        if (parsed.stateMap[si.id]) elType = 'state';
+        else if (parsed.pseudoMap[si.id]) elType = el.type;
+        else if (parsed.groupMap[si.id]) elType = 'group';
+        else if (parsed.noteMap[si.id]) elType = 'note';
+        else elType = 'state';
+        dragItems.push({ id: si.id, type: elType, origX: el.x, origY: el.y, parent: el.parent || null, w: el.w, h: el.h });
+      }
+      // Groups drag contained states
+      for (const si of sel) {
+        const grp = parsed.groupMap[si.id];
+        if (!grp) continue;
+        for (const st of parsed.states) {
+          const cx = st.x + (st.w || 0) / 2, cy = st.y + (st.h || 0) / 2;
+          if (cx >= grp.x && cx <= grp.x + grp.w && cy >= grp.y && cy <= grp.y + grp.h) {
+            if (!dragItems.some(it => it.id === st.id)) {
+              dragItems.push({ id: st.id, type: 'state', origX: st.x, origY: st.y, parent: st.parent, w: st.w, h: st.h });
+            }
+          }
+        }
+      }
+      // NOTE: Composite state children use RELATIVE coordinates,
+      // so they move automatically when the parent moves — do NOT add them to dragItems.
 
-      let newX = resizeState.origX;
-      let newY = resizeState.origY;
-      let newW = resizeState.origW;
-      let newH = resizeState.origH;
+      const sc = getSvgScale();
+      const startMX = e.clientX, startMY = e.clientY;
+      let lastDxGrid = 0, lastDyGrid = 0;
+      let moved = false;
 
-      if (h === 'nw' || h === 'w' || h === 'sw') { newX = resizeState.origX + dxGrid; newW = resizeState.origW - dxGrid; }
-      if (h === 'ne' || h === 'e' || h === 'se') { newW = resizeState.origW + dxGrid; }
-      if (h === 'nw' || h === 'n' || h === 'ne') { newY = resizeState.origY + dyGrid; newH = resizeState.origH - dyGrid; }
-      if (h === 'sw' || h === 's' || h === 'se') { newH = resizeState.origH + dyGrid; }
+      function onMove(ev) {
+        const dx = (ev.clientX - startMX) * sc.sx;
+        const dy = (ev.clientY - startMY) * sc.sy;
+        const isPseudo = dragItems.length === 1 && parsed.pseudoMap[dragItems[0].id];
+        const snapUnit = isPseudo ? g / 2 : g;
+        const dxGrid = Math.round(dx / snapUnit) * (isPseudo ? 0.5 : 1);
+        const dyGrid = Math.round(dy / snapUnit) * (isPseudo ? 0.5 : 1);
+        if (dxGrid === lastDxGrid && dyGrid === lastDyGrid) return;
+        lastDxGrid = dxGrid;
+        lastDyGrid = dyGrid;
+        moved = true;
 
-      const minSize = 2;
-      if (newW < minSize) { newW = minSize; if (h.includes('w')) newX = resizeState.origX + resizeState.origW - minSize; }
-      if (newH < minSize) { newH = minSize; if (h.includes('n')) newY = resizeState.origY + resizeState.origH - minSize; }
+        let dsl = getDsl();
+        for (const item of dragItems) {
+          const elType = item.type === 'state' ? 'state' :
+                         item.type === 'group' ? 'group' :
+                         item.type === 'note' ? 'note' : item.type;
+          if (item.parent) {
+            const parentSt = parsed.stateMap[item.parent];
+            if (parentSt) {
+              const newX = Math.max(0, Math.min(parentSt.w - (item.w || 1), item.origX + dxGrid));
+              const newY = Math.max(0, Math.min(parentSt.h - (item.h || 1), item.origY + dyGrid));
+              dsl = updatePos(elType, item.id, newX, newY, dsl);
+            } else {
+              dsl = updatePos(elType, item.id, item.origX + dxGrid, item.origY + dyGrid, dsl);
+            }
+          } else {
+            const newX = Math.max(0, item.origX + dxGrid);
+            const newY = Math.max(0, item.origY + dyGrid);
+            dsl = updatePos(elType, item.id, newX, newY, dsl);
+          }
+        }
+        setDsl(dsl);
+        parsed = parseDSL(getDsl());
+        snapGuides = computeSnapGuides(dragItems);
+        document.getElementById('svg-wrap').innerHTML = renderSVG(parsed);
+        setupInteractions();
+      }
 
-      let dsl = getDsl();
-      const elType = resizeState.type;
-      dsl = updatePos(elType, resizeState.id, newX, newY, dsl);
-      dsl = updateSize(elType, resizeState.id, newW, newH, dsl);
-      setDsl(dsl);
-
-      parsed = parseDSL(getDsl());
-      document.getElementById('svg-wrap').innerHTML = renderSVG(parsed);
-      applyZoom();
-      return;
-    }
-  }
-
-  document.addEventListener('mousemove', function(e) {
-    if (!dragState && !resizeState) return;
-    lastMouseEvent = e;
-    if (!rafPending) {
-      rafPending = true;
-      requestAnimationFrame(processDragFrame);
-    }
+      function onUp() {
+        document.removeEventListener('mousemove', onMove);
+        document.removeEventListener('mouseup', onUp);
+        if (!moved) {
+          undoHistory.pop(); // nothing changed, pop the history
+        }
+        snapGuides = [];
+        refresh();
+      }
+      document.addEventListener('mousemove', onMove);
+      document.addEventListener('mouseup', onUp);
+    });
   });
 
-  document.addEventListener('mouseup', function(e) {
-    if (dragState) {
-      // If nothing actually moved, pop the history entry
-      if (dragState.lastDxGrid === 0 && dragState.lastDyGrid === 0) {
-        undoHistory.pop();
+  // ─── c) Blank click deselect on SVG element ───
+  const svgEl = svgWrap.querySelector('svg');
+  if (svgEl) {
+    svgEl.addEventListener('mousedown', function(e) {
+      if (e.button !== 0) return;
+      // Only trigger if clicked directly on svg or a background rect not inside g[data-id]
+      const target = e.target;
+      if (target.closest('g[data-id]') || target.closest('[data-resize]')) return;
+
+      // Cancel connect mode if active
+      if (currentTool === 'connect') {
+        connectFrom = null;
+        setTool('select');
       }
-      dragState = null;
+
+      sel = [];
       snapGuides = [];
       refresh();
-    }
-    if (resizeState) {
-      resizeState = null;
-      refresh();
-    }
-  });
-})();
+    });
+  }
+}
 
 // ═══════════════════════════════════════════════
-// Zoom (mouse wheel on SVG area)
+// Zoom (mouse wheel on SVG area — attached ONCE)
 // ═══════════════════════════════════════════════
 document.getElementById('svg-wrap').addEventListener('wheel', function(e) {
   e.preventDefault();
-  zoom = Math.max(0.25, Math.min(4, zoom + (e.deltaY > 0 ? -0.1 : 0.1)));
-  applyZoom();
+  setZoom(e.deltaY > 0 ? -1 : 1);
 }, { passive: false });
 
 // ═══════════════════════════════════════════════
 // Connect Selected
 // ═══════════════════════════════════════════════
 function connectSelected() {
-  if (selection.size !== 2) return;
-  const ids = [...selection];
-  const event = prompt('Event name (optional):');
+  if (sel.length !== 2) return;
+  const a = stateDotPath(sel[0].id);
+  const b = stateDotPath(sel[1].id);
+  const isPseudo = parsed && (parsed.pseudoMap[sel[0].id] || parsed.pseudoMap[sel[1].id]);
+  const event = isPseudo ? null : prompt('Event name (optional):');
+  if (!isPseudo && event === null) return;
   pushHistory();
   let dsl = getDsl();
-  dsl = addTransition(ids[0], ids[1], event || null, null, null, null, dsl);
+  dsl = addTransition(a, b, event || null, null, null, null, dsl);
   setDsl(dsl);
   refresh();
 }
@@ -3512,18 +3659,252 @@ function removeDSLElement(id, dsl) {
     }
     result.push(line);
   }
+  // Clean up empty composite states: "state X ... {" followed by "}" → remove braces
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (let i = 0; i < result.length - 1; i++) {
+      if (result[i].trim().match(/^state\s+\S+\s+.*\{$/) && result[i + 1].trim() === '}') {
+        result[i] = result[i].replace(/\s*\{$/, '');
+        result.splice(i + 1, 1);
+        changed = true;
+        break;
+      }
+    }
+  }
   return result.join('\n');
 }
 
 function deleteSelected() {
-  if (!selection.size) return;
+  if (!sel.length) return;
   pushHistory();
   let dsl = getDsl();
-  for (const id of selection) {
-    dsl = removeDSLElement(id, dsl);
+  for (const si of sel) {
+    dsl = removeDSLElement(si.id, dsl);
   }
-  selection.clear();
+  sel = [];
   setDsl(dsl);
+  refresh();
+}
+
+// ═══════════════════════════════════════════════
+// Batch Operations
+// ═══════════════════════════════════════════════
+function batchNudge(axis, delta) {
+  pushHistory();
+  let dsl = getDsl();
+  sel.forEach(si => {
+    const it = getItem(si); if (!it) return;
+    const step = parsed.pseudoMap && parsed.pseudoMap[si.id] ? 0.5 : 1;
+    const d = delta * step;
+    const nx = Math.max(0, it.x + (axis === 'x' ? d : 0));
+    const ny = Math.max(0, it.y + (axis === 'y' ? d : 0));
+    dsl = updatePos(si.type, si.id, nx, ny, dsl);
+  });
+  setDsl(dsl);
+  refresh();
+}
+
+function batchNudgeSz(axis, delta) {
+  pushHistory();
+  let dsl = getDsl();
+  sel.forEach(si => {
+    const it = getItem(si); if (!it || it.w == null) return;
+    const nw = axis === 'w' ? Math.max(1, it.w + delta) : it.w;
+    const nh = axis === 'h' ? Math.max(1, it.h + delta) : it.h;
+    dsl = updateSize(si.type, si.id, nw, nh, dsl);
+  });
+  setDsl(dsl);
+  refresh();
+}
+
+function batchProp(prop, val) {
+  pushHistory();
+  let dsl = getDsl();
+  sel.forEach(si => {
+    dsl = updateProp(si.type, si.id, prop, val, dsl);
+  });
+  setDsl(dsl);
+  refresh();
+}
+
+function batchDelete() {
+  pushHistory();
+  let dsl = getDsl();
+  sel.forEach(si => { dsl = removeDSLElement(si.id, dsl); });
+  sel = [];
+  setDsl(dsl);
+  refresh();
+}
+
+function nudge(axis, delta) {
+  if (!sel.length) return;
+  pushHistory();
+  const si = sel[0];
+  const it = getItem(si); if (!it) return;
+  const step = parsed.pseudoMap && parsed.pseudoMap[si.id] ? 0.5 : 1;
+  const d = delta * step;
+  let dsl = getDsl();
+  dsl = updatePos(si.type, si.id, Math.max(0, it.x + (axis === 'x' ? d : 0)), Math.max(0, it.y + (axis === 'y' ? d : 0)), dsl);
+  setDsl(dsl);
+  refresh();
+}
+
+function nudgeSz(axis, delta) {
+  if (!sel.length) return;
+  pushHistory();
+  const si = sel[0];
+  const it = getItem(si); if (!it || it.w == null) return;
+  let dsl = getDsl();
+  dsl = updateSize(si.type, si.id, axis === 'w' ? Math.max(1, it.w + delta) : it.w, axis === 'h' ? Math.max(1, it.h + delta) : it.h, dsl);
+  setDsl(dsl);
+  refresh();
+}
+
+// ═══════════════════════════════════════════════
+// Transition Management
+// ═══════════════════════════════════════════════
+function findTransBetween(a, b) {
+  if (!parsed) return [];
+  // Match by bare ID or dot-path (e.g. "accel" matches "active.accel")
+  const dpA = stateDotPath(a), dpB = stateDotPath(b);
+  function match(tRef, id) {
+    return tRef === id || tRef === stateDotPath(id) || tRef.endsWith('.' + id);
+  }
+  return parsed.transitions.filter(t =>
+    (match(t.from, a) && match(t.to, b)) || (match(t.from, b) && match(t.to, a))
+  );
+}
+
+function connectTwo(a, b) {
+  // Skip event prompt for pseudo-states (initial, final, choice, etc.)
+  const isPseudo = parsed && (parsed.pseudoMap[a] || parsed.pseudoMap[b]);
+  const event = isPseudo ? null : prompt('Event name (optional):');
+  if (!isPseudo && event === null) return; // user cancelled prompt
+  pushHistory();
+  let dsl = getDsl();
+  dsl = addTransition(stateDotPath(a), stateDotPath(b), event || null, null, null, null, dsl);
+  setDsl(dsl);
+  refresh();
+}
+
+function removeTrans(a, b) {
+  pushHistory();
+  let dsl = getDsl();
+  const lines = dsl.split('\n');
+  dsl = lines.filter(l => {
+    const m = l.trim().match(/^(\S+)\s*->\s*(\S+)/);
+    if (!m) return true;
+    return !((m[1] === a && m[2] === b) || (m[1] === b && m[2] === a));
+  }).join('\n');
+  setDsl(dsl);
+  refresh();
+}
+
+// Remove a transition by DSL line number (1-based)
+function removeTransByLine(lineNum) {
+  pushHistory();
+  let dsl = getDsl();
+  const lines = dsl.split('\n');
+  lines.splice(lineNum - 1, 1);
+  setDsl(lines.join('\n'));
+  refresh();
+}
+
+// Flip a transition by DSL line number (1-based)
+function flipTransByLine(lineNum) {
+  pushHistory();
+  let dsl = getDsl();
+  const lines = dsl.split('\n');
+  const idx = lineNum - 1;
+  const m = lines[idx].trim().match(/^(\S+)(\s*->\s*)(\S+)(.*)/);
+  if (m) lines[idx] = lines[idx].replace(/^(\s*)(\S+)(\s*->\s*)(\S+)/, `$1${m[3]}$3${m[1]}`);
+  setDsl(lines.join('\n'));
+  refresh();
+}
+
+function setTransProp(a, b, prop, val) {
+  pushHistory();
+  let dsl = getDsl();
+  const lines = dsl.split('\n');
+  const re = new RegExp(prop + '=\\S+');
+  for (let i = 0; i < lines.length; i++) {
+    const m = lines[i].trim().match(/^(\S+)\s*->\s*(\S+)/);
+    if (!m) continue;
+    if ((m[1] === a && m[2] === b) || (m[1] === b && m[2] === a)) {
+      if (re.test(lines[i])) {
+        lines[i] = lines[i].replace(re, `${prop}=${val}`);
+      } else {
+        // Ensure there's a : section for transition attributes
+        const hasColon = lines[i].match(/^[^#]*->[^:]*:/);
+        if (hasColon) {
+          lines[i] = lines[i].trimEnd() + ` ${prop}=${val}`;
+        } else {
+          lines[i] = lines[i].trimEnd() + ` : ${prop}=${val}`;
+        }
+      }
+      break;
+    }
+  }
+  setDsl(lines.join('\n'));
+  refresh();
+}
+
+// Set property on a transition by DSL line number (1-based)
+function setTransPropByLine(lineNum, prop, val) {
+  pushHistory();
+  let dsl = getDsl();
+  const lines = dsl.split('\n');
+  const idx = lineNum - 1;
+  if (idx < 0 || idx >= lines.length) return;
+  const re = new RegExp(prop + '=\\S+');
+  if (re.test(lines[idx])) {
+    lines[idx] = lines[idx].replace(re, `${prop}=${val}`);
+  } else {
+    const hasColon = lines[idx].match(/^[^#]*->[^:]*:/);
+    if (hasColon) lines[idx] = lines[idx].trimEnd() + ` ${prop}=${val}`;
+    else lines[idx] = lines[idx].trimEnd() + ` : ${prop}=${val}`;
+  }
+  setDsl(lines.join('\n'));
+  refresh();
+}
+
+// Update event/guard/action on a transition by DSL line number (1-based)
+function updateTransFieldByLine(lineNum, field, newVal) {
+  pushHistory();
+  let dsl = getDsl();
+  const lines = dsl.split('\n');
+  const idx = lineNum - 1;
+  if (idx < 0 || idx >= lines.length) return;
+  const t = lines[idx].trim();
+  const m = t.match(/^(\S+)\s*->\s*(\S+)\s*(.*)/);
+  if (!m) return;
+  const from = m[1], to = m[2], rest = m[3];
+  let le = '', lg = '', la = '', lk = '', attrs = '';
+  if (rest.startsWith(':')) {
+    const d = rest.slice(1).trim();
+    const em = d.match(/^(\S*)/); if (em) le = em[1];
+    const gm = d.match(/\[([^\]]*)\]/); if (gm) lg = gm[1];
+    const am = d.match(/\/\s*(\S+)/); if (am) la = am[1];
+    const km = d.match(/@(\S+)/); if (km) lk = km[1];
+    const attrMatch = d.match(/((?:color|width|style)=\S+(?:\s+(?:color|width|style)=\S+)*)\s*$/);
+    if (attrMatch) attrs = attrMatch[1];
+  }
+  if (field === 'event') le = newVal || '';
+  if (field === 'guard') lg = newVal || '';
+  if (field === 'action') la = newVal || '';
+  const prefix = lines[idx].match(/^(\s*)/)[1];
+  let newLine = `${prefix}${from} -> ${to}`;
+  if (le || lg || la || lk || attrs) {
+    newLine += ' :';
+    if (le) newLine += ' ' + le;
+    if (lg) newLine += ' [' + lg + ']';
+    if (la) newLine += ' / ' + la;
+    if (lk) newLine += ' @' + lk;
+    if (attrs) newLine += ' ' + attrs;
+  }
+  lines[idx] = newLine;
+  setDsl(lines.join('\n'));
   refresh();
 }
 
@@ -3531,11 +3912,12 @@ function deleteSelected() {
 // Copy / Paste (basic)
 // ═══════════════════════════════════════════════
 function copySelection() {
-  if (!selection.size) return;
+  if (!sel.length) return;
   clipboard = [];
   const dsl = getDsl();
   const lines = dsl.split('\n');
-  for (const id of selection) {
+  for (const si of sel) {
+    const id = si.id;
     // Find the DSL lines that define this element
     let collecting = false;
     let nestDepth = 0;
@@ -3564,36 +3946,45 @@ function copySelection() {
   }
 }
 
+function cutSelection() {
+  if (!sel.length) return;
+  copySelection();
+  pushHistory();
+  let dsl = getDsl();
+  sel.forEach(si => {
+    dsl = removeDSLElement(si.id, dsl);
+  });
+  sel = [];
+  setDsl(dsl);
+  refresh();
+}
+
 function pasteSelection() {
   if (!clipboard || !clipboard.length) return;
   pushHistory();
-  // Create pasted lines with offset (+2, +2) and unique IDs
-  let suffix = '_' + Date.now().toString(36).slice(-4);
+  const newSel = [];
   const pastedLines = clipboard.map(line => {
-    // Offset position by +2
-    let result = line.replace(/\bat\s+([\d.]+)\s*,\s*([\d.]+)/g, function(match, x, y) {
-      return `at ${parseFloat(x) + 2},${parseFloat(y) + 2}`;
-    });
-    // Replace IDs: find the element ID and append suffix
-    const idMatch = result.match(/^(\s*(?:state|group|note|initial|final|choice|history|deephistory|fork|join))\s+(\S+)/);
-    if (idMatch) {
-      const oldId = idMatch[2];
-      const newId = oldId + suffix;
-      result = result.replace(new RegExp(`\\b${oldId}\\b`, 'g'), newId);
-    }
+    const newId = `__new_${addCounter++}`;
+    const idMatch = line.match(/^(\s*(?:state|group|note|initial|final|choice|history|deephistory|fork|join))\s+(\S+)/);
+    if (!idMatch) return line;
+    const oldId = idMatch[2];
+    let result = line.replace(new RegExp(`^(\\s*(?:state|group|note|initial|final|choice|history|deephistory|fork|join)\\s+)${oldId.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`), `$1${newId}`);
+    result = result.replace(/\bat\s+([\d.]+)\s*,\s*([\d.]+)/g, (m, x, y) => `at ${parseFloat(x) + 2},${parseFloat(y) + 2}`);
+    const type = idMatch[1].trim();
+    newSel.push({type: type === 'state' ? 'state' : type, id: newId});
     return result;
   });
-
   let dsl = getDsl();
-  dsl = dsl + '\n' + pastedLines.join('\n');
+  dsl = dsl.trimEnd() + '\n' + pastedLines.join('\n') + '\n';
   setDsl(dsl);
+  sel = newSel;
   refresh();
 }
 
 // ═══════════════════════════════════════════════
 // Add Element Buttons
 // ═══════════════════════════════════════════════
-let addCounter = { state: 0, group: 0, initial: 0, final: 0, note: 0 };
+let addCounter = 1; // StableBlock compatible: single counter
 
 // Auto-Route: optimize transition port assignments to minimize crossings
 function autoRoute() {
@@ -3671,10 +4062,11 @@ function autoRoute() {
 }
 
 function groupSelected() {
-  if (!parsed || selection.size < 2) return;
+  if (!parsed || sel.length < 2) return;
   const g = parsed.canvas.grid;
   let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-  for (const id of selection) {
+  for (const si of sel) {
+    const id = si.id;
     const el = parsed.stateMap[id] || parsed.pseudoMap[id] || parsed.groupMap[id];
     if (!el) continue;
     const abs = getAbsolutePos(el, parsed);
@@ -3693,8 +4085,7 @@ function groupSelected() {
   const gw = Math.ceil((maxX + pad) / g) - gx;
   const gh = Math.ceil((maxY + pad) / g) - gy;
 
-  addCounter.group = (addCounter.group || 0) + 1;
-  const grpId = 'grp_' + addCounter.group;
+  const grpId = `__new_${addCounter++}`;
   const line = `group ${grpId} "Group" at ${gx},${gy} size ${gw}x${gh}`;
 
   pushHistory();
@@ -3714,16 +4105,40 @@ function fixIds() {
   if (!parsed) return;
   pushHistory();
   let dsl = getDsl();
+  // Collect all elements: states, groups, notes, AND pseudo-states
   const allElements = [...parsed.states, ...parsed.groups, ...parsed.notes];
+  const pseudoElements = [...parsed.pseudoStates];
+
+  // Fix states/groups/notes by label
   for (const el of allElements) {
     const newId = labelToId(el.label);
     if (!newId || newId === el.id) continue;
-    // Check for conflicts
     if (parsed.stateMap[newId] || parsed.pseudoMap[newId] || parsed.groupMap[newId] || parsed.noteMap[newId]) continue;
-    // Replace ID in DSL (element definition and all transition references)
     const idRe = new RegExp('\\b' + el.id.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\b', 'g');
     dsl = dsl.replace(idRe, newId);
   }
+
+  // Fix pseudo-states by type prefix (ini, fin, choice, h, dh, fork, join)
+  const pseudoPrefix = { initial: 'ini', final: 'fin', choice: 'choice', history: 'h', deephistory: 'dh', fork: 'fork', join: 'join' };
+  const usedIds = new Set();
+  // Collect currently used IDs after state/group/note rename
+  const tmpParsed = parseDSL(dsl);
+  for (const s of tmpParsed.states) usedIds.add(s.id);
+  for (const p of tmpParsed.pseudoStates) usedIds.add(p.id);
+  for (const g of tmpParsed.groups) usedIds.add(g.id);
+  for (const n of tmpParsed.notes) usedIds.add(n.id);
+
+  for (const ps of pseudoElements) {
+    if (!ps.id.startsWith('__new_')) continue;
+    const base = pseudoPrefix[ps.type] || ps.type;
+    let newId = base;
+    let n = 1;
+    while (usedIds.has(newId)) { newId = base + '_' + n; n++; }
+    usedIds.add(newId);
+    const idRe = new RegExp('\\b' + ps.id.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\b', 'g');
+    dsl = dsl.replace(idRe, newId);
+  }
+
   setDsl(dsl);
   refresh();
 }
@@ -3733,13 +4148,30 @@ function addNewElement(type) {
   let dsl = getDsl();
   let line = '';
 
-  // Check if a composite state is selected — new element goes inside it
+  // Check if a state is selected — new element goes inside it
+  // If not yet composite, convert it by appending { ... }
   let parentState = null;
-  if (parsed && selection.size === 1) {
-    const selId = [...selection][0];
+  if (parsed && sel.length === 1 && sel[0].type === 'state' && type !== 'group' && type !== 'note') {
+    const selId = sel[0].id;
     const st = parsed.stateMap[selId];
-    if (st && st.children.length > 0) {
-      parentState = st;
+    if (st) {
+      const dslLines = dsl.split('\n');
+      const escapedId = selId.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const re = new RegExp('^(\\s*state\\s+' + escapedId + '\\s+.*)$');
+      const defIdx = dslLines.findIndex(l => re.test(l));
+      if (defIdx >= 0) {
+        const defLine = dslLines[defIdx];
+        if (defLine.trim().endsWith('{')) {
+          // Already composite
+          parentState = st;
+        } else {
+          // Convert to composite: append { and add closing }
+          dslLines[defIdx] = defLine + ' {';
+          dslLines.splice(defIdx + 1, 0, '}');
+          dsl = dslLines.join('\n');
+          parentState = st;
+        }
+      }
     }
   }
 
@@ -3749,32 +4181,27 @@ function addNewElement(type) {
 
   switch (type) {
     case 'state': {
-      addCounter.state++;
-      const id = 'state_' + addCounter.state;
+      const id = `__new_${addCounter++}`;
       line = `state ${id} "New State" at ${defX},${defY} size 8x4`;
       break;
     }
     case 'group': {
-      addCounter.group++;
-      const id = 'grp_' + addCounter.group;
+      const id = `__new_${addCounter++}`;
       line = `group ${id} "New Group" at 8,8 size 20x12`;
       break;
     }
     case 'initial': {
-      addCounter.initial++;
-      const id = 'ini_' + addCounter.initial;
+      const id = `__new_${addCounter++}`;
       line = `initial ${id} at ${parentState ? 0.5 : 5},${parentState ? defY : 5}`;
       break;
     }
     case 'final': {
-      addCounter.final++;
-      const id = 'fin_' + addCounter.final;
+      const id = `__new_${addCounter++}`;
       line = `final ${id} at ${parentState ? parentState.w - 1 : 30},${parentState ? defY : 5}`;
       break;
     }
     case 'note': {
-      addCounter.note++;
-      const id = 'note_' + addCounter.note;
+      const id = `__new_${addCounter++}`;
       line = `note ${id} "Annotation" at 5,5 size 8x2 color=#FEF3C7`;
       break;
     }
@@ -3830,10 +4257,10 @@ function toggleAnnotations() {
   // Filter selection on mode change
   if (annotationMode) {
     const noteIds = new Set(parsed ? parsed.notes.map(n => n.id) : []);
-    selection = new Set([...selection].filter(id => noteIds.has(id)));
+    sel = sel.filter(s => noteIds.has(s.id));
   } else {
     const noteIds = new Set(parsed ? parsed.notes.map(n => n.id) : []);
-    selection = new Set([...selection].filter(id => !noteIds.has(id)));
+    sel = sel.filter(s => !noteIds.has(s.id));
   }
   const btn = document.getElementById('btn-annotations');
   if (btn) {
@@ -3904,53 +4331,56 @@ function clearSearchFilter() {
 document.addEventListener('keydown', function(e) {
   const ta = document.getElementById('editor');
   const ae = document.activeElement;
-  if (ae === ta) return; // Don't intercept while editing DSL
+
+  // Ctrl+Z: Undo (always works)
+  if ((e.ctrlKey || e.metaKey) && e.key === 'z' && !e.shiftKey) { e.preventDefault(); undo(); return; }
+  // Ctrl+Y or Ctrl+Shift+Z: Redo
+  if ((e.ctrlKey || e.metaKey) && (e.key === 'y' || (e.key === 'z' && e.shiftKey))) { e.preventDefault(); redo(); return; }
+  // Ctrl+Shift+Z uppercase fallback
+  if ((e.ctrlKey || e.metaKey) && e.key === 'Z' && e.shiftKey) { e.preventDefault(); redo(); return; }
+
+  // Don't intercept while editing DSL
+  if (ae === ta) return;
   if (ae && (ae.tagName === 'INPUT' || ae.tagName === 'SELECT' || ae.tagName === 'TEXTAREA')) {
-    // Allow Ctrl shortcuts but block arrow keys etc. from moving elements
-    if (!e.ctrlKey) return;
+    if (!e.ctrlKey && !e.metaKey) return;
   }
 
-  if (e.ctrlKey && e.key === 'z') { e.preventDefault(); undo(); }
-  if (e.ctrlKey && e.key === 'y') { e.preventDefault(); redo(); }
-  if (e.key === 'Delete' || e.key === 'Backspace') { e.preventDefault(); deleteSelected(); }
-  if (e.key === 'n' || e.key === 'N') { toggleAnnotations(); }
-  if (e.ctrlKey && e.key === 'a') {
+  // Ctrl+C: Copy
+  if ((e.ctrlKey || e.metaKey) && e.key === 'c') { e.preventDefault(); copySelection(); return; }
+  // Ctrl+X: Cut
+  if ((e.ctrlKey || e.metaKey) && e.key === 'x') { e.preventDefault(); cutSelection(); return; }
+  // Ctrl+V: Paste
+  if ((e.ctrlKey || e.metaKey) && e.key === 'v') { e.preventDefault(); pasteSelection(); return; }
+  // Delete / Backspace
+  if (e.key === 'Delete' || e.key === 'Backspace') { e.preventDefault(); deleteSelected(); return; }
+  // Ctrl+A: Select all
+  if ((e.ctrlKey || e.metaKey) && e.key === 'a') {
     e.preventDefault();
     if (!parsed) return;
     if (annotationMode) {
-      selection = new Set(parsed.notes.map(el => el.id));
+      sel = parsed.notes.map(n => ({type: 'note', id: n.id}));
     } else {
-      selection = new Set([...parsed.states, ...parsed.pseudoStates, ...parsed.groups].map(el => el.id));
+      sel = [
+        ...parsed.states.map(s => ({type: 'state', id: s.id})),
+        ...parsed.pseudoStates.map(p => ({type: p.type, id: p.id})),
+        ...parsed.groups.map(g => ({type: 'group', id: g.id}))
+      ];
     }
     refresh();
+    return;
   }
-  if (e.ctrlKey && e.key === 'c') { copySelection(); }
-  if (e.ctrlKey && e.key === 'v') { pasteSelection(); }
-
-  // ADR-018: Arrow key nudge (1 grid for states/groups, 0.5 grid for pseudo-states)
-  if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.key) && selection.size > 0) {
+  // Arrow keys: move selected
+  if (sel.length && ['ArrowUp','ArrowDown','ArrowLeft','ArrowRight'].includes(e.key)) {
     e.preventDefault();
-    if (!parsed) return;
-    const dir = e.key === 'ArrowRight' ? 1 : e.key === 'ArrowLeft' ? -1 : e.key === 'ArrowDown' ? 1 : -1;
-    const isH = e.key === 'ArrowRight' || e.key === 'ArrowLeft';
-    pushHistory();
-    let dsl = getDsl();
-    for (const id of selection) {
-      if (annotationMode && !parsed.noteMap[id]) continue;
-      if (!annotationMode && parsed.noteMap[id]) continue;
-      const st = parsed.stateMap[id] || parsed.pseudoMap[id] || parsed.groupMap[id] || parsed.noteMap[id];
-      if (!st) continue;
-      const type = parsed.stateMap[id] ? 'state' : parsed.pseudoMap[id] ? parsed.pseudoMap[id].type : parsed.groupMap[id] ? 'group' : 'note';
-      const step = parsed.pseudoMap[id] ? 0.5 : 1;
-      const dx = isH ? dir * step : 0;
-      const dy = isH ? 0 : dir * step;
-      const nx = Math.max(0, (st.x || 0) + dx);
-      const ny = Math.max(0, (st.y || 0) + dy);
-      dsl = updatePos(type, id, nx, ny, dsl);
-    }
-    setDsl(dsl);
-    refresh();
+    const ax = (e.key === 'ArrowLeft' || e.key === 'ArrowRight') ? 'x' : 'y';
+    const d = (e.key === 'ArrowRight' || e.key === 'ArrowDown') ? 1 : -1;
+    if (sel.length > 1) batchNudge(ax, d); else nudge(ax, d);
+    return;
   }
+  // H: Toggle highlight
+  if (e.key === 'h' || e.key === 'H') { e.preventDefault(); toggleHighlight(); return; }
+  // N: Toggle annotations
+  if (e.key === 'n' || e.key === 'N') { e.preventDefault(); toggleAnnotations(); return; }
 });
 
 // ═══════════════════════════════════════════════

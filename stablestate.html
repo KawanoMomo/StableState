@@ -2141,11 +2141,31 @@ function renderTable(parsed) {
 
       // Render editor in property panel
       const panel = document.getElementById('prop-content');
-      const isAction = (field === 'entry' || field === 'do' || field === 'exit' || field === 'action');
+      const isStateField = (field === 'entry' || field === 'do' || field === 'exit');
+      const isAction = isStateField || field === 'action';
       const st = parsed.stateMap[stateId];
       const stLabel = st ? st.label : stateId;
+
+      // For transition fields, check if a transition exists from this state with this event
+      let hasTransition = true;
+      if (!isStateField && evName) {
+        const mt = parsed.transitions.filter(function(t) {
+          const fromEl = resolveStateRef(t.from, parsed);
+          return fromEl && fromEl.id === stateId && (t.event || '(none)') === evName;
+        });
+        hasTransition = mt.length > 0;
+      }
+
       let html = `<div class="prop-section"><div class="prop-label">${esc(stLabel)}</div>`;
       html += `<div class="prop-sub" style="margin-bottom:4px">${esc(field)}${evName ? ' (' + esc(evName) + ')' : ''}</div>`;
+
+      if (!hasTransition && !isStateField) {
+        html += `<div class="prop-sub" style="color:#F59E0B">この状態からの遷移がありません</div>`;
+        html += `</div>`;
+        panel.innerHTML = html;
+        return;
+      }
+
       if (isAction) {
         html += `<textarea class="prop-input" id="pp-table-edit" style="height:80px;resize:vertical;font-size:11px;line-height:1.4;text-align:left">${esc(currentText)}</textarea>`;
       } else {
@@ -2160,16 +2180,8 @@ function renderTable(parsed) {
       // Apply handler
       function applyEdit() {
         const input = document.getElementById('pp-table-edit');
-        if (!input) { console.warn('pp-table-edit not found'); return; }
+        if (!input) return;
         const newVal = input.value.replace(/\n/g, ' ').trim();
-        console.log('applyEdit:', field, stateId, evName, 'newVal:', newVal);
-        if (field === 'guard' || field === 'action') {
-          const _mt = parsed.transitions.filter(function(t) {
-            const fromEl = resolveStateRef(t.from, parsed);
-            return fromEl && fromEl.id === stateId && (t.event || '(none)') === evName;
-          });
-          console.log('matchingTrans:', _mt.length, _mt.map(t => t.from + '->' + t.to));
-        }
 
         if (field === 'entry' || field === 'do' || field === 'exit') {
           pushHistory();

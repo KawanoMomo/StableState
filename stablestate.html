@@ -1388,7 +1388,7 @@ function renderSVG(parsed) {
     const points = [fromPt];
     const margin = 20;
     const co = channelOffset || 0; // channel offset in pixels
-    const ri = (routeIndex || 0) * 12; // extra spread per route for U-shape legs
+    const ri = (routeIndex || 0) * 20; // extra spread per route for U-shape legs (20px ≈ label height)
 
     // same-axis opposite sides
     if (fromSide === 'right' && toSide === 'left') {

@@ -207,3 +207,34 @@ def parse_dsl(text: str) -> Diagram:
             continue
 
     return d
+
+
+def resolve_state_ref(dot_path: str, diagram: Diagram) -> State | PseudoState | None:
+    """Resolve a dot-path reference (e.g., 'active.accel') to a State or PseudoState."""
+    # Direct lookup by ID
+    state_map = {s.id: s for s in diagram.states}
+    pseudo_map = {ps.id: ps for ps in diagram.pseudo_states}
+    if dot_path in state_map:
+        return state_map[dot_path]
+    if dot_path in pseudo_map:
+        return pseudo_map[dot_path]
+    # Dot-path resolution
+    parts = dot_path.split('.')
+    leaf_id = parts[-1]
+    candidates = [s for s in diagram.states if s.id == leaf_id] + \
+                 [ps for ps in diagram.pseudo_states if ps.id == leaf_id]
+    for c in candidates:
+        match = True
+        cur = c
+        for i in range(len(parts) - 2, -1, -1):
+            parent = getattr(cur, 'parent', None)
+            if not parent or parent != parts[i]:
+                match = False
+                break
+            cur = state_map.get(parent)
+            if cur is None:
+                match = False
+                break
+        if match:
+            return c
+    return None

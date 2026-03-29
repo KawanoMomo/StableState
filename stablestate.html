@@ -2278,6 +2278,15 @@ function renderProps() {
       // Round
       html += `<div class="prop-section"><div class="prop-label">Round</div>`;
       html += `<div class="prop-row"><input type="number" class="prop-input" id="pp-round" value="${st.round != null ? st.round : ''}" placeholder="10"></div></div>`;
+      // Add child element buttons for composite states
+      const stDslLine = getDsl().split('\n').find(l => new RegExp('^\\s*state\\s+' + st.id.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\s+').test(l));
+      if (stDslLine && stDslLine.trim().endsWith('{')) {
+        html += `<div class="prop-section" style="border-top:1px solid var(--border);padding-top:8px"><div class="prop-label">子要素追加</div>`;
+        html += `<button class="tb tb-accent" style="width:100%;margin-bottom:4px" onclick="addNewElement('state')">+ 子状態</button>`;
+        html += `<button class="tb" style="width:100%;margin-bottom:4px" onclick="addNewElement('initial')">+ 開始</button>`;
+        html += `<button class="tb" style="width:100%" onclick="addNewElement('final')">+ 終了</button>`;
+        html += `</div>`;
+      }
       html += `<div style="margin-top:16px"><button class="tb" onclick="deleteSelected()" style="width:100%;border-color:#EF4444;color:#FCA5A5">削除</button></div>`;
     } else if (parsed.pseudoMap[id]) {
       // ── Pseudo-state selected ──
@@ -3949,12 +3958,18 @@ function addNewElement(type) {
   let line = '';
 
   // Check if a composite state is selected — new element goes inside it
+  // Detect composite by checking DSL for `{` (children.length may be 0 for empty composites)
   let parentState = null;
-  if (parsed && sel.length === 1) {
+  if (parsed && sel.length === 1 && sel[0].type === 'state') {
     const selId = sel[0].id;
     const st = parsed.stateMap[selId];
-    if (st && st.children.length > 0) {
-      parentState = st;
+    if (st) {
+      const dslLines = dsl.split('\n');
+      const re = new RegExp('^\\s*state\\s+' + selId.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\s+');
+      const defLine = dslLines.find(l => re.test(l));
+      if (defLine && defLine.trim().endsWith('{')) {
+        parentState = st;
+      }
     }
   }
 

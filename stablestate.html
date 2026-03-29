@@ -1899,11 +1899,11 @@ function renderTable(parsed) {
     if (st.children.length === 0) {
       leafColumns.push({ id: st.id, state: st, depth: depth, isInitial: initialTargets.has(st.id) });
     } else {
-      leafColumns.push({ id: st.id, state: st, depth: depth + 1, isInitial: false, isSelf: true });
       for (const childId of st.children) {
         const child = parsed.stateMap[childId];
         if (child) walkState(child, depth + 1);
       }
+      leafColumns.push({ id: st.id, state: st, depth: depth + 1, isInitial: false, isSelf: true });
     }
   }
 
@@ -2096,24 +2096,20 @@ function renderTable(parsed) {
   bodyEl.innerHTML = '<tbody>' + bodyHtml + '</tbody>';
 
   // ─── Sync column widths: body cols → head cols ───
-  // Use offsetWidth (integer px) instead of getBoundingClientRect (sub-pixel, zoom-sensitive)
   requestAnimationFrame(function() {
     const bodyRows = bodyEl.querySelectorAll('tbody tr');
     if (bodyRows.length === 0) return;
+    // Find the first data row with per-leaf cells (entry row)
     const firstDataRow = bodyRows[0];
     const dataCells = firstDataRow.querySelectorAll('td');
+    // Measure body cell widths and apply to head table via colgroup
     const widths = [];
-    dataCells.forEach(function(td) { widths.push(td.offsetWidth); });
+    dataCells.forEach(function(td) { widths.push(td.getBoundingClientRect().width); });
+    // Apply as col widths to head table
     let colHtml = '<colgroup>';
     widths.forEach(function(w) { colHtml += `<col style="width:${w}px">`; });
     colHtml += '</colgroup>';
-    headEl.style.tableLayout = 'fixed';
-    headEl.style.width = widths.reduce((a, b) => a + b, 0) + 'px';
-    bodyEl.style.tableLayout = 'fixed';
-    bodyEl.style.width = widths.reduce((a, b) => a + b, 0) + 'px';
-    // Remove old colgroups if any
-    headEl.querySelectorAll('colgroup').forEach(cg => cg.remove());
-    bodyEl.querySelectorAll('colgroup').forEach(cg => cg.remove());
+    // Prepend colgroup to both tables
     headEl.insertAdjacentHTML('afterbegin', colHtml);
     bodyEl.insertAdjacentHTML('afterbegin', colHtml);
   });

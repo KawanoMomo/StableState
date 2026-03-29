@@ -211,13 +211,9 @@ document.getElementById('new-svg').innerHTML=renderDiffSVG(newP,oldP);
 }
 
 function getWebviewContent(context, initialDsl) {
-  // Read the webview HTML template
-  const htmlPath = path.join(context.extensionPath, 'src', 'webview.html');
+  const htmlPath = path.join(context.extensionPath, 'stablestate.html');
   let html = fs.readFileSync(htmlPath, 'utf8');
-
-  // Inject the initial DSL as a JSON-encoded string
   html = html.replace('__INITIAL_DSL__', JSON.stringify(initialDsl));
-
   return html;
 }
 

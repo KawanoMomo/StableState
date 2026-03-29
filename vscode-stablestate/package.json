@@ -7,6 +7,9 @@
   "categories": ["Programming Languages", "Visualization"],
   "activationEvents": ["onLanguage:stablestate"],
   "main": "./src/extension.js",
+  "scripts": {
+    "vscode:prepublish": "cp ../stablestate.html ./stablestate.html"
+  },
   "contributes": {
     "languages": [{
       "id": "stablestate",

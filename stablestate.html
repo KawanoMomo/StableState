@@ -1894,36 +1894,25 @@ function renderTable(parsed) {
     }
   }
 
-  // Depth-first walk to collect leaf columns
+  // Depth-first walk: composite states get a self-column at child depth after their children
+  // Tree example: Active { Accel, Cruise } → columns: [Accel, Cruise, Active✱]
+  // Active✱ has depth=1, ancestry=[Active] → parent header "Active" spans all three
   function walkState(st, depth) {
     if (st.children.length === 0) {
-      // Leaf state
       leafColumns.push({ id: st.id, state: st, depth: depth, isInitial: initialTargets.has(st.id) });
     } else {
       for (const childId of st.children) {
         const child = parsed.stateMap[childId];
         if (child) walkState(child, depth + 1);
       }
+      // Self column: composite state itself as a leaf at child depth
+      leafColumns.push({ id: st.id, state: st, depth: depth + 1, isInitial: false, isSelf: true });
     }
   }
 
-  // Start with root-level states (no parent)
   const rootStates = parsed.states.filter(s => s.parent === null);
   for (const rs of rootStates) {
     walkState(rs, 0);
-  }
-
-  // Add composite states that are transition sources as extra columns (depth 0, no ancestry)
-  const leafIds = new Set(leafColumns.map(lc => lc.id));
-  const compositeTransSources = new Set();
-  for (const t of parsed.transitions) {
-    const fromEl = resolveStateRef(t.from, parsed);
-    if (fromEl && fromEl.children && fromEl.children.length > 0) compositeTransSources.add(fromEl.id);
-  }
-  for (const cid of compositeTransSources) {
-    if (leafIds.has(cid)) continue; // already a column
-    const st = parsed.stateMap[cid];
-    if (st) leafColumns.push({ id: st.id, state: st, depth: 0, isInitial: false });
   }
 
   if (leafColumns.length === 0) {
@@ -1941,16 +1930,22 @@ function renderTable(parsed) {
   }
   const totalHeaderRows = maxDepth + 1; // depth 0..maxDepth
 
-  // For each leaf, compute full ancestry chain (length = depth)
+  // For each column, compute ancestry chain (must satisfy: chain.length === lc.depth)
   const ancestries = leafColumns.map(function(lc) {
     const chain = [];
+    if (lc.isSelf) {
+      // Self column: include the composite state itself as the innermost ancestor
+      // e.g. Active(self) at depth 1 → chain = [Active]
+      // e.g. System > Active(self) at depth 2 → chain = [System, Active]
+      chain.push(lc.state);
+    }
     let cur = lc.state;
     while (cur.parent) {
       const p = parsed.stateMap[cur.parent];
       if (p) { chain.unshift(p); cur = p; }
       else break;
     }
-    return chain; // length = lc.depth
+    return chain;
   });
 
   // Build a cell grid: headerCells[row][col] = {label, colspan, rowspan, stateId} or null (covered by span)
@@ -1975,8 +1970,8 @@ function renderTable(parsed) {
     const leafRow = lc.depth;
     const prefix = lc.isInitial ? '>' : '';
     headerCells[leafRow][ci] = {
-      label: prefix + lc.state.label,
-      stateId: lc.id,
+      label: prefix + lc.state.label + (lc.isSelf ? ' ✱' : ''),
+      stateId: lc.isSelf ? lc.id + '_self' : lc.id,
       colspan: 1,
       rowspan: totalHeaderRows - leafRow,
       placed: false

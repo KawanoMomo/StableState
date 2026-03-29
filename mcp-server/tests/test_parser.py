@@ -1,6 +1,6 @@
 """TDD tests for StableState DSL parser."""
 import pytest
-from stablestate_mcp.core.parser import parse_dsl
+from stablestate_mcp.core.parser import parse_dsl, resolve_state_ref
 from stablestate_mcp.core.generator import generate_dsl
 
 
@@ -126,3 +126,33 @@ idle -> active : EvStart [Ready] / Init'''
     assert len(d2.states) == len(d.states)
     assert len(d2.transitions) == len(d.transitions)
     assert d2.transitions[1].event == "EvStart"
+
+
+def test_dotpath_transition_stored():
+    dsl = '@canvas width=960 height=600 grid=20\nstate active "Active" at 5,5 size 20x12 {\n  state accel "Accel" at 1,2 size 8x3\n  state cruise "Cruise" at 10,2 size 8x3\n}\nactive.accel -> active.cruise : EvSpeedOk'
+    d = parse_dsl(dsl)
+    assert d.transitions[0].from_id == "active.accel"
+    assert d.transitions[0].to_id == "active.cruise"
+
+
+def test_resolve_state_ref_bare():
+    dsl = '@canvas width=960 height=600 grid=20\nstate idle "Idle" at 2,3 size 8x4'
+    d = parse_dsl(dsl)
+    assert resolve_state_ref("idle", d).id == "idle"
+
+
+def test_resolve_state_ref_dotpath():
+    dsl = '@canvas width=960 height=600 grid=20\nstate active "Active" at 5,5 size 20x12 {\n  state accel "Accel" at 1,2 size 8x3\n}'
+    d = parse_dsl(dsl)
+    el = resolve_state_ref("active.accel", d)
+    assert el is not None
+    assert el.id == "accel"
+    assert el.parent == "active"
+
+
+def test_resolve_state_ref_pseudo():
+    dsl = '@canvas width=960 height=600 grid=20\nstate active "Active" at 5,5 size 20x12 {\n  initial ini at 1,1\n}'
+    d = parse_dsl(dsl)
+    el = resolve_state_ref("active.ini", d)
+    assert el is not None
+    assert el.id == "ini"

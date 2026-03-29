@@ -771,7 +771,11 @@ function resolveStateRef(dotPath, parsed) {
   if (parsed.pseudoMap[dotPath]) return parsed.pseudoMap[dotPath];
   const parts = dotPath.split('.');
   const leafId = parts[parts.length - 1];
-  const candidates = parsed.states.filter(s => s.id === leafId);
+  // Search states and pseudo-states for dot-path match
+  const candidates = [
+    ...parsed.states.filter(s => s.id === leafId),
+    ...parsed.pseudoStates.filter(s => s.id === leafId)
+  ];
   for (const c of candidates) {
     let match = true, cur = c;
     for (let i = parts.length - 2; i >= 0; i--) {

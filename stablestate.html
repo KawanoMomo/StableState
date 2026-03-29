@@ -3407,28 +3407,8 @@ function setupInteractions() {
           }
         }
       }
-      // Composite states drag children + pseudo-states
-      for (const si of sel) {
-        const st = parsed.stateMap[si.id];
-        if (!st || st.children.length === 0) continue;
-        function addChildren(parentId) {
-          const parent = parsed.stateMap[parentId];
-          if (!parent) return;
-          for (const cid of parent.children) {
-            if (!dragItems.some(it => it.id === cid)) {
-              const child = parsed.stateMap[cid];
-              if (child) dragItems.push({ id: cid, type: 'state', origX: child.x, origY: child.y, parent: child.parent, w: child.w, h: child.h });
-            }
-          }
-          // Include pseudo-states parented to this state
-          for (const ps of parsed.pseudoStates) {
-            if (ps.parent === parentId && !dragItems.some(it => it.id === ps.id)) {
-              dragItems.push({ id: ps.id, type: ps.type, origX: ps.x, origY: ps.y, parent: ps.parent, w: ps.w, h: ps.h });
-            }
-          }
-        }
-        addChildren(si.id);
-      }
+      // NOTE: Composite state children use RELATIVE coordinates,
+      // so they move automatically when the parent moves — do NOT add them to dragItems.
 
       const sc = getSvgScale();
       const startMX = e.clientX, startMY = e.clientY;

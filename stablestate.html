@@ -2397,36 +2397,23 @@ function renderProps() {
       const idA = selArr[0], idB = selArr[1];
       const trans = findTransBetween(idA, idB);
       html += `<div class="prop-section" style="border-top:1px solid var(--border);padding-top:8px;margin-top:8px">`;
-      html += `<div class="prop-label">Transition</div>`;
-      if (trans.length > 0) {
-        html += `<div class="prop-sub" style="margin-bottom:4px">${trans[0].from} &rarr; ${trans[0].to}</div>`;
-        html += `<div class="prop-row">`;
-        html += `<button class="tb" style="flex:1" onclick="flipTrans('${idA}','${idB}')" title="Flip direction">&#8646; Flip</button>`;
-        html += `<button class="tb" style="flex:1;border-color:#EF4444;color:#FCA5A5" onclick="removeTrans('${idA}','${idB}')" title="Remove transition">&#10005; Remove</button>`;
-        html += `</div>`;
-        // Transition color
-        const transColors = ['#94A3B8','#818CF8','#22C55E','#F59E0B','#EF4444','#EC4899'];
-        html += `<div class="prop-label" style="margin-top:6px">Line Color</div><div class="color-grid">`;
-        for (const c of transColors) {
-          html += `<div class="color-dot" style="background:${c}" onclick="setTransProp('${idA}','${idB}','color','${c}')"></div>`;
-        }
-        html += `</div>`;
-        // Transition width
-        html += `<div class="prop-label" style="margin-top:4px">Line Width</div>`;
-        html += `<div class="prop-row">`;
-        html += `<button class="style-btn" style="flex:1" onclick="setTransProp('${idA}','${idB}','width','1')">1</button>`;
-        html += `<button class="style-btn" style="flex:1" onclick="setTransProp('${idA}','${idB}','width','2')">2</button>`;
-        html += `<button class="style-btn" style="flex:1" onclick="setTransProp('${idA}','${idB}','width','3')">3</button>`;
-        html += `</div>`;
-        // Transition style
-        html += `<div class="prop-label" style="margin-top:4px">Line Style</div>`;
-        html += `<div class="prop-row">`;
-        html += `<button class="style-btn" style="flex:1" onclick="setTransProp('${idA}','${idB}','style','solid')">solid</button>`;
-        html += `<button class="style-btn" style="flex:1" onclick="setTransProp('${idA}','${idB}','style','dashed')">dashed</button>`;
-        html += `</div>`;
-      } else {
-        html += `<button class="tb tb-accent" style="width:100%" onclick="connectTwo('${idA}','${idB}')">&#8599; Connect</button>`;
+      html += `<div class="prop-label">遷移 (${trans.length})</div>`;
+      // List existing transitions
+      for (let ti = 0; ti < trans.length; ti++) {
+        const t = trans[ti];
+        const evLabel = t.event ? t.event : '(none)';
+        html += `<div style="padding:4px 6px;background:var(--surface,#1e1e3e);border-radius:4px;margin-bottom:4px;font-size:11px;color:var(--fg,#e0e0e0)">`;
+        html += `<div>${esc(t.from)} &rarr; ${esc(t.to)}${t.event ? ' : ' + esc(t.event) : ''}${t.guard ? ' [' + esc(t.guard) + ']' : ''}${t.action ? ' / ' + esc(t.action) : ''}</div>`;
+        html += `<div style="display:flex;gap:2px;margin-top:3px">`;
+        html += `<button class="tb" style="flex:1;font-size:10px;padding:2px" onclick="flipTrans('${esc(t.from)}','${esc(t.to)}')" title="反転">⇄</button>`;
+        html += `<button class="tb" style="flex:1;font-size:10px;padding:2px;border-color:#EF4444;color:#FCA5A5" onclick="removeTransExact('${esc(t.from)}','${esc(t.to)}','${esc(t.event || '')}','${esc(t.guard || '')}')" title="削除">✕</button>`;
+        html += `</div></div>`;
       }
+      // Always show connect buttons (multiple transitions allowed)
+      html += `<div style="display:flex;gap:4px;margin-top:6px">`;
+      html += `<button class="tb tb-accent" style="flex:1;font-size:11px" onclick="connectTwo('${idA}','${idB}')">${esc(idA)} &rarr; ${esc(idB)}</button>`;
+      html += `<button class="tb tb-accent" style="flex:1;font-size:11px" onclick="connectTwo('${idB}','${idA}')">${esc(idB)} &rarr; ${esc(idA)}</button>`;
+      html += `</div>`;
       html += `</div>`;
     }
 
@@ -3688,9 +3675,10 @@ function findTransBetween(a, b) {
 }
 
 function connectTwo(a, b) {
+  const event = prompt('Event name (optional):');
   pushHistory();
   let dsl = getDsl();
-  dsl = addTransition(a, b, null, null, null, null, dsl);
+  dsl = addTransition(a, b, event || null, null, null, null, dsl);
   setDsl(dsl);
   refresh();
 }
@@ -3705,6 +3693,35 @@ function removeTrans(a, b) {
     return !((m[1] === a && m[2] === b) || (m[1] === b && m[2] === a));
   }).join('\n');
   setDsl(dsl);
+  refresh();
+}
+
+// Remove a specific transition line matching from, to, event, guard
+function removeTransExact(from, to, event, guard) {
+  pushHistory();
+  let dsl = getDsl();
+  const lines = dsl.split('\n');
+  for (let i = 0; i < lines.length; i++) {
+    const t = lines[i].trim();
+    const m = t.match(/^(\S+)\s*->\s*(\S+)\s*(.*)/);
+    if (!m) continue;
+    if (m[1] !== from || m[2] !== to) continue;
+    const rest = m[3];
+    // Parse event/guard from rest: ": Event [Guard] / Action ..."
+    let lineEvent = '', lineGuard = '';
+    if (rest.startsWith(':')) {
+      const detail = rest.slice(1).trim();
+      const em = detail.match(/^(\S*)/);
+      if (em) lineEvent = em[1];
+      const gm = detail.match(/\[([^\]]*)\]/);
+      if (gm) lineGuard = gm[1];
+    }
+    if (lineEvent === (event || '') && lineGuard === (guard || '')) {
+      lines.splice(i, 1);
+      break;
+    }
+  }
+  setDsl(lines.join('\n'));
   refresh();
 }
 

@@ -1913,7 +1913,7 @@ function renderTable(parsed) {
   }
 
   // Insert virtual ROOT column at the beginning (table only, not in diagram)
-  const rootVirtual = { id: '__ROOT__', label: '', parent: null, children: [], entry: null, do: null, exit: null };
+  const rootVirtual = { id: '__ROOT__', label: 'ROOT', parent: null, children: [], entry: null, do: null, exit: null };
   leafColumns.unshift({ id: '__ROOT__', state: rootVirtual, depth: 0, isInitial: false, isRoot: true });
 
   if (leafColumns.length <= 1) {
@@ -1966,7 +1966,7 @@ function renderTable(parsed) {
     const leafRow = lc.depth;
     const prefix = lc.isInitial ? '>' : '';
     headerCells[leafRow][ci] = {
-      label: (lc.isSelf || lc.isRoot) ? '' : prefix + lc.state.label,
+      label: lc.isSelf ? '' : prefix + lc.state.label,
       stateId: lc.isSelf ? lc.id + '_self' : lc.id,
       colspan: 1,
       rowspan: totalHeaderRows - leafRow,

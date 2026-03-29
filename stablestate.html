@@ -2211,7 +2211,17 @@ function renderProps() {
       html += `<div class="prop-sub">Click notes to select. States are locked.</div>`;
       html += `</div>`;
     } else {
-      html += `<div class="prop-section"><div class="prop-label">Selected</div><div class="prop-sub">Select an element to edit</div></div>`;
+      // Canvas size editor
+      const cv = parsed.canvas;
+      html += `<div class="prop-section"><div class="prop-label">Canvas</div>`;
+      html += `<div class="prop-row">`;
+      html += `<div style="flex:1"><div class="prop-sub">W</div><input type="number" class="prop-input" id="pp-canvas-w" value="${cv.width}" min="100" step="20"></div>`;
+      html += `<div style="flex:1"><div class="prop-sub">H</div><input type="number" class="prop-input" id="pp-canvas-h" value="${cv.height}" min="100" step="20"></div>`;
+      html += `</div>`;
+      html += `<div class="prop-row" style="margin-top:4px">`;
+      html += `<div style="flex:1"><div class="prop-sub">Grid</div><input type="number" class="prop-input" id="pp-canvas-g" value="${cv.grid}" min="5" step="5"></div>`;
+      html += `</div></div>`;
+      // Add element buttons
       html += `<div class="prop-section">`;
       html += `<button class="tb tb-accent" style="width:100%;margin-bottom:4px" onclick="addNewElement('state')">+ 状態追加</button>`;
       html += `<button class="tb" style="width:100%" onclick="addNewElement('group')">+ グループ追加</button>`;
@@ -2447,6 +2457,21 @@ function renderProps() {
   html += `</div>`;
 
   panel.innerHTML = html;
+
+  // ─── Canvas size change handlers ───
+  ['pp-canvas-w', 'pp-canvas-h', 'pp-canvas-g'].forEach(function(inputId) {
+    const el = document.getElementById(inputId);
+    if (el) el.addEventListener('change', function() {
+      pushHistory();
+      let dsl = getDsl();
+      const w = parseInt(document.getElementById('pp-canvas-w')?.value) || parsed.canvas.width;
+      const h = parseInt(document.getElementById('pp-canvas-h')?.value) || parsed.canvas.height;
+      const g = parseInt(document.getElementById('pp-canvas-g')?.value) || parsed.canvas.grid;
+      dsl = dsl.replace(/^@canvas\s+.*$/m, `@canvas width=${w} height=${h} grid=${g}`);
+      setDsl(dsl);
+      refresh();
+    });
+  });
 
   // ─── Wire up property change event listeners ───
   function propChange(inputId, handler) {

@@ -268,6 +268,16 @@ error -> fin : EvShutdown</textarea>
 
 <script>
 // ═══════════════════════════════════════════════
+// VSCode environment detection
+// ═══════════════════════════════════════════════
+let vscodeApi = null;
+try { vscodeApi = acquireVsCodeApi(); } catch(e) {}
+const isVSCode = !!vscodeApi;
+let _vscode_dsl = null;
+let _suppressVscodeSync = false;
+if (isVSCode) { _vscode_dsl = __INITIAL_DSL__; }
+
+// ═══════════════════════════════════════════════
 // State
 // ═══════════════════════════════════════════════
 let parsed = null;
@@ -3143,7 +3153,7 @@ function cleanupInternalTransitions() {
 
 function refresh() {
   cleanupInternalTransitions();
-  const text = document.getElementById('editor').value;
+  const text = getDsl();
   parsed = parseDSL(text);
   validate(parsed);
   updateErrorBar(parsed);
@@ -3158,7 +3168,7 @@ function refresh() {
 
 // ADR-003: refresh without renderProps() to prevent input focus loss during property editing
 function refreshView() {
-  const text = document.getElementById('editor').value;
+  const text = getDsl();
   parsed = parseDSL(text);
   validate(parsed);
   updateErrorBar(parsed);
@@ -3174,6 +3184,7 @@ function refreshView() {
 // Line Numbers
 // ═══════════════════════════════════════════════
 function updateLineNumbers() {
+  if (isVSCode) return;
   const editor = document.getElementById('editor');
   const lineNums = document.getElementById('line-nums');
   const lines = editor.value.split('\n');
@@ -3203,13 +3214,16 @@ function updateStatus() {
 // ═══════════════════════════════════════════════
 const editorEl = document.getElementById('editor');
 
-editorEl.addEventListener('input', function() {
-  refresh();
-});
+if (!isVSCode) {
+  editorEl.addEventListener('input', function() {
+    refresh();
+  });
+}
 
 // ═══════════════════════════════════════════════
 // Splitter (editor ↔ diagram resizer)
 // ═══════════════════════════════════════════════
+if (!isVSCode) {
 (function() {
   const splitter = document.getElementById('splitter');
   const editorPanel = document.getElementById('editor-panel');
@@ -3264,11 +3278,14 @@ editorEl.addEventListener('input', function() {
     document.removeEventListener('mouseup', onUp);
   }
 })();
+} // end if (!isVSCode)
 
 // Sync line numbers scroll
-editorEl.addEventListener('scroll', function() {
-  document.getElementById('line-nums').scrollTop = this.scrollTop;
-});
+if (!isVSCode) {
+  editorEl.addEventListener('scroll', function() {
+    document.getElementById('line-nums').scrollTop = this.scrollTop;
+  });
+}
 
 // ═══════════════════════════════════════════════
 // SVG Scale Helper (StableBlock pattern)
@@ -3345,11 +3362,17 @@ function computeSnapGuides(dragItems) {
 // Undo / Redo
 // ═══════════════════════════════════════════════
 function getDsl() {
-  return editorEl.value;
+  if (isVSCode) return _vscode_dsl;
+  return document.getElementById('editor').value;
 }
 
 function setDsl(text) {
-  editorEl.value = text;
+  if (isVSCode) {
+    _vscode_dsl = text;
+    if (!_suppressVscodeSync) vscodeApi.postMessage({ type: 'dslUpdate', dsl: text });
+  } else {
+    document.getElementById('editor').value = text;
+  }
 }
 
 function pushHistory() {
@@ -4405,6 +4428,64 @@ document.addEventListener('keydown', function(e) {
     origSetTool(name);
   };
 })();
+
+// ═══════════════════════════════════════════════
+// VSCode webview message handler
+// ═══════════════════════════════════════════════
+if (isVSCode) {
+  window.addEventListener('message', function(e) {
+    var msg = e.data;
+    if (msg.type === 'dslUpdate') {
+      _suppressVscodeSync = true;
+      _vscode_dsl = msg.dsl;
+      refresh();
+      _suppressVscodeSync = false;
+    }
+    if (msg.type === 'exportSVG') {
+      var svgEl = document.querySelector('#svg-wrap svg');
+      if (svgEl) {
+        var svgStr = new XMLSerializer().serializeToString(svgEl);
+        vscodeApi.postMessage({ type: 'exportSVG', data: btoa(unescape(encodeURIComponent(svgStr))) });
+      }
+    }
+    if (msg.type === 'exportPNG') {
+      var svgEl = document.querySelector('#svg-wrap svg');
+      if (!svgEl || !parsed) return;
+      var svgStr = new XMLSerializer().serializeToString(svgEl);
+      var canvas = document.createElement('canvas');
+      canvas.width = parsed.canvas.width;
+      canvas.height = parsed.canvas.height;
+      var ctx = canvas.getContext('2d');
+      var img = new Image();
+      img.onload = function() {
+        ctx.drawImage(img, 0, 0);
+        var dataUrl = canvas.toDataURL('image/png');
+        vscodeApi.postMessage({ type: 'exportPNG', data: dataUrl.split(',')[1] });
+      };
+      img.src = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svgStr);
+    }
+    if (msg.type === 'undo') { undo(); }
+    if (msg.type === 'redo') { redo(); }
+    if (msg.type === 'copy') { copySelection(); }
+    if (msg.type === 'cut') { cutSelection(); }
+    if (msg.type === 'paste') { pasteSelection(); }
+    if (msg.type === 'selectAll') {
+      if (!parsed) return;
+      sel = [...parsed.states.map(s => ({type:'state',id:s.id})), ...parsed.pseudoStates.map(p => ({type:p.type,id:p.id})), ...parsed.groups.map(g => ({type:'group',id:g.id}))];
+      refresh();
+    }
+  });
+}
+
+// ═══════════════════════════════════════════════
+// VSCode UI hiding
+// ═══════════════════════════════════════════════
+if (isVSCode) {
+  var ep = document.getElementById('editor-panel');
+  if (ep) ep.style.display = 'none';
+  var sp = document.getElementById('splitter');
+  if (sp) sp.style.display = 'none';
+}
 
 // ═══════════════════════════════════════════════
 // Init

@@ -2149,152 +2149,83 @@ function renderTable(parsed) {
       const st = parsed.stateMap[stateId];
       const stLabel = st ? st.label : stateId;
 
-      // For transition fields, check if a transition exists from this state with this event
-      let hasTransition = true;
-      if (!isStateField && evName) {
-        const mt = parsed.transitions.filter(function(t) {
-          const fromEl = resolveStateRef(t.from, parsed);
-          return fromEl && fromEl.id === stateId && (t.event || '(none)') === evName;
-        });
-        hasTransition = mt.length > 0;
-      }
-
       let html = `<div class="prop-section"><div class="prop-label">${esc(stLabel)}</div>`;
-      html += `<div class="prop-sub" style="margin-bottom:4px">${esc(field)}${evName ? ' (' + esc(evName) + ')' : ''}</div>`;
 
-      if (!hasTransition && !isStateField) {
-        // No transition exists — show form to create one
-        html += `<div class="prop-sub" style="color:#F59E0B;margin-bottom:6px">新規遷移を作成</div>`;
-        html += `<div class="prop-sub">target (状態名 or ID)</div>`;
-        html += `<select class="prop-select" id="pp-table-target"><option value="">- (@internal)</option>`;
-        for (const s of parsed.states) {
-          html += `<option value="${esc(s.id)}">${esc(s.label)} (${esc(s.id)})</option>`;
-        }
-        html += `</select>`;
-        html += `<div class="prop-sub" style="margin-top:4px">[guard]</div>`;
-        html += `<input class="prop-input" id="pp-table-guard" placeholder="ガード条件">`;
-        html += `<div class="prop-sub" style="margin-top:4px">/ action</div>`;
-        html += `<textarea class="prop-input" id="pp-table-action" style="height:40px;resize:vertical;font-size:11px;line-height:1.4;text-align:left" placeholder="アクション"></textarea>`;
-        html += `<button class="tb tb-accent" id="pp-table-create" style="width:100%;margin-top:6px">遷移を作成</button>`;
+      if (isStateField) {
+        // entry/do/exit — single textarea
+        html += `<div class="prop-sub" style="margin-bottom:4px">${esc(field)}</div>`;
+        html += `<textarea class="prop-input" id="pp-table-edit" style="height:80px;resize:vertical;font-size:11px;line-height:1.4;text-align:left">${esc(currentText)}</textarea>`;
+        html += `<button class="tb tb-accent" id="pp-table-apply" style="width:100%;margin-top:6px">適用</button>`;
         html += `</div>`;
         panel.innerHTML = html;
-
-        // Pre-fill the clicked field
-        if (field === 'target') document.getElementById('pp-table-target').focus();
-        else if (field === 'guard') document.getElementById('pp-table-guard').focus();
-        else if (field === 'action') document.getElementById('pp-table-action').focus();
-
-        document.getElementById('pp-table-create').addEventListener('click', function() {
-          const target = document.getElementById('pp-table-target').value;
-          const guard = document.getElementById('pp-table-guard').value.trim();
-          const action = document.getElementById('pp-table-action').value.replace(/\n/g, ' ').trim();
-          let targetId = null;
-          let kind = null;
-          if (!target) {
-            targetId = stateDotPath(stateId);
-            kind = 'internal';
-          } else {
-            targetId = stateDotPath(target);
-          }
+        document.getElementById('pp-table-edit').focus();
+        document.getElementById('pp-table-apply').addEventListener('click', function() {
+          const newVal = document.getElementById('pp-table-edit').value.replace(/\n/g, ' ').trim();
           pushHistory();
           let dsl = getDsl();
-          const ev = evName === '(none)' ? null : evName;
-          dsl = addTransition(stateDotPath(stateId), targetId, ev, guard || null, action || null, kind, dsl);
+          if (newVal) { dsl = updateProp('state', stateId, field, newVal, dsl); }
+          else { dsl = dsl.replace(new RegExp(`(^\\s*state\\s+${stateId}\\s+.*)\\b${field}=\\S+`, 'm'), '$1'); }
           setDsl(dsl);
           refresh();
         });
         return;
       }
 
-      if (isAction) {
-        html += `<textarea class="prop-input" id="pp-table-edit" style="height:80px;resize:vertical;font-size:11px;line-height:1.4;text-align:left">${esc(currentText)}</textarea>`;
-      } else {
-        html += `<input class="prop-input" id="pp-table-edit" value="${esc(currentText)}">`;
+      // Transition fields — unified target/guard/action form
+      const mt = parsed.transitions.filter(function(t) {
+        const fromEl = resolveStateRef(t.from, parsed);
+        return fromEl && fromEl.id === stateId && (t.event || '(none)') === evName;
+      });
+      const existing = mt.length > 0 ? mt[0] : null;
+      const curGuard = existing ? existing.guard || '' : '';
+      const curAction = existing ? existing.action || '' : '';
+      const curTargetId = existing ? (existing.kind === 'internal' ? '' : (resolveStateRef(existing.to, parsed) || {}).id || '') : '';
+
+      html += `<div class="prop-sub" style="margin-bottom:4px">${esc(evName || '')}</div>`;
+      html += `<div class="prop-sub">target</div>`;
+      html += `<select class="prop-select" id="pp-table-target"><option value="">- (@internal)</option>`;
+      for (const s of parsed.states) {
+        const isSel = s.id === curTargetId ? ' selected' : '';
+        html += `<option value="${esc(s.id)}"${isSel}>${esc(s.label)} (${esc(s.id)})</option>`;
       }
+      html += `</select>`;
+      html += `<div class="prop-sub" style="margin-top:4px">[guard]</div>`;
+      html += `<input class="prop-input" id="pp-table-guard" value="${esc(curGuard)}" placeholder="ガード条件">`;
+      html += `<div class="prop-sub" style="margin-top:4px">/ action</div>`;
+      html += `<textarea class="prop-input" id="pp-table-action" style="height:60px;resize:vertical;font-size:11px;line-height:1.4;text-align:left" placeholder="アクション">${esc(curAction)}</textarea>`;
       html += `<button class="tb tb-accent" id="pp-table-apply" style="width:100%;margin-top:6px">適用</button>`;
+      if (existing) html += `<button class="tb" id="pp-table-delete" style="width:100%;margin-top:4px;border-color:#EF4444;color:#FCA5A5">遷移を削除</button>`;
       html += `</div>`;
       panel.innerHTML = html;
 
-      document.getElementById('pp-table-edit').focus();
+      if (field === 'guard') document.getElementById('pp-table-guard').focus();
+      else if (field === 'action') document.getElementById('pp-table-action').focus();
+      else document.getElementById('pp-table-target').focus();
 
-      // Apply handler
-      function applyEdit() {
-        const input = document.getElementById('pp-table-edit');
-        if (!input) return;
-        const newVal = input.value.replace(/\n/g, ' ').trim();
-
-        if (field === 'entry' || field === 'do' || field === 'exit') {
+      document.getElementById('pp-table-apply').addEventListener('click', function() {
+        const target = document.getElementById('pp-table-target').value;
+        const guard = document.getElementById('pp-table-guard').value.trim();
+        const action = document.getElementById('pp-table-action').value.replace(/\n/g, ' ').trim();
+        let targetId, kind = null;
+        if (!target) { targetId = stateDotPath(stateId); kind = 'internal'; }
+        else { targetId = stateDotPath(target); }
+        const ev = evName === '(none)' ? null : evName;
+        pushHistory();
+        let dsl = getDsl();
+        if (existing) dsl = removeTransition(existing.from, existing.to, existing.event, existing.guard, dsl);
+        dsl = addTransition(stateDotPath(stateId), targetId, ev, guard || null, action || null, kind, dsl);
+        setDsl(dsl);
+        refresh();
+      });
+      if (existing) {
+        document.getElementById('pp-table-delete').addEventListener('click', function() {
           pushHistory();
           let dsl = getDsl();
-          if (newVal) {
-            dsl = updateProp('state', stateId, field, newVal, dsl);
-          } else {
-            const re = new RegExp(`(^\\s*state\\s+${stateId}\\s+.*)\\b${field}=\\S+`, 'm');
-            dsl = dsl.replace(re, '$1');
-          }
+          dsl = removeTransition(existing.from, existing.to, existing.event, existing.guard, dsl);
           setDsl(dsl);
           refresh();
-        } else if (field === 'guard' || field === 'action') {
-          const matchingTrans = parsed.transitions.filter(function(t) {
-            const fromEl = resolveStateRef(t.from, parsed);
-            return fromEl && fromEl.id === stateId && (t.event || '(none)') === evName;
-          });
-          if (matchingTrans.length > 0) {
-            const mt = matchingTrans[0];
-            pushHistory();
-            let dsl = getDsl();
-            dsl = updateTransition(mt.from, mt.to, mt.event, mt.guard, field, newVal || null, dsl);
-            setDsl(dsl);
-            refresh();
-          }
-        } else if (field === 'target') {
-          const matchingTrans = parsed.transitions.filter(function(t) {
-            const fromEl = resolveStateRef(t.from, parsed);
-            return fromEl && fromEl.id === stateId && (t.event || '(none)') === evName;
-          });
-          if (newVal && (!currentText || currentText === '-') && matchingTrans.length === 0) {
-            let targetId = null;
-            for (const s of parsed.states) {
-              if (s.label === newVal || s.id === newVal) { targetId = s.id; break; }
-            }
-            if (targetId) {
-              pushHistory();
-              let dsl = getDsl();
-              const ev = evName === '(none)' ? null : evName;
-              dsl = addTransition(stateId, targetId, ev, null, null, null, dsl);
-              setDsl(dsl);
-              refresh();
-            }
-          } else if ((!newVal || newVal === '-') && matchingTrans.length > 0) {
-            const mt = matchingTrans[0];
-            pushHistory();
-            let dsl = getDsl();
-            dsl = removeTransition(mt.from, mt.to, mt.event, mt.guard, dsl);
-            setDsl(dsl);
-            refresh();
-          } else if (newVal && matchingTrans.length > 0) {
-            let targetId = null;
-            for (const s of parsed.states) {
-              if (s.label === newVal || s.id === newVal) { targetId = s.id; break; }
-            }
-            if (targetId) {
-              const mt = matchingTrans[0];
-              pushHistory();
-              let dsl = getDsl();
-              dsl = removeTransition(mt.from, mt.to, mt.event, mt.guard, dsl);
-              const ev = evName === '(none)' ? mt.event : evName;
-              dsl = addTransition(mt.from, targetId, ev, mt.guard, mt.action, mt.kind, dsl);
-              setDsl(dsl);
-              refresh();
-            }
-          }
-        }
+        });
       }
-
-      document.getElementById('pp-table-apply').addEventListener('click', applyEdit);
-      document.getElementById('pp-table-edit').addEventListener('keydown', function(e) {
-        if (e.key === 'Enter' && !e.shiftKey && !isAction) { e.preventDefault(); applyEdit(); }
-      });
     });
   });
 }

@@ -2292,12 +2292,9 @@ function renderProps() {
       html += `<div class="prop-row"><input type="number" class="prop-input" id="pp-w" value="${st.w}" placeholder="W" style="width:50%"><input type="number" class="prop-input" id="pp-h" value="${st.h}" placeholder="H" style="width:50%"></div>`;
       html += `</div>`;
       html += `<div class="prop-section"><div class="prop-label">Actions</div>`;
-      html += `<div class="prop-sub">entry</div>`;
-      html += `<textarea class="prop-input" id="pp-entry" style="height:40px;resize:vertical;font-size:11px;line-height:1.4;text-align:left" placeholder="entry action">${esc(st.entry || '')}</textarea>`;
-      html += `<div class="prop-sub" style="margin-top:4px">do</div>`;
-      html += `<textarea class="prop-input" id="pp-do" style="height:40px;resize:vertical;font-size:11px;line-height:1.4;text-align:left" placeholder="do action">${esc(st.do || '')}</textarea>`;
-      html += `<div class="prop-sub" style="margin-top:4px">exit</div>`;
-      html += `<textarea class="prop-input" id="pp-exit" style="height:40px;resize:vertical;font-size:11px;line-height:1.4;text-align:left" placeholder="exit action">${esc(st.exit || '')}</textarea>`;
+      html += `<div class="prop-row"><input class="prop-input" id="pp-entry" value="${esc(st.entry || '')}" placeholder="entry"></div>`;
+      html += `<div class="prop-row"><input class="prop-input" id="pp-do" value="${esc(st.do || '')}" placeholder="do"></div>`;
+      html += `<div class="prop-row"><input class="prop-input" id="pp-exit" value="${esc(st.exit || '')}" placeholder="exit"></div>`;
       html += `</div>`;
       // Color palette
       const presetColors = ['#6366F1','#818CF8','#4338CA','#22C55E','#F59E0B','#EF4444','#EC4899','#8B5CF6'];
@@ -2619,16 +2616,16 @@ function renderProps() {
 
   // Actions (entry, do, exit)
   ['entry', 'do', 'exit'].forEach(function(field) {
-    const el = document.getElementById('pp-' + field);
-    if (el) el.addEventListener('change', function() {
+    propChange('pp-' + field, function() {
       const info = getElTypeAndId();
       if (!info) return;
       pushHistory();
       let dsl = getDsl();
-      const val = this.value.replace(/\n/g, ' ').trim(); // flatten newlines for DSL
+      const val = this.value.trim();
       if (val) {
         dsl = updateProp(info.type, info.id, field, val, dsl);
       } else {
+        // Remove the property by replacing with empty — use regex to strip
         const re = new RegExp(`(^\\s*${info.type}\\s+${info.id}\\s+.*)\\b${field}=\\S+`, 'm');
         dsl = dsl.replace(re, '$1');
       }

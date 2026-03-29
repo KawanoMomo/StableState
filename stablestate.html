@@ -1578,6 +1578,8 @@ function renderSVG(parsed) {
   // First pass: compute sides for all transitions and build unified edge groups
   for (let ti = 0; ti < parsed.transitions.length; ti++) {
     const tr = parsed.transitions[ti];
+    // Skip @internal transitions — they have no visual representation in diagram
+    if (tr.kind === 'internal') { transitionSides.push(null); continue; }
     const srcBox = getBox(tr.from);
     const tgtBox = getBox(tr.to);
     if (!srcBox || !tgtBox) {
@@ -3122,7 +3124,25 @@ function updateHighlight() {
 // ═══════════════════════════════════════════════
 // Refresh Pipeline
 // ═══════════════════════════════════════════════
+function cleanupInternalTransitions() {
+  // Remove @internal transitions that have no action (they serve no purpose)
+  let dsl = getDsl();
+  let changed = false;
+  const lines = dsl.split('\n');
+  const result = [];
+  for (const line of lines) {
+    const t = line.trim();
+    if (t.match(/^(\S+)\s*->\s*(\S+)\s*:.*@internal/) && !t.match(/\/\s*\S+/)) {
+      changed = true;
+      continue; // skip this line
+    }
+    result.push(line);
+  }
+  if (changed) setDsl(result.join('\n'));
+}
+
 function refresh() {
+  cleanupInternalTransitions();
   const text = document.getElementById('editor').value;
   parsed = parseDSL(text);
   validate(parsed);

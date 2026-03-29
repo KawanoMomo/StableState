@@ -1540,6 +1540,7 @@ function renderSVG(parsed) {
 
   // Collect all polyline routes for crossing detection
   const allRoutes = [];
+  const placedLabels = []; // [{x, y, h}] for overlap avoidance
 
   // Pre-compute port distribution
   // UNIFIED edge groups: merge incoming and outgoing transitions on the same edge
@@ -1756,17 +1757,33 @@ function renderSVG(parsed) {
       if (tr.kind && tr.kind !== parsed.config.transition) {
         labelLines.push({ text: '@' + tr.kind, color: '#F59E0B', size: 8 });
       }
+      // Compute label block position, then push away from overlapping labels
+      const labelH = labelLines.length * 13;
+      let lx = midSegHoriz ? mid.x : mid.x + 8;
+      let ly0 = midSegHoriz ? mid.y - 6 - (labelLines.length - 1) * 13 : mid.y;
+      const minGap = 14; // minimum vertical gap between label blocks
+      for (const pl of placedLabels) {
+        if (Math.abs(lx - pl.x) < 60) { // horizontally near
+          const top = ly0, bot = ly0 + labelH;
+          const pTop = pl.y, pBot = pl.y + pl.h;
+          // Check overlap
+          if (top < pBot + minGap && bot + minGap > pTop) {
+            // Push down below the existing label
+            ly0 = pBot + minGap;
+          }
+        }
+      }
+      placedLabels.push({ x: lx, y: ly0, h: labelH });
+
       if (midSegHoriz) {
         for (let li = 0; li < labelLines.length; li++) {
           const ll = labelLines[li];
-          const ly = mid.y - 6 - (labelLines.length - 1 - li) * 13;
-          svg += `<text x="${mid.x}" y="${ly}" text-anchor="middle" font-family="${sans}" font-size="${ll.size}" fill="${ll.color}" style="pointer-events:none">${esc(ll.text)}</text>`;
+          svg += `<text x="${lx}" y="${ly0 + li * 13}" text-anchor="middle" font-family="${sans}" font-size="${ll.size}" fill="${ll.color}" style="pointer-events:none">${esc(ll.text)}</text>`;
         }
       } else {
         for (let li = 0; li < labelLines.length; li++) {
           const ll = labelLines[li];
-          const ly = mid.y + li * 13;
-          svg += `<text x="${mid.x + 8}" y="${ly}" text-anchor="start" font-family="${sans}" font-size="${ll.size}" fill="${ll.color}" style="pointer-events:none">${esc(ll.text)}</text>`;
+          svg += `<text x="${lx}" y="${ly0 + li * 13}" text-anchor="start" font-family="${sans}" font-size="${ll.size}" fill="${ll.color}" style="pointer-events:none">${esc(ll.text)}</text>`;
         }
       }
     }

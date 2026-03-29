@@ -69,9 +69,11 @@ def remove_element(id_: str, dsl: str) -> str:
                 skip_depth -= 1
             continue
         # Remove transitions referencing this ID
-        if re.match(rf"^\s*{re.escape(id_)}\s*->", trimmed):
+        # Match bare ID or as leaf of dot-path (e.g., "active.accel")
+        bare_or_dot = rf"(?:\S+\.)?{re.escape(id_)}"
+        if re.match(rf"^\s*{bare_or_dot}\s*->", trimmed):
             continue
-        if re.search(rf"->\s*{re.escape(id_)}(\s|$)", trimmed):
+        if re.search(rf"->\s*{bare_or_dot}(\s|$)", trimmed):
             continue
         result.append(line)
     return "\n".join(result)

@@ -1760,7 +1760,7 @@ function renderSVG(parsed) {
       if (tr.event) labelLines.push({ text: tr.event, color: '#FFCB6B', size: 10 });
       const guardAction = [];
       if (tr.guard) guardAction.push('[' + tr.guard + ']');
-      if (tr.action) guardAction.push('/ ' + tr.action);
+      if (tr.action) guardAction.push('/ Act');
       if (guardAction.length > 0) {
         labelLines.push({ text: guardAction.join(' '), color: '#C3E88D', size: 9 });
       }

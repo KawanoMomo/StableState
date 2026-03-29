@@ -1551,15 +1551,20 @@ function renderSVG(parsed) {
     if (!pairMap[pk]) pairMap[pk] = [];
     pairMap[pk].push(ti);
   }
-  // Mark the second transition in each bidirectional pair for alternate routing
+  // Mark reverse-direction transitions for alternate routing.
+  // For each state pair, find the "forward" direction (first encountered),
+  // then mark ALL transitions in the opposite direction as reverse.
   const reverseSet = new Set();
   for (const pk of Object.keys(pairMap)) {
     const indices = pairMap[pk];
     if (indices.length < 2) continue;
+    // Determine forward direction from first transition
+    const t0 = parsed.transitions[indices[0]];
+    const fwdFrom = t0.from, fwdTo = t0.to;
     for (let i = 1; i < indices.length; i++) {
-      const t0 = parsed.transitions[indices[0]];
       const ti2 = parsed.transitions[indices[i]];
-      if (t0.from === ti2.to && t0.to === ti2.from) {
+      // Opposite direction → reverse
+      if (ti2.from === fwdTo && ti2.to === fwdFrom) {
         reverseSet.add(indices[i]);
       }
     }

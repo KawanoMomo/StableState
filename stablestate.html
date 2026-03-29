@@ -3495,33 +3495,29 @@ function copySelection() {
 function pasteSelection() {
   if (!clipboard || !clipboard.length) return;
   pushHistory();
-  // Create pasted lines with offset (+2, +2) and unique IDs
-  let suffix = '_' + Date.now().toString(36).slice(-4);
+  const newSel = [];
   const pastedLines = clipboard.map(line => {
-    // Offset position by +2
-    let result = line.replace(/\bat\s+([\d.]+)\s*,\s*([\d.]+)/g, function(match, x, y) {
-      return `at ${parseFloat(x) + 2},${parseFloat(y) + 2}`;
-    });
-    // Replace IDs: find the element ID and append suffix
-    const idMatch = result.match(/^(\s*(?:state|group|note|initial|final|choice|history|deephistory|fork|join))\s+(\S+)/);
-    if (idMatch) {
-      const oldId = idMatch[2];
-      const newId = oldId + suffix;
-      result = result.replace(new RegExp(`\\b${oldId}\\b`, 'g'), newId);
-    }
+    const newId = `__new_${addCounter++}`;
+    const idMatch = line.match(/^(\s*(?:state|group|note|initial|final|choice|history|deephistory|fork|join))\s+(\S+)/);
+    if (!idMatch) return line;
+    const oldId = idMatch[2];
+    let result = line.replace(new RegExp(`^(\\s*(?:state|group|note|initial|final|choice|history|deephistory|fork|join)\\s+)${oldId.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`), `$1${newId}`);
+    result = result.replace(/\bat\s+([\d.]+)\s*,\s*([\d.]+)/g, (m, x, y) => `at ${parseFloat(x) + 2},${parseFloat(y) + 2}`);
+    const type = idMatch[1].trim();
+    newSel.push({type: type === 'state' ? 'state' : type, id: newId});
     return result;
   });
-
   let dsl = getDsl();
-  dsl = dsl + '\n' + pastedLines.join('\n');
+  dsl = dsl.trimEnd() + '\n' + pastedLines.join('\n') + '\n';
   setDsl(dsl);
+  sel = newSel;
   refresh();
 }
 
 // ═══════════════════════════════════════════════
 // Add Element Buttons
 // ═══════════════════════════════════════════════
-let addCounter = { state: 0, group: 0, initial: 0, final: 0, note: 0 };
+let addCounter = 1; // StableBlock compatible: single counter
 
 // Auto-Route: optimize transition port assignments to minimize crossings
 function autoRoute() {
@@ -3622,8 +3618,7 @@ function groupSelected() {
   const gw = Math.ceil((maxX + pad) / g) - gx;
   const gh = Math.ceil((maxY + pad) / g) - gy;
 
-  addCounter.group = (addCounter.group || 0) + 1;
-  const grpId = 'grp_' + addCounter.group;
+  const grpId = `__new_${addCounter++}`;
   const line = `group ${grpId} "Group" at ${gx},${gy} size ${gw}x${gh}`;
 
   pushHistory();
@@ -3678,32 +3673,27 @@ function addNewElement(type) {
 
   switch (type) {
     case 'state': {
-      addCounter.state++;
-      const id = 'state_' + addCounter.state;
+      const id = `__new_${addCounter++}`;
       line = `state ${id} "New State" at ${defX},${defY} size 8x4`;
       break;
     }
     case 'group': {
-      addCounter.group++;
-      const id = 'grp_' + addCounter.group;
+      const id = `__new_${addCounter++}`;
       line = `group ${id} "New Group" at 8,8 size 20x12`;
       break;
     }
     case 'initial': {
-      addCounter.initial++;
-      const id = 'ini_' + addCounter.initial;
+      const id = `__new_${addCounter++}`;
       line = `initial ${id} at ${parentState ? 0.5 : 5},${parentState ? defY : 5}`;
       break;
     }
     case 'final': {
-      addCounter.final++;
-      const id = 'fin_' + addCounter.final;
+      const id = `__new_${addCounter++}`;
       line = `final ${id} at ${parentState ? parentState.w - 1 : 30},${parentState ? defY : 5}`;
       break;
     }
     case 'note': {
-      addCounter.note++;
-      const id = 'note_' + addCounter.note;
+      const id = `__new_${addCounter++}`;
       line = `note ${id} "Annotation" at 5,5 size 8x2 color=#FEF3C7`;
       break;
     }

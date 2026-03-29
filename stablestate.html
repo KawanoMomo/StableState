@@ -2163,6 +2163,13 @@ function renderTable(parsed) {
         if (!input) { console.warn('pp-table-edit not found'); return; }
         const newVal = input.value.replace(/\n/g, ' ').trim();
         console.log('applyEdit:', field, stateId, evName, 'newVal:', newVal);
+        if (field === 'guard' || field === 'action') {
+          const _mt = parsed.transitions.filter(function(t) {
+            const fromEl = resolveStateRef(t.from, parsed);
+            return fromEl && fromEl.id === stateId && (t.event || '(none)') === evName;
+          });
+          console.log('matchingTrans:', _mt.length, _mt.map(t => t.from + '->' + t.to));
+        }
 
         if (field === 'entry' || field === 'do' || field === 'exit') {
           pushHistory();

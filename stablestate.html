@@ -1288,10 +1288,15 @@ function renderSVG(parsed) {
 
 
   // ─── 6. Transitions ───
-  // Arrow marker definition
+  // Arrow markers: one per unique color
+  const usedArrowColors = new Set();
+  for (const tr of parsed.transitions) usedArrowColors.add(tr.color || '#89DDFF');
   svg += `<defs>`;
-  svg += `<marker id="arrowHead" markerWidth="10" markerHeight="8" refX="10" refY="4" orient="auto">`;
-  svg += `<path d="M0,0 L10,4 L0,8 Z" fill="#89DDFF"/></marker>`;
+  for (const c of usedArrowColors) {
+    const markerId = 'arrow_' + c.replace('#', '');
+    svg += `<marker id="${markerId}" markerWidth="10" markerHeight="8" refX="10" refY="4" orient="auto">`;
+    svg += `<path d="M0,0 L10,4 L0,8 Z" fill="${c}"/></marker>`;
+  }
   svg += `</defs>`;
 
   // Helper: get bounding box {x, y, w, h} in pixels for a state or pseudo-state
@@ -1595,6 +1600,7 @@ function renderSVG(parsed) {
   }
 
   // Second pass: compute routes and render
+  const _dirCount = {}; // track same-direction duplicates for extra channel offset
   for (let ti = 0; ti < parsed.transitions.length; ti++) {
     const tr = parsed.transitions[ti];
     const info = transitionSides[ti];
@@ -1616,10 +1622,15 @@ function renderSVG(parsed) {
       const tgtIdx = edgeIndexMap[tgtKey + ':' + ti];
       const fromPt = getPortPoint(srcBox, srcSide, srcIdx, srcEdge.length);
       const toPt = getPortPoint(tgtBox, tgtSide, tgtIdx, tgtEdge.length);
-      // Channel offset based on position within unified group
+      // Channel offset: base from edge group + extra for same-pair duplicates
       const channelSpacing = 10;
-      const channelOffset = srcEdge.length <= 1 ? 0
+      let channelOffset = srcEdge.length <= 1 ? 0
         : (srcIdx - (srcEdge.length - 1) / 2) * channelSpacing;
+      // Extra spread for multiple transitions in same direction between same pair
+      const dirKey = tr.from + '->' + tr.to;
+      if (!_dirCount[dirKey]) _dirCount[dirKey] = 0;
+      const dirIdx = _dirCount[dirKey]++;
+      if (dirIdx > 0) channelOffset += dirIdx * 15;
       route = buildRoute(fromPt, toPt, srcSide, tgtSide, channelOffset);
     }
 
@@ -1650,10 +1661,11 @@ function renderSVG(parsed) {
     const sw = tr.width || 1.5;
     const sc = tr.color || '#89DDFF';
     const dashAttr = tr.style === 'dashed' ? ' stroke-dasharray="6 3"' : '';
+    const markerId = 'arrow_' + sc.replace('#', '');
     if (crossings.length === 0) {
       // Simple polyline
       const pts = route.map(p => `${p.x},${p.y}`).join(' ');
-      svg += `<polyline points="${pts}" fill="none" stroke="${sc}" stroke-width="${sw}"${dashAttr} marker-end="url(#arrowHead)"/>`;
+      svg += `<polyline points="${pts}" fill="none" stroke="${sc}" stroke-width="${sw}"${dashAttr} marker-end="url(#${markerId})"/>`;
     } else {
       // Path with bridge arcs (handles both horizontal and vertical crossings)
       let d = `M ${route[0].x},${route[0].y}`;
@@ -1684,7 +1696,7 @@ function renderSVG(parsed) {
           d += ` L ${a2.x},${a2.y}`;
         }
       }
-      svg += `<path d="${d}" fill="none" stroke="${sc}" stroke-width="${sw}"${dashAttr} marker-end="url(#arrowHead)"/>`;
+      svg += `<path d="${d}" fill="none" stroke="${sc}" stroke-width="${sw}"${dashAttr} marker-end="url(#${markerId})"/>`;
     }
 
     // Store route for future crossing detection

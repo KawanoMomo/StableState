@@ -4,6 +4,7 @@ Loop/fix logic is intentionally NOT here — the calling LLM drives the fix loop
 from __future__ import annotations
 import json
 from .. import state
+from ..core.parser import resolve_state_ref
 from ..core.routing import compute_port_side, get_port_point, build_route, route_midpoint
 
 MARGIN = 1.0
@@ -110,21 +111,46 @@ def _get_all_routes(d):
             reverse_set.add(i)
         seen.add(pair)
 
-    routes, labels = [], []
+    # Pre-compute side directions per transition for route_index calculation
+    side_dir: list[tuple[str, str] | None] = []
+    src_tgt_list: list[tuple | None] = []
     for ti, t in enumerate(d.transitions):
-        src = sm.get(t.from_id) or pm.get(t.from_id)
-        tgt = sm.get(t.to_id) or pm.get(t.to_id)
+        src = resolve_state_ref(t.from_id, d) or sm.get(t.from_id) or pm.get(t.from_id)
+        tgt = resolve_state_ref(t.to_id, d) or sm.get(t.to_id) or pm.get(t.to_id)
+        src_tgt_list.append((src, tgt) if src and tgt else None)
         if not src or not tgt or t.from_id == t.to_id:
-            routes.append([]); labels.append(None); continue
+            side_dir.append(None)
+            continue
         sb, tb = _get_abs_box(src, d), _get_abs_box(tgt, d)
         if ti in reverse_set:
             fss, _ = compute_port_side(sb, tb)
             ss, ts = ("bottom", "bottom") if fss in ("right", "left") else ("right", "right")
         else:
             ss, ts = compute_port_side(sb, tb)
+        side_dir.append((ss, ts))
+
+    # Compute route_index: count same-direction transitions seen before each
+    route_indices: list[int] = []
+    dir_counter: dict[tuple[str, str], int] = {}
+    for sd in side_dir:
+        if sd is None:
+            route_indices.append(0)
+        else:
+            idx = dir_counter.get(sd, 0)
+            route_indices.append(idx)
+            dir_counter[sd] = idx + 1
+
+    routes, labels = [], []
+    for ti, t in enumerate(d.transitions):
+        pair = src_tgt_list[ti]
+        if not pair or t.from_id == t.to_id:
+            routes.append([]); labels.append(None); continue
+        src, tgt = pair
+        sb, tb = _get_abs_box(src, d), _get_abs_box(tgt, d)
+        ss, ts = side_dir[ti]
         fp = get_port_point(sb, ss)
         tp = get_port_point(tb, ts)
-        route = build_route(fp, tp, ss, ts)
+        route = build_route(fp, tp, ss, ts, route_index=route_indices[ti])
         routes.append(route)
         if t.event or t.guard or t.action:
             mid = route_midpoint(route)
@@ -205,10 +231,10 @@ def ss_validate_layout() -> str:
     for ti, t in enumerate(d.transitions):
         route = routes[ti]
         if not route: continue
-        src = sm.get(t.from_id) or pm.get(t.from_id)
-        tgt = sm.get(t.to_id) or pm.get(t.to_id)
+        src = resolve_state_ref(t.from_id, d) or sm.get(t.from_id) or pm.get(t.from_id)
+        tgt = resolve_state_ref(t.to_id, d) or sm.get(t.to_id) or pm.get(t.to_id)
         if not src or not tgt: continue
-        skip = {t.from_id, t.to_id}
+        skip = {t.from_id, t.to_id, src.id, tgt.id}
         for el in [src, tgt]:
             pid = getattr(el, "parent", None)
             while pid:
@@ -229,8 +255,8 @@ def ss_validate_layout() -> str:
     for ti, t in enumerate(d.transitions):
         route = routes[ti]
         if not route: continue
-        src = sm.get(t.from_id) or pm.get(t.from_id)
-        tgt = sm.get(t.to_id) or pm.get(t.to_id)
+        src = resolve_state_ref(t.from_id, d) or sm.get(t.from_id) or pm.get(t.from_id)
+        tgt = resolve_state_ref(t.to_id, d) or sm.get(t.to_id) or pm.get(t.to_id)
         if not src or not tgt: continue
         for ps in d.pseudo_states:
             if ps.id in (t.from_id, t.to_id): continue
@@ -272,14 +298,16 @@ def ss_validate_layout() -> str:
         src_id, tgt_id = tid_parts[0], tid_parts[1]
         skip_ids = {src_id, tgt_id}
         for eid in [src_id, tgt_id]:
-            el = sm.get(eid) or pm.get(eid)
+            el = resolve_state_ref(eid, d) or sm.get(eid) or pm.get(eid)
+            if el:
+                skip_ids.add(el.id)
             pid = getattr(el, "parent", None) if el else None
             while pid:
                 skip_ids.add(pid); p = sm.get(pid); pid = p.parent if p else None
         for s in d.states:
             if s.id in skip_ids: continue
-            src_el = sm.get(src_id) or pm.get(src_id)
-            tgt_el2 = sm.get(tgt_id) or pm.get(tgt_id)
+            src_el = resolve_state_ref(src_id, d) or sm.get(src_id) or pm.get(src_id)
+            tgt_el2 = resolve_state_ref(tgt_id, d) or sm.get(tgt_id) or pm.get(tgt_id)
             src_parent = getattr(src_el, "parent", None) if src_el else None
             tgt_parent = getattr(tgt_el2, "parent", None) if tgt_el2 else None
             if s.parent and (s.parent == src_parent or s.parent == tgt_parent): continue

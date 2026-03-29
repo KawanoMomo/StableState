@@ -2441,7 +2441,7 @@ function renderProps() {
         html += `</div>`;
         // Flip + Delete
         html += `<div style="display:flex;gap:2px;margin-bottom:4px">`;
-        html += `<button class="tb" style="flex:1;font-size:10px;padding:2px" onclick="flipTrans('${tf}','${tt}')">⇄ 反転</button>`;
+        html += `<button class="tb" style="flex:1;font-size:10px;padding:2px" onclick="flipTrans('${tf}','${tt}','${te}','${tg}')">⇄ 反転</button>`;
         html += `<button class="tb" style="flex:1;font-size:10px;padding:2px;border-color:#EF4444;color:#FCA5A5" onclick="removeTransExact('${tf}','${tt}','${te}','${tg}')">✕ 削除</button>`;
         html += `</div>`;
         // Color
@@ -3779,17 +3779,26 @@ function removeTransExact(from, to, event, guard) {
   refresh();
 }
 
-function flipTrans(a, b) {
+function flipTrans(from, to, event, guard) {
   pushHistory();
   let dsl = getDsl();
   const lines = dsl.split('\n');
   for (let i = 0; i < lines.length; i++) {
-    const m = lines[i].trim().match(/^(\S+)(\s*->\s*)(\S+)(.*)/);
+    const t = lines[i].trim();
+    const m = t.match(/^(\S+)(\s*->\s*)(\S+)(.*)/);
     if (!m) continue;
-    if ((m[1] === a && m[3] === b) || (m[1] === b && m[3] === a)) {
-      lines[i] = lines[i].replace(/^(\s*)(\S+)(\s*->\s*)(\S+)/, `$1${m[3]}$3${m[1]}`);
-      break;
+    if (m[1] !== from || m[3] !== to) continue;
+    // Match event/guard to identify exact transition
+    const rest = m[4];
+    let le = '', lg = '';
+    if (rest.trim().startsWith(':')) {
+      const d = rest.trim().slice(1).trim();
+      const em = d.match(/^(\S*)/); if (em) le = em[1];
+      const gm = d.match(/\[([^\]]*)\]/); if (gm) lg = gm[1];
     }
+    if (le !== (event || '') || lg !== (guard || '')) continue;
+    lines[i] = lines[i].replace(/^(\s*)(\S+)(\s*->\s*)(\S+)/, `$1${m[3]}$3${m[1]}`);
+    break;
   }
   setDsl(lines.join('\n'));
   refresh();

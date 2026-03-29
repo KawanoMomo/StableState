@@ -2160,8 +2160,9 @@ function renderTable(parsed) {
       // Apply handler
       function applyEdit() {
         const input = document.getElementById('pp-table-edit');
-        if (!input) return;
+        if (!input) { console.warn('pp-table-edit not found'); return; }
         const newVal = input.value.replace(/\n/g, ' ').trim();
+        console.log('applyEdit:', field, stateId, evName, 'newVal:', newVal);
 
         if (field === 'entry' || field === 'do' || field === 'exit') {
           pushHistory();

@@ -297,6 +297,22 @@ function resolveSelType(id) {
   return 'state';
 }
 
+// Build dot-path reference for a state/pseudo (e.g. "active.accel")
+function stateDotPath(id) {
+  if (!parsed) return id;
+  const el = parsed.stateMap[id] || parsed.pseudoMap[id];
+  if (!el || !el.parent) return id;
+  // Walk up parent chain
+  const parts = [id];
+  let pid = el.parent;
+  while (pid) {
+    parts.unshift(pid);
+    const p = parsed.stateMap[pid];
+    pid = p ? p.parent : null;
+  }
+  return parts.join('.');
+}
+
 // Interaction state
 let annotationMode = false; // annotation mode: notes visible + editable, normal elements dimmed + non-interactive
 // dragState/resizeState replaced by setupInteractions() closures
@@ -1695,14 +1711,7 @@ function renderSVG(parsed) {
     // Store route for future crossing detection
     allRoutes.push(route);
 
-    // Labels — position along route with direction-aware offset
-    // Offset labels for multiple transitions between same state pair
-    const _pk = pairKey(tr.from, tr.to);
-    const _pairList = pairMap[_pk] || [ti];
-    const _pairIdx = _pairList.indexOf(ti);
-    const _pairN = _pairList.length;
-    const _labelShift = _pairN <= 1 ? 0 : (_pairIdx - (_pairN - 1) / 2) * 16;
-
+    // Labels — positioned at each route's own midpoint (routes are separated by port distribution)
     const hasLabel = tr.event || tr.guard || tr.action;
     if (hasLabel) {
       const mid = routeMidpoint(route);
@@ -1735,13 +1744,13 @@ function renderSVG(parsed) {
       if (midSegHoriz) {
         for (let li = 0; li < labelLines.length; li++) {
           const ll = labelLines[li];
-          const ly = mid.y - 6 - (labelLines.length - 1 - li) * 13 + _labelShift;
+          const ly = mid.y - 6 - (labelLines.length - 1 - li) * 13;
           svg += `<text x="${mid.x}" y="${ly}" text-anchor="middle" font-family="${sans}" font-size="${ll.size}" fill="${ll.color}" style="pointer-events:none">${esc(ll.text)}</text>`;
         }
       } else {
         for (let li = 0; li < labelLines.length; li++) {
           const ll = labelLines[li];
-          const ly = mid.y + li * 13 + _labelShift;
+          const ly = mid.y + li * 13;
           svg += `<text x="${mid.x + 8}" y="${ly}" text-anchor="start" font-family="${sans}" font-size="${ll.size}" fill="${ll.color}" style="pointer-events:none">${esc(ll.text)}</text>`;
         }
       }
@@ -2438,8 +2447,9 @@ function renderProps() {
       }
       // Always show connect buttons (multiple transitions allowed)
       html += `<div style="display:flex;gap:4px;margin-top:6px">`;
-      html += `<button class="tb tb-accent" style="flex:1;font-size:11px" onclick="connectTwo('${idA}','${idB}')">${esc(idA)} &rarr; ${esc(idB)}</button>`;
-      html += `<button class="tb tb-accent" style="flex:1;font-size:11px" onclick="connectTwo('${idB}','${idA}')">${esc(idB)} &rarr; ${esc(idA)}</button>`;
+      const dpA = esc(stateDotPath(idA)), dpB = esc(stateDotPath(idB));
+      html += `<button class="tb tb-accent" style="flex:1;font-size:11px" onclick="connectTwo('${idA}','${idB}')">${dpA} &rarr; ${dpB}</button>`;
+      html += `<button class="tb tb-accent" style="flex:1;font-size:11px" onclick="connectTwo('${idB}','${idA}')">${dpB} &rarr; ${dpA}</button>`;
       html += `</div>`;
       html += `</div>`;
     }
@@ -3394,7 +3404,7 @@ function setupInteractions() {
             const evName = prompt('Event name (optional):');
             pushHistory();
             let dsl = getDsl();
-            dsl = addTransition(connectFrom, id, evName || null, null, null, null, dsl);
+            dsl = addTransition(stateDotPath(connectFrom), stateDotPath(id), evName || null, null, null, null, dsl);
             setDsl(dsl);
           }
           connectFrom = null;
@@ -3548,11 +3558,12 @@ document.getElementById('svg-wrap').addEventListener('wheel', function(e) {
 // ═══════════════════════════════════════════════
 function connectSelected() {
   if (sel.length !== 2) return;
-  const ids = sel.map(s => s.id);
+  const a = stateDotPath(sel[0].id);
+  const b = stateDotPath(sel[1].id);
   const event = prompt('Event name (optional):');
   pushHistory();
   let dsl = getDsl();
-  dsl = addTransition(ids[0], ids[1], event || null, null, null, null, dsl);
+  dsl = addTransition(a, b, event || null, null, null, null, dsl);
   setDsl(dsl);
   refresh();
 }
@@ -3705,7 +3716,7 @@ function connectTwo(a, b) {
   const event = prompt('Event name (optional):');
   pushHistory();
   let dsl = getDsl();
-  dsl = addTransition(a, b, event || null, null, null, null, dsl);
+  dsl = addTransition(stateDotPath(a), stateDotPath(b), event || null, null, null, null, dsl);
   setDsl(dsl);
   refresh();
 }

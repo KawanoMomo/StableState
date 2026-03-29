@@ -1380,10 +1380,11 @@ function renderSVG(parsed) {
   // Helper: build orthogonal route between two points
   // channelOffset: pixel offset for the intermediate channel to avoid overlap
   //   when multiple transitions share the same routing corridor
-  function buildRoute(fromPt, toPt, fromSide, toSide, channelOffset) {
+  function buildRoute(fromPt, toPt, fromSide, toSide, channelOffset, routeIndex) {
     const points = [fromPt];
     const margin = 20;
     const co = channelOffset || 0; // channel offset in pixels
+    const ri = (routeIndex || 0) * 12; // extra spread per route for U-shape legs
 
     // same-axis opposite sides
     if (fromSide === 'right' && toSide === 'left') {
@@ -1423,24 +1424,24 @@ function renderSVG(parsed) {
         points.push(toPt);
       }
     }
-    // same sides — U-shape
+    // same sides — U-shape (ri spreads legs for multiple routes)
     else if (fromSide === 'right' && toSide === 'right') {
-      const outX = Math.max(fromPt.x, toPt.x) + margin + Math.abs(co);
+      const outX = Math.max(fromPt.x, toPt.x) + margin + ri;
       points.push({ x: outX, y: fromPt.y });
       points.push({ x: outX, y: toPt.y });
       points.push(toPt);
     } else if (fromSide === 'left' && toSide === 'left') {
-      const outX = Math.min(fromPt.x, toPt.x) - margin - Math.abs(co);
+      const outX = Math.min(fromPt.x, toPt.x) - margin - ri;
       points.push({ x: outX, y: fromPt.y });
       points.push({ x: outX, y: toPt.y });
       points.push(toPt);
     } else if (fromSide === 'top' && toSide === 'top') {
-      const outY = Math.min(fromPt.y, toPt.y) - margin - Math.abs(co);
+      const outY = Math.min(fromPt.y, toPt.y) - margin - ri;
       points.push({ x: fromPt.x, y: outY });
       points.push({ x: toPt.x, y: outY });
       points.push(toPt);
     } else if (fromSide === 'bottom' && toSide === 'bottom') {
-      const outY = Math.max(fromPt.y, toPt.y) + margin + Math.abs(co);
+      const outY = Math.max(fromPt.y, toPt.y) + margin + ri;
       points.push({ x: fromPt.x, y: outY });
       points.push({ x: toPt.x, y: outY });
       points.push(toPt);
@@ -1645,7 +1646,12 @@ function renderSVG(parsed) {
       const channelSpacing = 10;
       const channelOffset = srcEdge.length <= 1 ? 0
         : (srcIdx - (srcEdge.length - 1) / 2) * channelSpacing;
-      route = buildRoute(fromPt, toPt, srcSide, tgtSide, channelOffset);
+      // Route index: count same-direction transitions between this pair for U-shape leg spread
+      const dirKey = tr.from + '\u2192' + tr.to;
+      if (!_dirIdx) var _dirIdx = {};
+      if (_dirIdx[dirKey] == null) _dirIdx[dirKey] = 0;
+      const routeIdx = _dirIdx[dirKey]++;
+      route = buildRoute(fromPt, toPt, srcSide, tgtSide, channelOffset, routeIdx);
     }
 
     // Crossing detection: check this route against all previously rendered routes

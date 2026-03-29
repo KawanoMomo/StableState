@@ -1962,7 +1962,7 @@ function renderTable(parsed) {
     const leafRow = lc.depth;
     const prefix = lc.isInitial ? '>' : '';
     headerCells[leafRow][ci] = {
-      label: prefix + lc.state.label + (lc.isSelf ? ' ✱' : ''),
+      label: lc.isSelf ? '' : prefix + lc.state.label,
       stateId: lc.isSelf ? lc.id + '_self' : lc.id,
       colspan: 1,
       rowspan: totalHeaderRows - leafRow,

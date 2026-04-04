@@ -2282,8 +2282,12 @@ function renderTable(parsed) {
         const ev = evName === '(none)' ? null : evName;
         pushHistory();
         let dsl = getDsl();
-        if (existing) dsl = removeTransition(existing.from, existing.to, existing.event, existing.guard, dsl);
-        dsl = addTransition(stateDotPath(stateId), targetId, ev, guard || null, action || null, kind, dsl);
+        if (existing) {
+          dsl = replaceTransition(existing.from, existing.to, existing.event, existing.guard,
+            stateDotPath(stateId), targetId, ev, guard || null, action || null, kind, dsl);
+        } else {
+          dsl = addTransition(stateDotPath(stateId), targetId, ev, guard || null, action || null, kind, dsl);
+        }
         setDsl(dsl);
         refresh();
       });

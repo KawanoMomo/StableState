@@ -93,7 +93,8 @@ body { background: var(--bg); color: var(--text); font-family: 'IBM Plex Sans','
 .st-table th, .st-table td { border-bottom:1px solid var(--border); border-right:1px solid var(--border); padding:4px 8px; text-align:left; }
 .st-table th:first-child, .st-table td:first-child { border-left:1px solid var(--border); }
 .st-table thead tr:first-child th { border-top:1px solid var(--border); }
-.st-table th { background:var(--panel); color:var(--accent); font-weight:600; font-size:10px; text-transform:uppercase; position:sticky; top:0; z-index:1; }
+.st-table th { background:var(--panel); color:var(--accent); font-weight:600; font-size:10px; text-transform:uppercase; }
+.st-table thead { position:relative; z-index:1; }
 .st-table td { background:var(--editor); color:var(--text); }
 .st-table td:first-child { background:var(--panel); }
 .st-table .ev-header td { background:#2a2233; }
@@ -2199,14 +2200,14 @@ function renderTable(parsed) {
   // ─── Render single table ───
   tableEl.innerHTML = '<thead>' + headHtml + '</thead><tbody>' + bodyHtml + '</tbody>';
 
-  // ─── Fix sticky top for multi-row header (rowspan + sticky workaround) ───
-  requestAnimationFrame(function() {
-    const thead = tableEl.querySelector('thead');
-    if (!thead) return;
-    thead.querySelectorAll('th').forEach(function(th) {
-      th.style.top = th.offsetTop + 'px';
+  // ─── Scroll-driven header freeze (translateY on thead) ───
+  const tableWrap = document.getElementById('table-wrap');
+  const thead = tableEl.querySelector('thead');
+  if (tableWrap && thead) {
+    tableWrap.addEventListener('scroll', function() {
+      thead.style.transform = 'translateY(' + tableWrap.scrollTop + 'px)';
     });
-  });
+  }
 
   // ─── Wire up cell click → show editor in property panel ───
   let selectedCell = null;

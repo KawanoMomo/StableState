@@ -2500,11 +2500,21 @@ function renderTable(parsed) {
       });
       const existing = mt.length > 0 ? mt[0] : null;
       const curGuard = existing ? existing.guard || '' : '';
-      const curAction = existing ? existing.action || '' : '';
-      const curTargetId = existing ? (existing.kind === 'internal' ? '' : (resolveStateRef(existing.to, parsed) || {}).id || '') : '';
+      let curAction = existing ? existing.action || '' : '';
+      let curTargetId = existing ? (existing.kind === 'internal' ? '' : (resolveStateRef(existing.to, parsed) || {}).id || '') : '';
+      // Reverse-convert choice branches for display
+      let isChoiceMode = false;
+      if (existing) {
+        const ifElse = actionToIfElse(existing.to, parsed);
+        if (ifElse) {
+          curAction = ifElse;
+          curTargetId = ''; // Clear choice ID from dropdown
+          isChoiceMode = true;
+        }
+      }
 
       html += `<div class="prop-sub" style="margin-bottom:4px">${esc(evName || '')}</div>`;
-      html += `<div class="prop-sub">target</div>`;
+      html += `<div class="prop-sub">target${isChoiceMode ? ' <span style="color:#475569;font-style:italic">(フォールバック)</span>' : ''}</div>`;
       html += `<select class="prop-select" id="pp-table-target"><option value="">- (@internal)</option>`;
       for (const s of parsed.states) {
         const isSel = s.id === curTargetId ? ' selected' : '';
@@ -2513,8 +2523,11 @@ function renderTable(parsed) {
       html += `</select>`;
       html += `<div class="prop-sub" style="margin-top:4px">[guard]</div>`;
       html += `<input class="prop-input" id="pp-table-guard" value="${esc(curGuard)}" placeholder="ガード条件">`;
-      html += `<div class="prop-sub" style="margin-top:4px">/ action</div>`;
-      html += `<textarea class="prop-input" id="pp-table-action" style="height:60px;resize:vertical;font-size:11px;line-height:1.4;text-align:left" placeholder="アクション">${esc(curAction).replace(/\\n/g, '\n')}</textarea>`;
+      html += `<div style="display:flex;align-items:center;gap:6px;margin-top:4px">`;
+      html += `<div class="prop-sub" style="margin:0">/ action</div>`;
+      if (!isChoiceMode) html += `<button class="tb" id="pp-branch-btn" style="font-size:9px;padding:2px 6px;color:#C3E88D;border-color:#C3E88D">+ 分岐</button>`;
+      html += `</div>`;
+      html += `<textarea class="prop-input" id="pp-table-action" style="height:${isChoiceMode ? 100 : 60}px;resize:vertical;font-size:11px;line-height:1.4;text-align:left;font-family:Consolas,monospace" placeholder="アクション">${esc(curAction).replace(/\\n/g, '\n')}</textarea>`;
       html += `<button class="tb tb-accent" id="pp-table-apply" style="width:100%;margin-top:6px">適用</button>`;
       if (existing) html += `<button class="tb" id="pp-table-delete" style="width:100%;margin-top:4px;border-color:#EF4444;color:#FCA5A5">遷移を削除</button>`;
       html += `</div>`;
@@ -2523,6 +2536,29 @@ function renderTable(parsed) {
       if (field === 'guard') document.getElementById('pp-table-guard').focus();
       else if (field === 'action') document.getElementById('pp-table-action').focus();
       else document.getElementById('pp-table-target').focus();
+
+      // + 分岐 button: insert template
+      const branchBtn = document.getElementById('pp-branch-btn');
+      if (branchBtn) {
+        branchBtn.addEventListener('click', function() {
+          const ta = document.getElementById('pp-table-action');
+          ta.value = 'if []\n  -> \nelse\n  -> ';
+          ta.style.height = '100px';
+          ta.focus();
+          ta.setSelectionRange(4, 4); // cursor inside []
+        });
+      }
+
+      // Tab key inserts 2 spaces in action textarea
+      document.getElementById('pp-table-action').addEventListener('keydown', function(e) {
+        if (e.key === 'Tab') {
+          e.preventDefault();
+          const ta = this;
+          const start = ta.selectionStart;
+          ta.value = ta.value.substring(0, start) + '  ' + ta.value.substring(ta.selectionEnd);
+          ta.selectionStart = ta.selectionEnd = start + 2;
+        }
+      });
 
       document.getElementById('pp-table-apply').addEventListener('click', function() {
         const target = document.getElementById('pp-table-target').value;

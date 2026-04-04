@@ -2210,7 +2210,7 @@ function renderTable(parsed) {
     const dataCells = firstDataRow.querySelectorAll('td');
     // Measure body cell widths and apply to head table via colgroup
     const widths = [];
-    dataCells.forEach(function(td) { widths.push(td.getBoundingClientRect().width); });
+    dataCells.forEach(function(td) { widths.push(Math.ceil(td.getBoundingClientRect().width)); });
     // Apply as col widths to head table
     let colHtml = '<colgroup>';
     widths.forEach(function(w) { colHtml += `<col style="width:${w}px">`; });

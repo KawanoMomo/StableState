@@ -715,21 +715,22 @@ function parseDSL(text) {
         continue;
       }
 
-      // Parse optional : Event [Guard] / Action @kind width=N style=S color=C
-      let event = null, guard = null, action = null, kind = null, width = null, style = null, color = null;
+      // Parse optional : Event [Guard] / Action @kind width=N style=S color=C default=X
+      let event = null, guard = null, action = null, kind = null, width = null, style = null, color = null, defaultTarget = null;
       if (rest.startsWith(':')) {
         const detail = rest.slice(1).trim();
         let remaining = detail;
-        // Parse trailing key=value attributes (width, style, color) from the end
-        const attrRe = /\b(width|style|color)=(\S+)/g;
+        // Parse trailing key=value attributes (width, style, color, default) from the end
+        const attrRe = /\b(width|style|color|default)=(\S+)/g;
         let attrMatch;
         while ((attrMatch = attrRe.exec(remaining)) !== null) {
           if (attrMatch[1] === 'width') width = parseFloat(attrMatch[2]);
           else if (attrMatch[1] === 'style') style = attrMatch[2];
           else if (attrMatch[1] === 'color') color = attrMatch[2];
+          else if (attrMatch[1] === 'default') defaultTarget = attrMatch[2];
         }
         // Strip all key=value attrs from remaining
-        remaining = remaining.replace(/\b(width|style|color)=\S+/g, '').trim();
+        remaining = remaining.replace(/\b(width|style|color|default)=\S+/g, '').trim();
         // Parse @kind from the end
         const kindMatch = remaining.match(/@(local|external|internal)\s*$/);
         if (kindMatch) {
@@ -762,6 +763,7 @@ function parseDSL(text) {
         width: width,
         style: style,
         color: color,
+        defaultTarget: defaultTarget,
         label: rest.startsWith(':') ? rest.slice(1).trim() : null,
         line: lineNum
       });
@@ -1203,12 +1205,30 @@ function applyChoiceBranches(stateId, evName, branches, defaultTarget, parsed, d
     }
   }
 
+  // Helper: set default= attribute on a transition line in DSL
+  function setDefaultAttr(dsl, fromId, toId, defVal) {
+    const lines = dsl.split('\n');
+    for (let i = 0; i < lines.length; i++) {
+      const trimmed = lines[i].trim();
+      const m = trimmed.match(/^(\S+)\s*->\s*(\S+)(.*)$/);
+      if (m && m[1] === fromId && m[2] === toId) {
+        // Remove existing default= attr
+        lines[i] = lines[i].replace(/\s*default=\S+/g, '');
+        if (defVal) lines[i] = lines[i].trimEnd() + ' default=' + defVal;
+        break;
+      }
+    }
+    return lines.join('\n');
+  }
+
   if (choiceId) {
     // Existing choice: remove all outgoing transitions
     const choiceOutgoing = parsed.transitions.filter(t => t.from === choiceId);
     for (const t of choiceOutgoing) {
       dsl = removeTransition(t.from, t.to, t.event, t.guard, dsl);
     }
+    // Update default= on source transition
+    dsl = setDefaultAttr(dsl, fromPath, choiceId, defaultTarget);
   } else {
     // New choice
     maxAuto++;
@@ -1229,6 +1249,8 @@ function applyChoiceBranches(stateId, evName, branches, defaultTarget, parsed, d
     } else {
       dsl = addTransition(fromPath, choiceId, ev, null, null, null, dsl);
     }
+    // Add default= attribute
+    dsl = setDefaultAttr(dsl, fromPath, choiceId, defaultTarget);
   }
 
   // Add branch transitions from choice
@@ -2414,11 +2436,10 @@ function renderTable(parsed) {
         } else {
           const tgtPs = parsed.pseudoMap[matching[0].to];
           if (tgtPs && tgtPs.type === 'choice') {
-            // Choice: show fallback target (guardless/else branch), or '-' if none
-            const fallback = parsed.transitions.find(t => t.from === matching[0].to && !t.guard);
-            if (fallback) {
-              const fbEl = resolveStateRef(fallback.to, parsed);
-              val = fbEl ? fbEl.label || fbEl.id : fallback.to;
+            // Choice: show defaultTarget attribute, or '-' if none
+            if (matching[0].defaultTarget) {
+              const dtEl = resolveStateRef(matching[0].defaultTarget, parsed);
+              val = dtEl ? dtEl.label || dtEl.id : matching[0].defaultTarget;
             }
           } else {
             const tgtEl = resolveStateRef(matching[0].to, parsed);
@@ -2508,7 +2529,7 @@ function renderTable(parsed) {
         const ifElse = actionToIfElse(existing.to, parsed);
         if (ifElse) {
           curAction = ifElse;
-          curTargetId = ''; // Clear choice ID from dropdown
+          curTargetId = existing.defaultTarget || ''; // Show defaultTarget, not choice ID
           isChoiceMode = true;
         }
       }

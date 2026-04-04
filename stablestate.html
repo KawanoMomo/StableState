@@ -1104,6 +1104,193 @@ function replaceTransition(oldFrom, oldTo, oldEvent, oldGuard, newFrom, newTo, n
   return dsl + '\n' + newLine;
 }
 
+// Parse if/else action syntax into branch array
+// Returns null if not if/else with transitions, or { branches: [{guard, target, action}], hasTransition: bool }
+function parseIfElseAction(text) {
+  if (!text) return null;
+  const lines = text.split('\n');
+  if (!lines[0].trim().startsWith('if [')) return null;
+
+  function getIndent(line) { const m = line.match(/^( *)/); return m ? m[1].length : 0; }
+
+  function parseLevel(startIdx, baseIndent) {
+    const branches = [];
+    let i = startIdx;
+    while (i < lines.length) {
+      const indent = getIndent(lines[i]);
+      if (indent < baseIndent) break;
+      if (indent > baseIndent) { i++; continue; }
+      const line = lines[i].trim();
+      let guard = null;
+
+      if (line.startsWith('if [') || line.startsWith('elif [') || line.startsWith('else if [')) {
+        const gm = line.match(/\[([^\]]*)\]/);
+        guard = gm ? gm[1].trim() : null;
+      } else if (line === 'else') {
+        guard = null;
+      } else {
+        i++;
+        continue;
+      }
+
+      // Collect body lines (indented deeper than keyword)
+      i++;
+      const bodyLines = [];
+      while (i < lines.length && (getIndent(lines[i]) > baseIndent || lines[i].trim() === '')) {
+        bodyLines.push(lines[i].trim());
+        i++;
+      }
+
+      // Parse body: find -> target and collect actions
+      let target = null;
+      let targetAction = null;
+      const actions = [];
+      for (const bl of bodyLines) {
+        if (bl === '') continue;
+        const tm = bl.match(/^->\s*(\S+)(?:\s*\/\s*(.*))?$/);
+        if (tm) {
+          target = tm[1];
+          targetAction = tm[2] ? tm[2].trim() : null;
+        } else {
+          actions.push(bl);
+        }
+      }
+
+      // Combine actions: body actions + target action (if any)
+      const allActions = [...actions];
+      if (targetAction) allActions.push(targetAction);
+      const actionStr = allActions.length > 0 ? allActions.join('\\n') : null;
+
+      branches.push({ guard: guard, target: target, action: actionStr });
+    }
+    return branches;
+  }
+
+  const branches = parseLevel(0, 0);
+  if (branches.length === 0) return null;
+
+  // Check if any branch has a transition (->)
+  const hasTransition = branches.some(b => b.target !== null);
+  return { branches: branches, hasTransition: hasTransition };
+}
+
+// Apply if/else branches as choice pseudo-state + transitions in DSL
+function applyChoiceBranches(stateId, evName, branches, defaultTarget, parsed, dsl) {
+  const ev = evName === '(none)' ? null : evName;
+  const fromPath = stateDotPath(stateId);
+
+  // Find next auto ID
+  let maxAuto = 0;
+  for (const ps of parsed.pseudoStates) {
+    const am = ps.id.match(/^c_auto_(\d+)$/);
+    if (am) maxAuto = Math.max(maxAuto, parseInt(am[1]));
+  }
+  // Also scan DSL text for c_auto_ IDs (covers IDs added during this call)
+  const dslAutoMatches = dsl.matchAll(/c_auto_(\d+)/g);
+  for (const m of dslAutoMatches) {
+    maxAuto = Math.max(maxAuto, parseInt(m[1]));
+  }
+
+  // Search for existing choice from this state+event
+  let choiceId = null;
+  for (const t of parsed.transitions) {
+    const fromEl = resolveStateRef(t.from, parsed);
+    if (fromEl && fromEl.id === stateId && (t.event || null) === ev) {
+      if (parsed.pseudoMap[t.to] && parsed.pseudoMap[t.to].type === 'choice') {
+        choiceId = t.to;
+        break;
+      }
+    }
+  }
+
+  if (choiceId) {
+    // Existing choice: remove all outgoing transitions
+    const choiceOutgoing = parsed.transitions.filter(t => t.from === choiceId);
+    for (const t of choiceOutgoing) {
+      dsl = removeTransition(t.from, t.to, t.event, t.guard, dsl);
+    }
+  } else {
+    // New choice
+    maxAuto++;
+    choiceId = 'c_auto_' + maxAuto;
+    const srcState = parsed.stateMap[stateId];
+    const choiceX = srcState ? srcState.x + srcState.w + 2 : 10;
+    const choiceY = srcState ? srcState.y + Math.floor(srcState.h / 2) : 10;
+    dsl = dsl.trimEnd() + '\nchoice ' + choiceId + ' at ' + choiceX + ',' + choiceY + '\n';
+
+    // Point source transition to the choice
+    const existingTrans = parsed.transitions.find(t => {
+      const fromEl = resolveStateRef(t.from, parsed);
+      return fromEl && fromEl.id === stateId && (t.event || null) === ev;
+    });
+    if (existingTrans) {
+      dsl = replaceTransition(existingTrans.from, existingTrans.to, existingTrans.event, existingTrans.guard,
+        fromPath, choiceId, ev, null, null, null, dsl);
+    } else {
+      dsl = addTransition(fromPath, choiceId, ev, null, null, null, dsl);
+    }
+  }
+
+  // Add branch transitions from choice
+  let hasElse = false;
+  for (const b of branches) {
+    if (!b.guard) hasElse = true;
+    if (b.target) {
+      const targetPath = stateDotPath(b.target);
+      dsl = addTransition(choiceId, targetPath, null, b.guard, b.action, null, dsl);
+    } else if (defaultTarget) {
+      // Branch without -> but has actions: use defaultTarget
+      const targetPath = stateDotPath(defaultTarget);
+      dsl = addTransition(choiceId, targetPath, null, b.guard, b.action, null, dsl);
+    }
+  }
+
+  // Add fallback (implicit else) from defaultTarget if no explicit else
+  if (!hasElse && defaultTarget) {
+    const targetPath = stateDotPath(defaultTarget);
+    dsl = addTransition(choiceId, targetPath, null, null, null, null, dsl);
+  }
+
+  return dsl;
+}
+
+// Reverse-convert choice branches to if/else action text
+function actionToIfElse(transitionTo, parsed) {
+  const ps = parsed.pseudoMap[transitionTo];
+  if (!ps || ps.type !== 'choice') return null;
+
+  const outgoing = parsed.transitions.filter(t => t.from === transitionTo);
+  if (outgoing.length === 0) return null;
+
+  const parts = [];
+  let isFirst = true;
+  for (const t of outgoing) {
+    const tgtEl = resolveStateRef(t.to, parsed);
+    const targetLabel = tgtEl ? tgtEl.id : t.to;
+
+    let keyword;
+    if (t.guard) {
+      keyword = isFirst ? 'if' : 'elif';
+      keyword += ' [' + t.guard + ']';
+    } else {
+      keyword = 'else';
+    }
+
+    // Build body lines
+    const bodyLines = [];
+    if (t.action) {
+      const actionParts = t.action.split('\\n');
+      for (const ap of actionParts) bodyLines.push('  ' + ap);
+    }
+    bodyLines.push('  -> ' + targetLabel);
+
+    parts.push(keyword + '\n' + bodyLines.join('\n'));
+    isFirst = false;
+  }
+
+  return parts.join('\n');
+}
+
 // Update a specific field of a matching transition line
 function updateTransition(from, to, event, guard, field, val, dsl) {
   const lines = dsl.split('\n');

@@ -2496,10 +2496,13 @@ function renderTable(parsed) {
       const existing = mt.length > 0 ? mt[0] : null;
       const curGuard = existing ? existing.guard || '' : '';
       let curAction = existing ? existing.action || '' : '';
-      const curTargetId = existing ? (existing.kind === 'internal' ? '' : (resolveStateRef(existing.to, parsed) || {}).id || '') : '';
+      let curTargetId = existing ? (existing.kind === 'internal' ? '' : (resolveStateRef(existing.to, parsed) || {}).id || '') : '';
       if (existing) {
         const ifElse = actionToIfElse(existing.to, parsed);
-        if (ifElse) curAction = ifElse;
+        if (ifElse) {
+          curAction = ifElse;
+          curTargetId = ''; // Choice target: clear dropdown so user can select default target
+        }
       }
 
       html += `<div class="prop-sub" style="margin-bottom:4px">${esc(evName || '')}</div>`;

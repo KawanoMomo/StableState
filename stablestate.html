@@ -1145,6 +1145,94 @@ function parseIfElseAction(text) {
   return branches.length > 0 ? branches : null;
 }
 
+// Apply if/else branches as choice pseudo-state + transitions in DSL
+function applyChoiceBranches(stateId, evName, branches, parsed, dsl) {
+  const ev = evName === '(none)' ? null : evName;
+  const fromPath = stateDotPath(stateId);
+
+  // Search for existing choice: transition from stateId with matching event to a choice pseudo-state
+  let choiceId = null;
+  for (const t of parsed.transitions) {
+    const fromEl = resolveStateRef(t.from, parsed);
+    if (fromEl && fromEl.id === stateId && (t.event || null) === ev) {
+      if (parsed.pseudoMap[t.to] && parsed.pseudoMap[t.to].type === 'choice') {
+        choiceId = t.to;
+        break;
+      }
+    }
+  }
+
+  if (choiceId) {
+    // Existing choice: remove all outgoing transitions from it, then add new branches
+    const choiceOutgoing = parsed.transitions.filter(t => t.from === choiceId);
+    for (const t of choiceOutgoing) {
+      dsl = removeTransition(t.from, t.to, t.event, t.guard, dsl);
+    }
+  } else {
+    // New choice: generate ID and add to DSL
+    let maxAuto = 0;
+    for (const ps of parsed.pseudoStates) {
+      const am = ps.id.match(/^c_auto_(\d+)$/);
+      if (am) maxAuto = Math.max(maxAuto, parseInt(am[1]));
+    }
+    choiceId = 'c_auto_' + (maxAuto + 1);
+
+    // Position: right side of source state
+    const srcState = parsed.stateMap[stateId];
+    const choiceX = srcState ? srcState.x + srcState.w + 2 : 10;
+    const choiceY = srcState ? srcState.y + Math.floor(srcState.h / 2) : 10;
+
+    // Add choice pseudo-state to DSL
+    dsl = dsl.trimEnd() + '\nchoice ' + choiceId + ' at ' + choiceX + ',' + choiceY + '\n';
+
+    // Update or add the source transition to point to the choice
+    const existingTrans = parsed.transitions.find(t => {
+      const fromEl = resolveStateRef(t.from, parsed);
+      return fromEl && fromEl.id === stateId && (t.event || null) === ev;
+    });
+    if (existingTrans) {
+      dsl = replaceTransition(existingTrans.from, existingTrans.to, existingTrans.event, existingTrans.guard,
+        fromPath, choiceId, ev, null, null, null, dsl);
+    } else {
+      dsl = addTransition(fromPath, choiceId, ev, null, null, null, dsl);
+    }
+  }
+
+  // Add branch transitions from choice
+  for (const b of branches) {
+    const targetPath = stateDotPath(b.target);
+    dsl = addTransition(choiceId, targetPath, null, b.guard, b.action, null, dsl);
+  }
+
+  return dsl;
+}
+
+// Reverse-convert choice branches to if/else action text
+function actionToIfElse(transitionTo, parsed) {
+  const ps = parsed.pseudoMap[transitionTo];
+  if (!ps || ps.type !== 'choice') return null;
+
+  const outgoing = parsed.transitions.filter(t => t.from === transitionTo);
+  if (outgoing.length === 0) return null;
+
+  const parts = [];
+  for (let i = 0; i < outgoing.length; i++) {
+    const t = outgoing[i];
+    const tgtEl = resolveStateRef(t.to, parsed);
+    const targetLabel = tgtEl ? tgtEl.id : t.to;
+    const actionPart = t.action ? ' / ' + t.action : '';
+
+    if (t.guard) {
+      const keyword = (i === 0) ? 'if' : 'elif';
+      parts.push(keyword + ' [' + t.guard + ']\n\t-> ' + targetLabel + actionPart);
+    } else {
+      parts.push('else\n\t-> ' + targetLabel + actionPart);
+    }
+  }
+
+  return parts.join('\n');
+}
+
 // Update a specific field of a matching transition line
 function updateTransition(from, to, event, guard, field, val, dsl) {
   const lines = dsl.split('\n');

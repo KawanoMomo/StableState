@@ -102,7 +102,7 @@ body { background: var(--bg); color: var(--text); font-family: 'IBM Plex Sans','
 .st-table .ev-header td:first-child { background:#2a2233; }
 .st-table .ev-row td:first-child { background:var(--panel); }
 #table-empty { display:flex; align-items:center; justify-content:center; height:100%; color:var(--muted); font-size:13px; }
-.ac-list { position:absolute; left:0; right:0; background:var(--panel); border:1px solid var(--border); border-top:none; border-radius:0 0 4px 4px; z-index:10; max-height:120px; overflow-y:auto; }
+.ac-list { background:var(--panel); border:1px solid var(--border); border-radius:4px; z-index:10; max-height:120px; overflow-y:auto; box-shadow:0 4px 12px rgba(0,0,0,0.3); }
 .ac-item { padding:3px 8px; font-size:11px; color:var(--text); cursor:pointer; }
 .ac-item.active { background:var(--accent); color:#fff; }
 
@@ -2611,11 +2611,49 @@ function renderTable(parsed) {
         return parsed.states.map(s => stateDotPath(s.id));
       }
 
+      function getCaretCoords() {
+        // Mirror element technique: copy textarea content into a hidden div,
+        // place a marker span at cursor position, measure its offset
+        const mirror = document.createElement('div');
+        const cs = getComputedStyle(actionTa);
+        ['fontFamily','fontSize','fontWeight','lineHeight','letterSpacing','wordSpacing',
+         'textIndent','whiteSpace','wordWrap','overflowWrap','padding','borderWidth','boxSizing'
+        ].forEach(p => mirror.style[p] = cs[p]);
+        mirror.style.position = 'absolute';
+        mirror.style.left = '-9999px';
+        mirror.style.top = '0';
+        mirror.style.width = cs.width;
+        mirror.style.overflow = 'hidden';
+        const pos = actionTa.selectionStart;
+        const textBefore = actionTa.value.substring(0, pos);
+        const textAfter = actionTa.value.substring(pos);
+        mirror.textContent = textBefore;
+        const marker = document.createElement('span');
+        marker.textContent = textAfter || '.';
+        mirror.appendChild(marker);
+        document.body.appendChild(mirror);
+        const markerRect = marker.getBoundingClientRect();
+        const mirrorRect = mirror.getBoundingClientRect();
+        const x = markerRect.left - mirrorRect.left;
+        const y = markerRect.top - mirrorRect.top - actionTa.scrollTop;
+        document.body.removeChild(mirror);
+        return { x: x, y: y };
+      }
+
       function showAc(candidates) {
         hideAc();
         if (candidates.length === 0) return;
         acList = document.createElement('div');
         acList.className = 'ac-list';
+        acList.style.position = 'absolute';
+        // Position at caret
+        const caret = getCaretCoords();
+        const taRect = actionTa.getBoundingClientRect();
+        const panelRect = actionTa.parentNode.getBoundingClientRect();
+        acList.style.left = (taRect.left - panelRect.left + caret.x) + 'px';
+        acList.style.top = (taRect.top - panelRect.top + caret.y + parseInt(getComputedStyle(actionTa).lineHeight) || 18) + 'px';
+        acList.style.width = 'auto';
+        acList.style.minWidth = '120px';
         acItems = candidates.slice(0, 5);
         acIdx = 0;
         for (let i = 0; i < acItems.length; i++) {

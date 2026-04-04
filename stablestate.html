@@ -326,9 +326,11 @@ function resolveSelType(id) {
 // Build dot-path reference for a state/pseudo (e.g. "active.accel")
 function stateDotPath(id) {
   if (!parsed) return id;
+  // Try direct path lookup first (id might already be a path)
   const el = parsed.stateMap[id] || parsed.pseudoMap[id];
+  if (el && el.path) return el.path;
   if (!el || !el.parent) return id;
-  // Walk up parent chain
+  // Walk up parent chain (fallback for pseudo-states without path)
   const parts = [id];
   let pid = el.parent;
   while (pid) {
@@ -515,8 +517,8 @@ function parseDSL(text) {
       } else {
         // Parse trailing props on the closing brace line: } entry=Foo exit=Bar
         const afterBrace = trimmed.slice(1).trim();
-        if (afterBrace && result.stateMap[popped.id]) {
-          parseProps(afterBrace, result.stateMap[popped.id]);
+        if (afterBrace && result.stateMap[popped.path || popped.id]) {
+          parseProps(afterBrace, result.stateMap[popped.path || popped.id]);
         }
       }
       continue;
@@ -604,15 +606,26 @@ function parseDSL(text) {
     const stateMatch = trimmed.match(/^state\s+(\S+)\s+"([^"]*)"\s+at\s+(-?[\d.]+)\s*,\s*(-?[\d.]+)\s+size\s+(-?[\d.]+)\s*x\s*(-?[\d.]+)(.*)$/);
     if (stateMatch) {
       const id = stateMatch[1];
-      if (checkDuplicate(id, lineNum, result)) continue;
       const rest = stateMatch[7].trim();
       // Check if composite (ends with {)
       const isComposite = rest.endsWith('{');
       const propsStr = isComposite ? rest.slice(0, -1).trim() : rest;
 
+      const parentEntry = nestingStack.length > 0 ? nestingStack.findLast(e => e.type === 'state') : null;
+      const parentId = parentEntry ? parentEntry.id : null;
+      const parentPath = parentEntry ? parentEntry.path : null;
+      const path = parentPath ? parentPath + '.' + id : id;
+
+      // Check duplicate by path (allows same bare ID under different parents)
+      if (result.stateMap[path]) {
+        result.errors.push({ line: lineNum, msg: 'Duplicate state path: ' + path });
+        continue;
+      }
+
       const st = {
         type: 'state',
         id: id,
+        path: path,
         label: stateMatch[2],
         x: parseFloat(stateMatch[3]),
         y: parseFloat(stateMatch[4]),
@@ -626,7 +639,8 @@ function parseDSL(text) {
         entry: null,
         do: null,
         exit: null,
-        parent: nestingStack.length > 0 ? nestingStack.findLast(e => e.type === 'state')?.id || null : null,
+        parent: parentId,
+        parentPath: parentPath,
         region: currentRegion,
         children: [],
         isInitial: false,
@@ -637,16 +651,18 @@ function parseDSL(text) {
       if (propsStr) parseProps(propsStr, st);
 
       result.states.push(st);
-      result.stateMap[id] = st;
+      result.stateMap[path] = st;
+      // Also register bare ID for backward compatibility (overwritten if duplicate)
+      if (!result.stateMap[id]) result.stateMap[id] = st;
 
       // Add to parent's children
-      if (st.parent && result.stateMap[st.parent]) {
-        result.stateMap[st.parent].children.push(id);
+      if (parentPath && result.stateMap[parentPath]) {
+        result.stateMap[parentPath].children.push(path);
       }
 
       // Push onto nesting stack if composite
       if (isComposite) {
-        nestingStack.push({ type: 'state', id: id });
+        nestingStack.push({ type: 'state', id: id, path: path });
       }
       continue;
     }

@@ -2138,7 +2138,8 @@ function renderSVG(parsed) {
     allRoutes.push(route);
 
     // Labels — positioned at each route's own midpoint (routes are separated by port distribution)
-    const hasLabel = tr.event || tr.guard || tr.action;
+    const isChoiceElse = !tr.event && !tr.guard && parsed.pseudoMap[tr.from] && parsed.pseudoMap[tr.from].type === 'choice';
+    const hasLabel = tr.event || tr.guard || tr.action || isChoiceElse;
     if (hasLabel) {
       const mid = routeMidpoint(route);
       // Determine if the segment at midpoint is horizontal or vertical

@@ -1306,7 +1306,7 @@ function actionToIfElse(transitionTo, parsed) {
   let isFirst = true;
   for (const t of outgoing) {
     const tgtEl = resolveStateRef(t.to, parsed);
-    const targetLabel = tgtEl ? tgtEl.id : t.to;
+    const targetLabel = tgtEl ? stateDotPath(tgtEl.id) : t.to;
 
     let keyword;
     if (t.guard) {

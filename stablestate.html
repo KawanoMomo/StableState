@@ -2363,7 +2363,8 @@ function renderTable(parsed) {
   for (const t of parsed.transitions) {
     const fromEl = parsed.pseudoMap[t.from];
     if (fromEl && fromEl.type === 'initial') continue; // skip initial transitions
-    const evName = t.event || '(none)';
+    if (!t.event) continue; // skip eventless transitions (choice branches, guard-only)
+    const evName = t.event;
     if (!eventSet.has(evName)) eventSet.set(evName, []);
     eventSet.get(evName).push(t);
   }

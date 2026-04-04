@@ -5066,18 +5066,18 @@ document.addEventListener('keydown', function(e) {
   const ta = document.getElementById('editor');
   const ae = document.activeElement;
 
-  // Ctrl+Z: Undo (always works)
+  // Don't intercept while editing DSL or other form fields (let native undo/redo etc. work)
+  if (ae === ta) return;
+  if (ae && (ae.tagName === 'INPUT' || ae.tagName === 'SELECT' || ae.tagName === 'TEXTAREA')) {
+    return;
+  }
+
+  // Ctrl+Z: Undo (app-level)
   if ((e.ctrlKey || e.metaKey) && e.key === 'z' && !e.shiftKey) { e.preventDefault(); undo(); return; }
   // Ctrl+Y or Ctrl+Shift+Z: Redo
   if ((e.ctrlKey || e.metaKey) && (e.key === 'y' || (e.key === 'z' && e.shiftKey))) { e.preventDefault(); redo(); return; }
   // Ctrl+Shift+Z uppercase fallback
   if ((e.ctrlKey || e.metaKey) && e.key === 'Z' && e.shiftKey) { e.preventDefault(); redo(); return; }
-
-  // Don't intercept while editing DSL
-  if (ae === ta) return;
-  if (ae && (ae.tagName === 'INPUT' || ae.tagName === 'SELECT' || ae.tagName === 'TEXTAREA')) {
-    return;
-  }
 
   // Ctrl+C: Copy
   if ((e.ctrlKey || e.metaKey) && e.key === 'c') { e.preventDefault(); copySelection(); return; }

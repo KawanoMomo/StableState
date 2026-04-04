@@ -2513,19 +2513,30 @@ function renderTable(parsed) {
       document.getElementById('pp-table-apply').addEventListener('click', function() {
         const target = document.getElementById('pp-table-target').value;
         const guard = document.getElementById('pp-table-guard').value.trim();
-        const action = document.getElementById('pp-table-action').value.replace(/\n/g, '\\n').trim();
-        let targetId, kind = null;
-        if (!target) { targetId = stateDotPath(stateId); kind = 'internal'; }
-        else { targetId = stateDotPath(target); }
+        const actionRaw = document.getElementById('pp-table-action').value;
         const ev = evName === '(none)' ? null : evName;
         pushHistory();
         let dsl = getDsl();
-        if (existing) {
-          dsl = replaceTransition(existing.from, existing.to, existing.event, existing.guard,
-            stateDotPath(stateId), targetId, ev, guard || null, action || null, kind, dsl);
+
+        // Check if action is if/else syntax with transitions
+        const parsed2 = parseIfElseAction(actionRaw);
+        if (parsed2 && parsed2.hasTransition) {
+          // Choice mode: generate choice + branch transitions
+          dsl = applyChoiceBranches(stateId, evName, parsed2.branches, target || null, parsed, dsl);
         } else {
-          dsl = addTransition(stateDotPath(stateId), targetId, ev, guard || null, action || null, kind, dsl);
+          // Normal mode: save as regular transition
+          const action = actionRaw.replace(/\n/g, '\\n').trim();
+          let targetId, kind = null;
+          if (!target) { targetId = stateDotPath(stateId); kind = 'internal'; }
+          else { targetId = stateDotPath(target); }
+          if (existing) {
+            dsl = replaceTransition(existing.from, existing.to, existing.event, existing.guard,
+              stateDotPath(stateId), targetId, ev, guard || null, action || null, kind, dsl);
+          } else {
+            dsl = addTransition(stateDotPath(stateId), targetId, ev, guard || null, action || null, kind, dsl);
+          }
         }
+
         setDsl(dsl);
         refresh();
       });

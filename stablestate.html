@@ -2199,6 +2199,17 @@ function renderTable(parsed) {
   // ─── Render single table ───
   tableEl.innerHTML = '<thead>' + headHtml + '</thead><tbody>' + bodyHtml + '</tbody>';
 
+  // ─── Fix sticky top for multi-row header (rowspan + sticky workaround) ───
+  requestAnimationFrame(function() {
+    const headerRows = tableEl.querySelectorAll('thead tr');
+    let cumTop = 0;
+    for (let i = 0; i < headerRows.length; i++) {
+      const cells = headerRows[i].querySelectorAll('th');
+      cells.forEach(function(th) { th.style.top = cumTop + 'px'; });
+      cumTop += headerRows[i].offsetHeight;
+    }
+  });
+
   // ─── Wire up cell click → show editor in property panel ───
   let selectedCell = null;
   tableEl.querySelectorAll('.table-editable').forEach(function(cell) {

@@ -1140,33 +1140,42 @@ function parseIfElseAction(text) {
 
       // Collect body lines (indented deeper than keyword)
       i++;
-      const bodyLines = [];
+      const bodyStart = i;
+      const bodyIndent = i < lines.length ? getIndent(lines[i]) : baseIndent + 2;
       while (i < lines.length && (getIndent(lines[i]) > baseIndent || lines[i].trim() === '')) {
-        bodyLines.push(lines[i].trim());
         i++;
       }
 
-      // Parse body: find -> target and collect actions
-      let target = null;
-      let targetAction = null;
-      const actions = [];
-      for (const bl of bodyLines) {
-        if (bl === '') continue;
-        const tm = bl.match(/^->\s*(\S+)(?:\s*\/\s*(.*))?$/);
-        if (tm) {
-          target = tm[1];
-          targetAction = tm[2] ? tm[2].trim() : null;
-        } else {
-          actions.push(bl);
+      // Check if body starts with nested if/else
+      const firstBodyLine = bodyStart < lines.length ? lines[bodyStart].trim() : '';
+      if (firstBodyLine.startsWith('if [')) {
+        // Recurse into nested if/else
+        const nested = parseLevel(bodyStart, bodyIndent);
+        branches.push({ guard: guard, target: null, action: null, children: nested });
+      } else {
+        // Parse body: find -> target and collect actions
+        let target = null;
+        let targetAction = null;
+        const actions = [];
+        for (let bi = bodyStart; bi < i; bi++) {
+          const bl = lines[bi].trim();
+          if (bl === '') continue;
+          const tm = bl.match(/^->\s*(\S+)(?:\s*\/\s*(.*))?$/);
+          if (tm) {
+            target = tm[1];
+            targetAction = tm[2] ? tm[2].trim() : null;
+          } else {
+            actions.push(bl);
+          }
         }
+
+        // Combine actions: body actions + target action (if any)
+        const allActions = [...actions];
+        if (targetAction) allActions.push(targetAction);
+        const actionStr = allActions.length > 0 ? allActions.join('\\n') : null;
+
+        branches.push({ guard: guard, target: target, action: actionStr, children: null });
       }
-
-      // Combine actions: body actions + target action (if any)
-      const allActions = [...actions];
-      if (targetAction) allActions.push(targetAction);
-      const actionStr = allActions.length > 0 ? allActions.join('\\n') : null;
-
-      branches.push({ guard: guard, target: target, action: actionStr });
     }
     return branches;
   }
@@ -1253,46 +1262,69 @@ function applyChoiceBranches(stateId, evName, branches, defaultTarget, parsed, d
     dsl = setDefaultAttr(dsl, fromPath, choiceId, defaultTarget);
   }
 
-  // Build new branch list
-  const newBranches = [];
-  let hasElse = false;
-  for (const b of branches) {
-    if (!b.guard) hasElse = true;
-    const tgt = b.target || defaultTarget;
-    if (tgt) {
-      newBranches.push({ target: stateDotPath(tgt), guard: b.guard, action: b.action });
-    }
-  }
-  // Add fallback (implicit else) from defaultTarget if no explicit else
-  if (!hasElse && defaultTarget) {
-    newBranches.push({ target: stateDotPath(defaultTarget), guard: null, action: null });
+  // Helper: get next auto ID from DSL text
+  function nextAutoId() {
+    let max = maxAuto;
+    const matches = dsl.matchAll(/c_auto_(\d+)/g);
+    for (const m of matches) max = Math.max(max, parseInt(m[1]));
+    max++;
+    maxAuto = max;
+    return 'c_auto_' + max;
   }
 
-  // In-place replace existing branches, then add/remove as needed
-  if (typeof choiceOutgoing !== 'undefined' && choiceOutgoing.length > 0) {
-    const minLen = Math.min(choiceOutgoing.length, newBranches.length);
-    for (let bi = 0; bi < minLen; bi++) {
-      const old = choiceOutgoing[bi];
-      const nb = newBranches[bi];
-      dsl = replaceTransition(old.from, old.to, old.event, old.guard,
-        choiceId, nb.target, null, nb.guard, nb.action, null, dsl);
+  // Recursively apply branches to a choice node
+  function applyBranchesToChoice(cId, branchList, existingOutgoing) {
+    const newBranches = [];
+    let hasElse = false;
+    for (const b of branchList) {
+      if (!b.guard) hasElse = true;
+      if (b.children && b.children.length > 0) {
+        // Nested: create sub-choice
+        const subId = nextAutoId();
+        const srcState = parsed.stateMap[stateId];
+        const cx = srcState ? srcState.x + srcState.w + 4 : 12;
+        const cy = srcState ? srcState.y + Math.floor(srcState.h / 2) + 2 : 12;
+        dsl = dsl.trimEnd() + '\nchoice ' + subId + ' at ' + cx + ',' + cy + '\n';
+        newBranches.push({ target: subId, guard: b.guard, action: null });
+        // Recurse into sub-choice
+        applyBranchesToChoice(subId, b.children, []);
+      } else {
+        const tgt = b.target || defaultTarget;
+        if (tgt) {
+          newBranches.push({ target: stateDotPath(tgt), guard: b.guard, action: b.action });
+        }
+      }
     }
-    // Remove extra old branches
-    for (let bi = minLen; bi < choiceOutgoing.length; bi++) {
-      const old = choiceOutgoing[bi];
-      dsl = removeTransition(old.from, old.to, old.event, old.guard, dsl);
+    // Add fallback from defaultTarget if no explicit else
+    if (!hasElse && defaultTarget) {
+      newBranches.push({ target: stateDotPath(defaultTarget), guard: null, action: null });
     }
-    // Add extra new branches
-    for (let bi = minLen; bi < newBranches.length; bi++) {
-      const nb = newBranches[bi];
-      dsl = addTransition(choiceId, nb.target, null, nb.guard, nb.action, null, dsl);
-    }
-  } else {
-    // New choice: just add all branches
-    for (const nb of newBranches) {
-      dsl = addTransition(choiceId, nb.target, null, nb.guard, nb.action, null, dsl);
+
+    // In-place replace existing branches, then add/remove as needed
+    if (existingOutgoing && existingOutgoing.length > 0) {
+      const minLen = Math.min(existingOutgoing.length, newBranches.length);
+      for (let bi = 0; bi < minLen; bi++) {
+        const old = existingOutgoing[bi];
+        const nb = newBranches[bi];
+        dsl = replaceTransition(old.from, old.to, old.event, old.guard,
+          cId, nb.target, null, nb.guard, nb.action, null, dsl);
+      }
+      for (let bi = minLen; bi < existingOutgoing.length; bi++) {
+        const old = existingOutgoing[bi];
+        dsl = removeTransition(old.from, old.to, old.event, old.guard, dsl);
+      }
+      for (let bi = minLen; bi < newBranches.length; bi++) {
+        const nb = newBranches[bi];
+        dsl = addTransition(cId, nb.target, null, nb.guard, nb.action, null, dsl);
+      }
+    } else {
+      for (const nb of newBranches) {
+        dsl = addTransition(cId, nb.target, null, nb.guard, nb.action, null, dsl);
+      }
     }
   }
+
+  applyBranchesToChoice(choiceId, branches, typeof choiceOutgoing !== 'undefined' ? choiceOutgoing : []);
 
   return dsl;
 }
@@ -1302,36 +1334,47 @@ function actionToIfElse(transitionTo, parsed) {
   const ps = parsed.pseudoMap[transitionTo];
   if (!ps || ps.type !== 'choice') return null;
 
-  const outgoing = parsed.transitions.filter(t => t.from === transitionTo);
-  if (outgoing.length === 0) return null;
+  function convert(choiceId, indent) {
+    const outgoing = parsed.transitions.filter(t => t.from === choiceId);
+    if (outgoing.length === 0) return null;
 
-  const parts = [];
-  let isFirst = true;
-  for (const t of outgoing) {
-    const tgtEl = resolveStateRef(t.to, parsed);
-    const targetLabel = tgtEl ? stateDotPath(tgtEl.id) : t.to;
+    const pad = '  '.repeat(indent);
+    const bodyPad = '  '.repeat(indent + 1);
+    const parts = [];
+    let isFirst = true;
+    for (const t of outgoing) {
+      let keyword;
+      if (t.guard) {
+        keyword = isFirst ? 'if' : 'elif';
+        keyword += ' [' + t.guard + ']';
+      } else {
+        keyword = 'else';
+      }
 
-    let keyword;
-    if (t.guard) {
-      keyword = isFirst ? 'if' : 'elif';
-      keyword += ' [' + t.guard + ']';
-    } else {
-      keyword = 'else';
+      // Check if target is another choice (nested)
+      const subChoice = parsed.pseudoMap[t.to];
+      if (subChoice && subChoice.type === 'choice') {
+        const nested = convert(t.to, indent + 1);
+        if (nested) {
+          parts.push(pad + keyword + '\n' + nested);
+        }
+      } else {
+        const tgtEl = resolveStateRef(t.to, parsed);
+        const targetLabel = tgtEl ? stateDotPath(tgtEl.id) : t.to;
+        const bodyLines = [];
+        if (t.action) {
+          const actionParts = t.action.split('\\n');
+          for (const ap of actionParts) bodyLines.push(bodyPad + ap);
+        }
+        bodyLines.push(bodyPad + '-> ' + targetLabel);
+        parts.push(pad + keyword + '\n' + bodyLines.join('\n'));
+      }
+      isFirst = false;
     }
-
-    // Build body lines
-    const bodyLines = [];
-    if (t.action) {
-      const actionParts = t.action.split('\\n');
-      for (const ap of actionParts) bodyLines.push('  ' + ap);
-    }
-    bodyLines.push('  -> ' + targetLabel);
-
-    parts.push(keyword + '\n' + bodyLines.join('\n'));
-    isFirst = false;
+    return parts.join('\n');
   }
 
-  return parts.join('\n');
+  return convert(transitionTo, 0);
 }
 
 // Update a specific field of a matching transition line

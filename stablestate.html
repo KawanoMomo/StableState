@@ -2596,19 +2596,31 @@ function renderTable(parsed) {
       const actionTa = document.getElementById('pp-table-action');
       let acList = null, acItems = [], acIdx = -1, acPrefix = '', acStart = 0;
 
-      function getArrowPrefix() {
+      function getAcContext() {
         const pos = actionTa.selectionStart;
         const textBefore = actionTa.value.substring(0, pos);
         const lineStart = textBefore.lastIndexOf('\n') + 1;
         const line = textBefore.substring(lineStart);
-        const m = line.match(/->\s*(\S*)$/);
-        if (m) return { prefix: m[1], start: pos - m[1].length };
+        // Check for "-> prefix" (state name completion)
+        const arrowMatch = line.match(/->\s*(\S*)$/);
+        if (arrowMatch) return { type: 'state', prefix: arrowMatch[1], start: pos - arrowMatch[1].length };
+        // Check for keyword at line start (after optional indent)
+        const kwMatch = line.match(/^(\s*)(\S*)$/);
+        if (kwMatch && kwMatch[2].length > 0) return { type: 'keyword', prefix: kwMatch[2], start: pos - kwMatch[2].length };
         return null;
       }
 
-      function buildCandidates() {
-        if (!parsed) return [];
-        return parsed.states.map(s => stateDotPath(s.id));
+      const AC_KEYWORDS = ['if []', 'elif []', 'else if []', 'else', '-> '];
+
+      function buildCandidates(type, prefix) {
+        if (type === 'state') {
+          if (!parsed) return [];
+          return parsed.states.map(s => stateDotPath(s.id));
+        }
+        if (type === 'keyword') {
+          return AC_KEYWORDS;
+        }
+        return [];
       }
 
       function getCaretCoords() {
@@ -2677,16 +2689,22 @@ function renderTable(parsed) {
         const before = actionTa.value.substring(0, acStart);
         const after = actionTa.value.substring(actionTa.selectionStart);
         actionTa.value = before + val + after;
-        actionTa.selectionStart = actionTa.selectionEnd = acStart + val.length;
+        // Place cursor inside [] if keyword has brackets
+        const bracketPos = val.indexOf('[]');
+        if (bracketPos >= 0) {
+          actionTa.selectionStart = actionTa.selectionEnd = acStart + bracketPos + 1;
+        } else {
+          actionTa.selectionStart = actionTa.selectionEnd = acStart + val.length;
+        }
         hideAc();
       }
 
       function updateAc() {
-        const ap = getArrowPrefix();
-        if (!ap || ap.prefix.length === 0) { hideAc(); return; }
-        acPrefix = ap.prefix.toLowerCase();
-        acStart = ap.start;
-        const all = buildCandidates();
+        const ctx = getAcContext();
+        if (!ctx || ctx.prefix.length === 0) { hideAc(); return; }
+        acPrefix = ctx.prefix.toLowerCase();
+        acStart = ctx.start;
+        const all = buildCandidates(ctx.type, ctx.prefix);
         const filtered = all.filter(c => c.toLowerCase().startsWith(acPrefix));
         if (filtered.length > 0) showAc(filtered);
         else hideAc();

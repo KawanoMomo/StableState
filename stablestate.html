@@ -99,6 +99,7 @@ body { background: var(--bg); color: var(--text); font-family: 'IBM Plex Sans','
 .st-table td { background:var(--editor); color:var(--text); }
 .st-table td:first-child { background:var(--panel); }
 .st-table .ev-header td { background:#2a2233; }
+.st-table .ev-header td:first-child { background:#2a2233; }
 .st-table .ev-row td:first-child { background:var(--panel); }
 #table-empty { display:flex; align-items:center; justify-content:center; height:100%; color:var(--muted); font-size:13px; }
 
@@ -2182,7 +2183,7 @@ function renderTable(parsed) {
   // ─── Event blocks ───
   for (const [evName, transitions] of eventSet) {
     // Event name row (spans full width)
-    bodyHtml += `<tr class="ev-header"><td colspan="${leafColumns.length + 1}" style="font-weight:600;color:#FFCB6B;padding:4px 10px">${esc(evName)}</td></tr>`;
+    bodyHtml += `<tr class="ev-header"><td style="font-weight:600;color:#FFCB6B;padding:4px 10px">${esc(evName)}</td><td colspan="${leafColumns.length}" style="border-left:none"></td></tr>`;
 
     // Guard row with label
     bodyHtml += '<tr class="ev-row"><td style="color:#6B7280;padding-left:16px">guard</td>';
@@ -2240,7 +2241,7 @@ function renderTable(parsed) {
   const thead = tableEl.querySelector('thead');
   if (tableWrap && thead) {
     tableWrap.addEventListener('scroll', function() {
-      thead.style.transform = 'translateY(' + tableWrap.scrollTop + 'px)';
+      thead.style.transform = 'translateY(' + (tableWrap.scrollTop / tableZoom) + 'px)';
     });
   }
 

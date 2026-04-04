@@ -2152,7 +2152,8 @@ function renderTable(parsed) {
       const field = this.dataset.field;
       const stateId = this.dataset.state;
       const evName = this.dataset.event;
-      const currentText = this.textContent === '-' ? '' : this.textContent;
+      const rawHtml = this.innerHTML;
+      const currentText = rawHtml === '-' ? '' : rawHtml.replace(/<br>/g, '\\n');
 
       // Render editor in property panel
       const panel = document.getElementById('prop-content');
@@ -2166,13 +2167,13 @@ function renderTable(parsed) {
       if (isStateField) {
         // entry/do/exit — single textarea
         html += `<div class="prop-sub" style="margin-bottom:4px">${esc(field)}</div>`;
-        html += `<textarea class="prop-input" id="pp-table-edit" style="height:80px;resize:vertical;font-size:11px;line-height:1.4;text-align:left">${esc(currentText)}</textarea>`;
+        html += `<textarea class="prop-input" id="pp-table-edit" style="height:80px;resize:vertical;font-size:11px;line-height:1.4;text-align:left">${esc(currentText).replace(/\\n/g, '\n')}</textarea>`;
         html += `<button class="tb tb-accent" id="pp-table-apply" style="width:100%;margin-top:6px">適用</button>`;
         html += `</div>`;
         panel.innerHTML = html;
         document.getElementById('pp-table-edit').focus();
         document.getElementById('pp-table-apply').addEventListener('click', function() {
-          const newVal = document.getElementById('pp-table-edit').value.replace(/\n/g, ' ').trim();
+          const newVal = document.getElementById('pp-table-edit').value.replace(/\n/g, '\\n').trim();
           pushHistory();
           let dsl = getDsl();
           if (newVal) { dsl = updateProp('state', stateId, field, newVal, dsl); }
@@ -2204,7 +2205,7 @@ function renderTable(parsed) {
       html += `<div class="prop-sub" style="margin-top:4px">[guard]</div>`;
       html += `<input class="prop-input" id="pp-table-guard" value="${esc(curGuard)}" placeholder="ガード条件">`;
       html += `<div class="prop-sub" style="margin-top:4px">/ action</div>`;
-      html += `<textarea class="prop-input" id="pp-table-action" style="height:60px;resize:vertical;font-size:11px;line-height:1.4;text-align:left" placeholder="アクション">${esc(curAction)}</textarea>`;
+      html += `<textarea class="prop-input" id="pp-table-action" style="height:60px;resize:vertical;font-size:11px;line-height:1.4;text-align:left" placeholder="アクション">${esc(curAction).replace(/\\n/g, '\n')}</textarea>`;
       html += `<button class="tb tb-accent" id="pp-table-apply" style="width:100%;margin-top:6px">適用</button>`;
       if (existing) html += `<button class="tb" id="pp-table-delete" style="width:100%;margin-top:4px;border-color:#EF4444;color:#FCA5A5">遷移を削除</button>`;
       html += `</div>`;
@@ -2217,7 +2218,7 @@ function renderTable(parsed) {
       document.getElementById('pp-table-apply').addEventListener('click', function() {
         const target = document.getElementById('pp-table-target').value;
         const guard = document.getElementById('pp-table-guard').value.trim();
-        const action = document.getElementById('pp-table-action').value.replace(/\n/g, ' ').trim();
+        const action = document.getElementById('pp-table-action').value.replace(/\n/g, '\\n').trim();
         let targetId, kind = null;
         if (!target) { targetId = stateDotPath(stateId); kind = 'internal'; }
         else { targetId = stateDotPath(target); }

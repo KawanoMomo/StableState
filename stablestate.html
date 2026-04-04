@@ -4340,30 +4340,24 @@ function connectSelected() {
 // ═══════════════════════════════════════════════
 function removeDSLElement(id, dsl, lineNum) {
   const bareId = id.includes('.') ? id.split('.').pop() : id;
-  console.log('[removeDSLElement] id=', id, 'bareId=', bareId, 'lineNum=', lineNum);
+  const escBareId = bareId.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   const lines = dsl.split('\n');
   const result = [];
   let skipNesting = 0;
   let foundDefLine = false;
+  const defRe = new RegExp(`^(state|group|note|initial|final|choice|history|deephistory|fork|join)\\s+${escBareId}\\b`);
   for (let li = 0; li < lines.length; li++) {
     const line = lines[li];
     const trimmed = line.trim();
-    // Check if this line defines the element
-    const isDefLine = trimmed.match(new RegExp(`^(state|group|note|initial|final|choice|history|deephistory|fork|join)\\s+${bareId}\\b`));
-    if (isDefLine) {
-      console.log('[removeDSLElement] found def at line', li + 1, ':', trimmed);
-    }
+    const isDefLine = defRe.test(trimmed);
     if (isDefLine && !foundDefLine) {
-      // If lineNum specified, only match that specific line
       if (lineNum != null && (li + 1) !== lineNum) {
-        console.log('[removeDSLElement] skipping line', li + 1, '(not target)');
         result.push(line);
         continue;
       }
-      console.log('[removeDSLElement] DELETING line', li + 1);
       foundDefLine = true;
       if (trimmed.endsWith('{')) skipNesting = 1;
-      continue; // skip this line
+      continue;
     }
     if (skipNesting > 0) {
       if (trimmed === '}' || trimmed.startsWith('}')) {
@@ -4397,8 +4391,7 @@ function removeDSLElement(id, dsl, lineNum) {
 }
 
 function deleteSelected() {
-  console.log('[deleteSelected] called, sel=', JSON.stringify(sel));
-  if (!sel.length) { console.log('[deleteSelected] sel empty, returning'); return; }
+  if (!sel.length) return;
   pushHistory();
   // Sort by line number descending to avoid line shift issues
   const items = sel.map(si => {
@@ -5089,7 +5082,7 @@ document.addEventListener('keydown', function(e) {
   // Ctrl+V: Paste
   if ((e.ctrlKey || e.metaKey) && e.key === 'v') { e.preventDefault(); pasteSelection(); return; }
   // Delete / Backspace
-  if (e.key === 'Delete' || e.key === 'Backspace') { console.log('[keydown] Delete pressed'); e.preventDefault(); deleteSelected(); return; }
+  if (e.key === 'Delete' || e.key === 'Backspace') { e.preventDefault(); deleteSelected(); return; }
   // Ctrl+A: Select all
   if ((e.ctrlKey || e.metaKey) && e.key === 'a') {
     e.preventDefault();

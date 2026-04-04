@@ -86,13 +86,12 @@ body { background: var(--bg); color: var(--text); font-family: 'IBM Plex Sans','
 #svg-wrap { background:#fff; border-radius:8px; display:inline-block; line-height:0; }
 #svg-wrap svg { cursor:default; }
 
-/* Table view — freeze-pane: header fixed, body scrolls */
+/* Table view — single table with sticky header */
 #table-view { flex:1; display:none; flex-direction:column; overflow:hidden; }
-#table-head-wrap { flex-shrink:0; overflow:hidden; }
-#table-body-wrap { flex:1; overflow:auto; }
+#table-wrap { flex:1; overflow:auto; }
 .st-table { width:100%; border-collapse:collapse; font-size:12px; table-layout:fixed; }
 .st-table th, .st-table td { border:1px solid var(--border); padding:4px 8px; text-align:left; }
-.st-table th { background:var(--panel); color:var(--accent); font-weight:600; font-size:10px; text-transform:uppercase; }
+.st-table th { background:var(--panel); color:var(--accent); font-weight:600; font-size:10px; text-transform:uppercase; position:sticky; top:0; z-index:1; }
 .st-table td { background:var(--editor); color:var(--text); }
 .st-table td:first-child { background:var(--panel); }
 .st-table .ev-header td { background:#2a2233; }
@@ -244,8 +243,7 @@ error -> fin : EvShutdown</textarea>
         <span style="margin-left:auto;color:var(--dim);font-weight:400">セルをクリックして編集</span>
       </div>
       <div id="table-empty">DSLをパースして状態遷移表を生成します</div>
-      <div id="table-head-wrap"><table id="state-table-head" class="st-table"></table></div>
-      <div id="table-body-wrap"><table id="state-table-body" class="st-table"></table></div>
+      <div id="table-wrap"><table id="state-table" class="st-table"></table></div>
     </div>
   </div>
 
@@ -1964,14 +1962,13 @@ function renderSVG(parsed) {
 // Table Renderer
 // ═══════════════════════════════════════════════
 function renderTable(parsed) {
-  const headEl = document.getElementById('state-table-head');
-  const bodyEl = document.getElementById('state-table-body');
+  const tableEl = document.getElementById('state-table');
   const emptyEl = document.getElementById('table-empty');
-  if (!parsed || !headEl || !bodyEl) return;
+  if (!parsed || !tableEl) return;
 
   // If orthogonal mode, show warning
   if (parsed.config.orthogonal) {
-    headEl.innerHTML = ''; bodyEl.innerHTML = '';
+    tableEl.innerHTML = '';
     emptyEl.style.display = 'flex';
     emptyEl.textContent = '直交領域が有効なため、状態遷移表の自動生成はサポートされません';
     return;
@@ -2016,7 +2013,7 @@ function renderTable(parsed) {
   leafColumns.unshift({ id: '__ROOT__', state: rootVirtual, depth: 0, isInitial: false, isRoot: true });
 
   if (leafColumns.length <= 1) {
-    headEl.innerHTML = ''; bodyEl.innerHTML = '';
+    tableEl.innerHTML = '';
     emptyEl.style.display = 'flex';
     emptyEl.textContent = 'DSLをパースして状態遷移表を生成します';
     return;
@@ -2111,7 +2108,7 @@ function renderTable(parsed) {
     return Math.max(80, charCount * 8);
   }
 
-  // ─── Build header HTML (separate table, rowspan OK — no sticky needed) ───
+  // ─── Build header HTML (thead with sticky positioning) ───
   let headHtml = '';
   for (let r = 0; r < totalHeaderRows; r++) {
     headHtml += '<tr>';
@@ -2127,7 +2124,7 @@ function renderTable(parsed) {
     headHtml += '</tr>';
   }
 
-  // ─── Build body HTML (separate table) ───
+  // ─── Build body HTML ───
   let bodyHtml = '';
 
   // ─── Entry / Do / Exit rows ───
@@ -2197,39 +2194,12 @@ function renderTable(parsed) {
     bodyHtml += '</tr>';
   }
 
-  // ─── Render both tables ───
-  headEl.innerHTML = headHtml;
-  bodyEl.innerHTML = '<tbody>' + bodyHtml + '</tbody>';
-
-  // ─── Sync column widths: body cols → head cols ───
-  requestAnimationFrame(function() {
-    const bodyRows = bodyEl.querySelectorAll('tbody tr');
-    if (bodyRows.length === 0) return;
-    // Find the first data row with per-leaf cells (entry row)
-    const firstDataRow = bodyRows[0];
-    const dataCells = firstDataRow.querySelectorAll('td');
-    // Measure body cell widths and apply to head table via colgroup
-    const widths = [];
-    dataCells.forEach(function(td) { widths.push(td.getBoundingClientRect().width); });
-    // Apply as col widths to head table
-    let colHtml = '<colgroup>';
-    widths.forEach(function(w) { colHtml += `<col style="width:${w}px">`; });
-    colHtml += '</colgroup>';
-    // Prepend colgroup to both tables
-    headEl.insertAdjacentHTML('afterbegin', colHtml);
-    bodyEl.insertAdjacentHTML('afterbegin', colHtml);
-  });
-
-  // ─── Sync horizontal scroll ───
-  const bodyWrap = document.getElementById('table-body-wrap');
-  const headWrap = document.getElementById('table-head-wrap');
-  bodyWrap.addEventListener('scroll', function() {
-    headWrap.scrollLeft = bodyWrap.scrollLeft;
-  });
+  // ─── Render single table ───
+  tableEl.innerHTML = '<thead>' + headHtml + '</thead><tbody>' + bodyHtml + '</tbody>';
 
   // ─── Wire up cell click → show editor in property panel ───
   let selectedCell = null;
-  bodyEl.querySelectorAll('.table-editable').forEach(function(cell) {
+  tableEl.querySelectorAll('.table-editable').forEach(function(cell) {
     cell.addEventListener('click', function() {
       // Highlight selected cell
       if (selectedCell) selectedCell.style.outline = '';

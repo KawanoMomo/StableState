@@ -999,13 +999,40 @@ function updatePos(type, id, nx, ny, dsl, lineNum) {
 }
 
 // Update size (size WxH) for a given element type and id
-function updateSize(type, id, nw, nh, dsl) {
+function updateSize(type, id, nw, nh, dsl, lineNum) {
+  if (lineNum != null) {
+    const lines = dsl.split('\n');
+    const idx = lineNum - 1;
+    if (idx >= 0 && idx < lines.length) {
+      const re = new RegExp(`^(\\s*${type}\\s+${id}\\s+.*\\bsize\\s+)[\\d.]+x[\\d.]+(.*$)`);
+      lines[idx] = lines[idx].replace(re, `$1${nw}x${nh}$2`);
+    }
+    return lines.join('\n');
+  }
   const re = new RegExp(`^(\\s*${type}\\s+${id}\\s+.*\\bsize\\s+)[\\d.]+x[\\d.]+(.*$)`, 'm');
   return dsl.replace(re, `$1${nw}x${nh}$2`);
 }
 
 // Add or replace a property (key=value) on an element line
-function updateProp(type, id, prop, val, dsl) {
+function updateProp(type, id, prop, val, dsl, lineNum) {
+  if (lineNum != null) {
+    const lines = dsl.split('\n');
+    const idx = lineNum - 1;
+    if (idx >= 0 && idx < lines.length) {
+      const reExist = new RegExp(`^(\\s*${type}\\s+${id}\\s+.*)\\b${prop}=\\S+(.*$)`);
+      if (reExist.test(lines[idx])) {
+        lines[idx] = lines[idx].replace(reExist, `$1${prop}=${val}$2`);
+      } else {
+        const trimEnd = lines[idx].trimEnd();
+        if (trimEnd.endsWith('{')) {
+          lines[idx] = trimEnd.slice(0, -1).trimEnd() + ` ${prop}=${val} {`;
+        } else {
+          lines[idx] = trimEnd + ` ${prop}=${val}`;
+        }
+      }
+    }
+    return lines.join('\n');
+  }
   // First try to replace existing prop
   const reExist = new RegExp(`^(\\s*${type}\\s+${id}\\s+.*)\\b${prop}=\\S+(.*$)`, 'm');
   if (reExist.test(dsl)) {
@@ -1023,7 +1050,16 @@ function updateProp(type, id, prop, val, dsl) {
 }
 
 // Change the quoted label for an element
-function updateLabel(type, id, newLabel, dsl) {
+function updateLabel(type, id, newLabel, dsl, lineNum) {
+  if (lineNum != null) {
+    const lines = dsl.split('\n');
+    const idx = lineNum - 1;
+    if (idx >= 0 && idx < lines.length) {
+      const re = new RegExp(`^(\\s*${type}\\s+${id}\\s+)"[^"]*"(.*)$`);
+      lines[idx] = lines[idx].replace(re, `$1"${newLabel}"$2`);
+    }
+    return lines.join('\n');
+  }
   const re = new RegExp(`^(\\s*${type}\\s+${id}\\s+)"[^"]*"(.*)$`, 'm');
   return dsl.replace(re, `$1"${newLabel}"$2`);
 }
@@ -3195,11 +3231,15 @@ function renderProps() {
   function getElTypeAndId() {
     if (selArr.length !== 1) return null;
     const id = selArr[0];
-    if (parsed.stateMap[id]) return { type: 'state', id };
-    if (parsed.pseudoMap[id]) return { type: parsed.pseudoMap[id].type, id };
-    if (parsed.groupMap[id]) return { type: 'group', id };
-    if (parsed.noteMap[id]) return { type: 'note', id };
-    return null;
+    const el = parsed.stateMap[id] || parsed.pseudoMap[id] || parsed.groupMap[id] || parsed.noteMap[id];
+    if (!el) return null;
+    let type;
+    if (parsed.stateMap[id]) type = 'state';
+    else if (parsed.pseudoMap[id]) type = parsed.pseudoMap[id].type;
+    else if (parsed.groupMap[id]) type = 'group';
+    else if (parsed.noteMap[id]) type = 'note';
+    else return null;
+    return { type, id: el.id, line: el.line };
   }
 
   // Label change
@@ -3208,7 +3248,7 @@ function renderProps() {
     if (!info) return;
     pushHistory();
     let dsl = getDsl();
-    dsl = updateLabel(info.type, info.id, this.value, dsl);
+    dsl = updateLabel(info.type, info.id, this.value, dsl, info.line);
     setDsl(dsl);
     refreshView();
   });
@@ -3220,7 +3260,7 @@ function renderProps() {
     if (!info) return;
     pushHistory();
     let dsl = getDsl();
-    dsl = updateLabel(info.type, info.id, this.value.replace(/\n/g, '\\n'), dsl);
+    dsl = updateLabel(info.type, info.id, this.value.replace(/\n/g, '\\n'), dsl, info.line);
     setDsl(dsl);
     refreshView();
   });
@@ -3235,7 +3275,7 @@ function renderProps() {
     let dsl = getDsl();
     const nx = parseFloat(document.getElementById('pp-x').value) || 0;
     const ny = parseFloat(document.getElementById('pp-y').value) || 0;
-    dsl = updatePos(info.type, info.id, nx, ny, dsl);
+    dsl = updatePos(info.type, info.id, nx, ny, dsl, info.line);
     setDsl(dsl);
     refreshView();
   }
@@ -3252,7 +3292,7 @@ function renderProps() {
     let dsl = getDsl();
     const nw = parseFloat(document.getElementById('pp-w').value) || 1;
     const nh = parseFloat(document.getElementById('pp-h').value) || 1;
-    dsl = updateSize(info.type, info.id, nw, nh, dsl);
+    dsl = updateSize(info.type, info.id, nw, nh, dsl, info.line);
     setDsl(dsl);
     refreshView();
   }
@@ -3268,7 +3308,7 @@ function renderProps() {
       let dsl = getDsl();
       const val = this.value.trim();
       if (val) {
-        dsl = updateProp(info.type, info.id, field, val, dsl);
+        dsl = updateProp(info.type, info.id, field, val, dsl, info.line);
       } else {
         // Remove the property by replacing with empty — use regex to strip
         const re = new RegExp(`(^\\s*${info.type}\\s+${info.id}\\s+.*)\\b${field}=\\S+`, 'm');
@@ -3286,7 +3326,7 @@ function renderProps() {
       if (!info) return;
       pushHistory();
       let dsl = getDsl();
-      dsl = updateProp(info.type, info.id, this.dataset.prop, this.dataset.val, dsl);
+      dsl = updateProp(info.type, info.id, this.dataset.prop, this.dataset.val, dsl, info.line);
       setDsl(dsl);
       refresh();
     });
@@ -3300,7 +3340,7 @@ function renderProps() {
     let dsl = getDsl();
     const val = this.value.trim();
     if (val) {
-      dsl = updateProp(info.type, info.id, 'border', val, dsl);
+      dsl = updateProp(info.type, info.id, 'border', val, dsl, info.line);
     } else {
       const re = new RegExp(`(^\\s*${info.type}\\s+${info.id}\\s+.*)\\bborder=\\S+`, 'm');
       dsl = dsl.replace(re, '$1');
@@ -3317,7 +3357,7 @@ function renderProps() {
     let dsl = getDsl();
     const val = this.value.trim();
     if (val) {
-      dsl = updateProp(info.type, info.id, 'text', val, dsl);
+      dsl = updateProp(info.type, info.id, 'text', val, dsl, info.line);
     } else {
       const re = new RegExp(`(^\\s*${info.type}\\s+${info.id}\\s+.*)\\btext=\\S+`, 'm');
       dsl = dsl.replace(re, '$1');
@@ -3334,7 +3374,7 @@ function renderProps() {
     let dsl = getDsl();
     const val = this.value;
     if (val) {
-      dsl = updateProp(info.type, info.id, 'style', val, dsl);
+      dsl = updateProp(info.type, info.id, 'style', val, dsl, info.line);
     } else {
       const re = new RegExp(`(^\\s*${info.type}\\s+${info.id}\\s+.*)\\bstyle=\\S+`, 'm');
       dsl = dsl.replace(re, '$1');
@@ -3351,7 +3391,7 @@ function renderProps() {
     let dsl = getDsl();
     const val = this.value.trim();
     if (val) {
-      dsl = updateProp(info.type, info.id, 'round', val, dsl);
+      dsl = updateProp(info.type, info.id, 'round', val, dsl, info.line);
     } else {
       const re = new RegExp(`(^\\s*${info.type}\\s+${info.id}\\s+.*)\\bround=\\S+`, 'm');
       dsl = dsl.replace(re, '$1');

@@ -983,7 +983,17 @@ function validate(result) {
 // ═══════════════════════════════════════════════
 
 // Update position (at X,Y) for a given element type and id
-function updatePos(type, id, nx, ny, dsl) {
+function updatePos(type, id, nx, ny, dsl, lineNum) {
+  if (lineNum != null) {
+    // Line-number based update (for duplicate IDs)
+    const lines = dsl.split('\n');
+    const idx = lineNum - 1;
+    if (idx >= 0 && idx < lines.length) {
+      const re = new RegExp(`^(\\s*${type}\\s+${id}\\s+(?:"[^"]*"\\s+)?at\\s+)[\\d.]+,[\\d.]+(.*$)`);
+      lines[idx] = lines[idx].replace(re, `$1${nx},${ny}$2`);
+    }
+    return lines.join('\n');
+  }
   const re = new RegExp(`^(\\s*${type}\\s+${id}\\s+(?:"[^"]*"\\s+)?at\\s+)[\\d.]+,[\\d.]+(.*$)`, 'm');
   return dsl.replace(re, `$1${nx},${ny}$2`);
 }
@@ -4152,7 +4162,7 @@ function setupInteractions() {
         else if (parsed.groupMap[si.id]) elType = 'group';
         else if (parsed.noteMap[si.id]) elType = 'note';
         else elType = 'state';
-        dragItems.push({ id: si.id, bareId: el.id, type: elType, origX: el.x, origY: el.y, parent: el.parent || null, parentPath: el.parentPath || null, w: el.w, h: el.h });
+        dragItems.push({ id: si.id, bareId: el.id, type: elType, origX: el.x, origY: el.y, parent: el.parent || null, parentPath: el.parentPath || null, w: el.w, h: el.h, line: el.line });
       }
       // Groups drag contained states
       for (const si of sel) {
@@ -4162,7 +4172,7 @@ function setupInteractions() {
           const cx = st.x + (st.w || 0) / 2, cy = st.y + (st.h || 0) / 2;
           if (cx >= grp.x && cx <= grp.x + grp.w && cy >= grp.y && cy <= grp.y + grp.h) {
             if (!dragItems.some(it => it.id === (st.path || st.id))) {
-              dragItems.push({ id: st.path || st.id, bareId: st.id, type: 'state', origX: st.x, origY: st.y, parent: st.parent, parentPath: st.parentPath || null, w: st.w, h: st.h });
+              dragItems.push({ id: st.path || st.id, bareId: st.id, type: 'state', origX: st.x, origY: st.y, parent: st.parent, parentPath: st.parentPath || null, w: st.w, h: st.h, line: st.line });
             }
           }
         }
@@ -4198,14 +4208,14 @@ function setupInteractions() {
             if (parentSt) {
               const newX = Math.max(0, Math.min(parentSt.w - (item.w || 1), item.origX + dxGrid));
               const newY = Math.max(0, Math.min(parentSt.h - (item.h || 1), item.origY + dyGrid));
-              dsl = updatePos(elType, dslId, newX, newY, dsl);
+              dsl = updatePos(elType, dslId, newX, newY, dsl, item.line);
             } else {
-              dsl = updatePos(elType, dslId, item.origX + dxGrid, item.origY + dyGrid, dsl);
+              dsl = updatePos(elType, dslId, item.origX + dxGrid, item.origY + dyGrid, dsl, item.line);
             }
           } else {
             const newX = Math.max(0, item.origX + dxGrid);
             const newY = Math.max(0, item.origY + dyGrid);
-            dsl = updatePos(elType, dslId, newX, newY, dsl);
+            dsl = updatePos(elType, dslId, newX, newY, dsl, item.line);
           }
         }
         setDsl(dsl);

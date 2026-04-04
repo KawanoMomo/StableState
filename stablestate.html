@@ -848,7 +848,7 @@ function resolveStateRef(dotPath, parsed) {
     let match = true, cur = c;
     for (let i = parts.length - 2; i >= 0; i--) {
       if (!cur.parent || cur.parent !== parts[i]) { match = false; break; }
-      cur = parsed.stateMap[cur.parent];
+      cur = parsed.stateMap[cur.parentPath || cur.parent];
     }
     if (match) return c;
   }
@@ -959,7 +959,7 @@ function validate(result) {
   // ─── Nesting bounds: child state coords+size exceeding parent bounds → warning ───
   for (const s of result.states) {
     if (!s.parent) continue;
-    const parent = result.stateMap[s.parent];
+    const parent = result.stateMap[s.parentPath || s.parent];
     if (!parent) continue;
     // Child coords are relative to parent
     if (s.x + s.w > parent.w || s.y + s.h > parent.h || s.x < 0 || s.y < 0) {
@@ -1492,10 +1492,10 @@ function esc(s) {
 // ═══════════════════════════════════════════════
 function getAbsolutePos(element, parsed) {
   let ox = 0, oy = 0;
-  let pid = element.parent;
+  let pid = element.parentPath || element.parent;
   while (pid) {
     const p = parsed.stateMap[pid];
-    if (p) { ox += p.x; oy += p.y; pid = p.parent; }
+    if (p) { ox += p.x; oy += p.y; pid = p.parentPath || p.parent; }
     else break;
   }
   return { x: (element.x + ox) * parsed.canvas.grid, y: (element.y + oy) * parsed.canvas.grid };
@@ -2368,7 +2368,7 @@ function renderTable(parsed) {
     if (lc.isSelf) chain.push(lc.state); // self column includes itself as ancestor
     let cur = lc.state;
     while (cur.parent) {
-      const p = parsed.stateMap[cur.parent];
+      const p = parsed.stateMap[cur.parentPath || cur.parent];
       if (p) { chain.unshift(p); cur = p; }
       else break;
     }
@@ -3547,7 +3547,7 @@ function buildExcelData(p) {
   data.states.filter(s => s.parent === null).forEach(function(s) { walk(s); });
 
   // Find max depth
-  function getDepth(st) { let d = 0, cur = st; while (cur.parent) { cur = data.stateMap[cur.parent]; d++; } return d; }
+  function getDepth(st) { let d = 0, cur = st; while (cur.parent) { cur = data.stateMap[cur.parentPath || cur.parent]; d++; } return d; }
   let maxDepth = 0;
   leafCols.forEach(function(lc) { const d = getDepth(lc); if (d > maxDepth) maxDepth = d; });
   const headerRows = maxDepth + 1;
@@ -3571,7 +3571,7 @@ function buildExcelData(p) {
       const lc = leafCols[ci];
       const chain = [];
       let cur = lc;
-      while (cur.parent) { const pp = data.stateMap[cur.parent]; if (pp) { chain.unshift(pp); cur = pp; } else break; }
+      while (cur.parent) { const pp = data.stateMap[cur.parentPath || cur.parent]; if (pp) { chain.unshift(pp); cur = pp; } else break; }
       // chain = ancestors, lc = leaf. chain.length = depth
       const depth = chain.length;
       const leafRow = depth; // row where leaf label appears
@@ -3583,7 +3583,7 @@ function buildExcelData(p) {
           const prevLc = leafCols[ci - 1];
           const prevChain = [];
           let pcur = prevLc;
-          while (pcur.parent) { const pp = data.stateMap[pcur.parent]; if (pp) { prevChain.unshift(pp); pcur = pp; } else break; }
+          while (pcur.parent) { const pp = data.stateMap[pcur.parentPath || pcur.parent]; if (pp) { prevChain.unshift(pp); pcur = pp; } else break; }
           if (r < prevChain.length && prevChain[r].id === anc.id) {
             row.push(''); // same group, empty
             sty.push({ bg: CLR.headerBg });
@@ -4183,7 +4183,7 @@ function setupInteractions() {
                          item.type === 'group' ? 'group' :
                          item.type === 'note' ? 'note' : item.type;
           if (item.parent) {
-            const parentSt = parsed.stateMap[item.parent];
+            const parentSt = parsed.stateMap[item.parentPath || item.parent];
             if (parentSt) {
               const newX = Math.max(0, Math.min(parentSt.w - (item.w || 1), item.origX + dxGrid));
               const newY = Math.max(0, Math.min(parentSt.h - (item.h || 1), item.origY + dyGrid));

@@ -423,6 +423,12 @@ document.getElementById('table-wrap').addEventListener('wheel', function(e) {
   }
 }, { passive: false });
 
+function setTableCellWidth(delta) {
+  tableCellWidth = Math.max(40, Math.min(240, tableCellWidth + delta * 20));
+  document.getElementById('table-cw-label').textContent = tableCellWidth + 'px';
+  if (parsed) renderTable(parsed);
+}
+
 // Actions Toggle
 // ═══════════════════════════════════════════════
 function toggleActions() {
@@ -2142,7 +2148,7 @@ function renderTable(parsed) {
   // ─── Calculate column widths ───
   function calcMinWidth(text) {
     const charCount = (text || '-').length;
-    return Math.max(80, charCount * 8);
+    return Math.max(tableCellWidth, charCount * 8);
   }
 
   // ─── Build header HTML (thead with sticky positioning) ───

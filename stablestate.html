@@ -2634,6 +2634,8 @@ function renderTable(parsed) {
       const isStateField = (field === 'entry' || field === 'do' || field === 'exit');
       const isAction = isStateField || field === 'action';
       const st = parsed.stateMap[stateId];
+      const stBareId = st ? st.id : stateId;
+      const stLine = st ? st.line : null;
       const stLabel = st ? st.label : stateId;
 
       let html = `<div class="prop-section"><div class="prop-label">${esc(stLabel)}</div>`;
@@ -2650,8 +2652,13 @@ function renderTable(parsed) {
           const newVal = document.getElementById('pp-table-edit').value.replace(/\n/g, '\\n').trim();
           pushHistory();
           let dsl = getDsl();
-          if (newVal) { dsl = updateProp('state', stateId, field, newVal, dsl); }
-          else { dsl = dsl.replace(new RegExp(`(^\\s*state\\s+${stateId}\\s+.*)\\b${field}=\\S+`, 'm'), '$1'); }
+          if (newVal) { dsl = updateProp('state', stBareId, field, newVal, dsl, stLine); }
+          else if (stLine != null) {
+            const dslLines = dsl.split('\n');
+            const li = stLine - 1;
+            if (li >= 0 && li < dslLines.length) dslLines[li] = dslLines[li].replace(new RegExp(`\\b${field}=\\S+`), '');
+            dsl = dslLines.join('\n');
+          } else { dsl = dsl.replace(new RegExp(`(^\\s*state\\s+${stBareId}\\s+.*)\\b${field}=\\S+`, 'm'), '$1'); }
           setDsl(dsl);
           refresh();
         });
@@ -4089,6 +4096,8 @@ function setupInteractions() {
       const rtype = handle.dataset.rtype;
       const el = parsed.stateMap[rid] || parsed.groupMap[rid] || parsed.noteMap[rid];
       if (!el) return;
+      const resizeBareId = el.id;
+      const resizeLine = el.line;
       pushHistory();
       const origX = el.x, origY = el.y, origW = el.w, origH = el.h;
       const sc = getSvgScale();
@@ -4112,8 +4121,8 @@ function setupInteractions() {
         if (newH === 1 && edge.includes('n')) newY = origY + origH - 1;
 
         let dsl = getDsl();
-        dsl = updatePos(rtype, rid, newX, newY, dsl);
-        dsl = updateSize(rtype, rid, newW, newH, dsl);
+        dsl = updatePos(rtype, resizeBareId, newX, newY, dsl, resizeLine);
+        dsl = updateSize(rtype, resizeBareId, newW, newH, dsl, resizeLine);
         setDsl(dsl);
         parsed = parseDSL(getDsl());
         document.getElementById('svg-wrap').innerHTML = renderSVG(parsed);
@@ -4329,14 +4338,24 @@ function connectSelected() {
 // ═══════════════════════════════════════════════
 // Delete Selected
 // ═══════════════════════════════════════════════
-function removeDSLElement(id, dsl) {
+function removeDSLElement(id, dsl, lineNum) {
+  const bareId = id.includes('.') ? id.split('.').pop() : id;
   const lines = dsl.split('\n');
   const result = [];
   let skipNesting = 0;
-  for (const line of lines) {
+  let foundDefLine = false;
+  for (let li = 0; li < lines.length; li++) {
+    const line = lines[li];
     const trimmed = line.trim();
     // Check if this line defines the element
-    if (trimmed.match(new RegExp(`^(state|group|note|initial|final|choice|history|deephistory|fork|join)\\s+${id}\\b`))) {
+    const isDefLine = trimmed.match(new RegExp(`^(state|group|note|initial|final|choice|history|deephistory|fork|join)\\s+${bareId}\\b`));
+    if (isDefLine && !foundDefLine) {
+      // If lineNum specified, only match that specific line
+      if (lineNum != null && (li + 1) !== lineNum) {
+        result.push(line);
+        continue;
+      }
+      foundDefLine = true;
       if (trimmed.endsWith('{')) skipNesting = 1;
       continue; // skip this line
     }
@@ -4348,12 +4367,9 @@ function removeDSLElement(id, dsl) {
       if (trimmed.endsWith('{')) skipNesting++;
       continue;
     }
-    // Remove transitions referencing this ID (as source or target)
-    if (trimmed.match(new RegExp(`^${id}\\s*->`)) || trimmed.match(new RegExp(`->\\s*${id}(\\s|$)`))) {
-      continue;
-    }
-    // Also handle dot-path references like parent.id or id.child
-    if (trimmed.match(new RegExp(`^\\S*\\.${id}\\s*->|^${id}\\.\\S+\\s*->|->\\s*\\S*\\.${id}(\\s|$)|->\\s*${id}\\.\\S+`))) {
+    // Remove transitions referencing this ID (as source or target, using path or bare ID)
+    const transId = id.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    if (trimmed.match(new RegExp(`^${transId}\\s*->`)) || trimmed.match(new RegExp(`->\\s*${transId}(\\s|$)`))) {
       continue;
     }
     result.push(line);
@@ -4379,7 +4395,8 @@ function deleteSelected() {
   pushHistory();
   let dsl = getDsl();
   for (const si of sel) {
-    dsl = removeDSLElement(si.id, dsl);
+    const el = parsed.stateMap[si.id] || parsed.pseudoMap[si.id] || parsed.groupMap[si.id] || parsed.noteMap[si.id];
+    dsl = removeDSLElement(si.id, dsl, el ? el.line : null);
   }
   sel = [];
   setDsl(dsl);
@@ -4616,15 +4633,19 @@ function copySelection() {
   const dsl = getDsl();
   const lines = dsl.split('\n');
   for (const si of sel) {
-    const id = si.id;
+    const el = parsed.stateMap[si.id] || parsed.pseudoMap[si.id] || parsed.groupMap[si.id] || parsed.noteMap[si.id];
+    const startLine = el ? el.line : null;
+    const bareId = el ? el.id : si.id;
     // Find the DSL lines that define this element
     let collecting = false;
     let nestDepth = 0;
     const collected = [];
-    for (const line of lines) {
+    for (let li = 0; li < lines.length; li++) {
+      const line = lines[li];
       const trimmed = line.trim();
       if (!collecting) {
-        if (trimmed.match(new RegExp(`^(state|group|note|initial|final|choice|history|deephistory|fork|join)\\s+${id}\\b`))) {
+        const isDefLine = trimmed.match(new RegExp(`^(state|group|note|initial|final|choice|history|deephistory|fork|join)\\s+${bareId}\\b`));
+        if (isDefLine && (startLine == null || (li + 1) === startLine)) {
           collecting = true;
           collected.push(line);
           if (trimmed.endsWith('{')) nestDepth = 1;
@@ -4651,7 +4672,8 @@ function cutSelection() {
   pushHistory();
   let dsl = getDsl();
   sel.forEach(si => {
-    dsl = removeDSLElement(si.id, dsl);
+    const el = parsed.stateMap[si.id] || parsed.pseudoMap[si.id] || parsed.groupMap[si.id] || parsed.noteMap[si.id];
+    dsl = removeDSLElement(si.id, dsl, el ? el.line : null);
   });
   sel = [];
   setDsl(dsl);

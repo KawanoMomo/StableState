@@ -1222,11 +1222,8 @@ function applyChoiceBranches(stateId, evName, branches, defaultTarget, parsed, d
   }
 
   if (choiceId) {
-    // Existing choice: remove all outgoing transitions
-    const choiceOutgoing = parsed.transitions.filter(t => t.from === choiceId);
-    for (const t of choiceOutgoing) {
-      dsl = removeTransition(t.from, t.to, t.event, t.guard, dsl);
-    }
+    // Existing choice: collect outgoing transitions for in-place replacement
+    var choiceOutgoing = parsed.transitions.filter(t => t.from === choiceId);
     // Update default= on source transition
     dsl = setDefaultAttr(dsl, fromPath, choiceId, defaultTarget);
   } else {
@@ -1253,24 +1250,45 @@ function applyChoiceBranches(stateId, evName, branches, defaultTarget, parsed, d
     dsl = setDefaultAttr(dsl, fromPath, choiceId, defaultTarget);
   }
 
-  // Add branch transitions from choice
+  // Build new branch list
+  const newBranches = [];
   let hasElse = false;
   for (const b of branches) {
     if (!b.guard) hasElse = true;
-    if (b.target) {
-      const targetPath = stateDotPath(b.target);
-      dsl = addTransition(choiceId, targetPath, null, b.guard, b.action, null, dsl);
-    } else if (defaultTarget) {
-      // Branch without -> but has actions: use defaultTarget
-      const targetPath = stateDotPath(defaultTarget);
-      dsl = addTransition(choiceId, targetPath, null, b.guard, b.action, null, dsl);
+    const tgt = b.target || defaultTarget;
+    if (tgt) {
+      newBranches.push({ target: stateDotPath(tgt), guard: b.guard, action: b.action });
     }
   }
-
   // Add fallback (implicit else) from defaultTarget if no explicit else
   if (!hasElse && defaultTarget) {
-    const targetPath = stateDotPath(defaultTarget);
-    dsl = addTransition(choiceId, targetPath, null, null, null, null, dsl);
+    newBranches.push({ target: stateDotPath(defaultTarget), guard: null, action: null });
+  }
+
+  // In-place replace existing branches, then add/remove as needed
+  if (typeof choiceOutgoing !== 'undefined' && choiceOutgoing.length > 0) {
+    const minLen = Math.min(choiceOutgoing.length, newBranches.length);
+    for (let bi = 0; bi < minLen; bi++) {
+      const old = choiceOutgoing[bi];
+      const nb = newBranches[bi];
+      dsl = replaceTransition(old.from, old.to, old.event, old.guard,
+        choiceId, nb.target, null, nb.guard, nb.action, null, dsl);
+    }
+    // Remove extra old branches
+    for (let bi = minLen; bi < choiceOutgoing.length; bi++) {
+      const old = choiceOutgoing[bi];
+      dsl = removeTransition(old.from, old.to, old.event, old.guard, dsl);
+    }
+    // Add extra new branches
+    for (let bi = minLen; bi < newBranches.length; bi++) {
+      const nb = newBranches[bi];
+      dsl = addTransition(choiceId, nb.target, null, nb.guard, nb.action, null, dsl);
+    }
+  } else {
+    // New choice: just add all branches
+    for (const nb of newBranches) {
+      dsl = addTransition(choiceId, nb.target, null, nb.guard, nb.action, null, dsl);
+    }
   }
 
   return dsl;

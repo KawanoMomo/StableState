@@ -2377,16 +2377,16 @@ function renderTable(parsed) {
     if (fromEl && fromEl.type === 'initial') {
       // Resolve the target
       const tgt = resolveStateRef(t.to, parsed);
-      if (tgt) initialTargets.add(tgt.id);
+      if (tgt) initialTargets.add(tgt.path || tgt.id);
     }
   }
 
   // Depth-first walk: composite states also get a self-column at child depth
   function walkState(st, depth) {
     if (st.children.length === 0) {
-      leafColumns.push({ id: st.id, state: st, depth: depth, isInitial: initialTargets.has(st.id) });
+      leafColumns.push({ id: st.path || st.id, state: st, depth: depth, isInitial: initialTargets.has(st.path || st.id) });
     } else {
-      leafColumns.push({ id: st.id, state: st, depth: depth + 1, isInitial: false, isSelf: true });
+      leafColumns.push({ id: st.path || st.id, state: st, depth: depth + 1, isInitial: false, isSelf: true });
       for (const childId of st.children) {
         const child = parsed.stateMap[childId];
         if (child) walkState(child, depth + 1);
@@ -4393,10 +4393,14 @@ function removeDSLElement(id, dsl, lineNum) {
 function deleteSelected() {
   if (!sel.length) return;
   pushHistory();
-  let dsl = getDsl();
-  for (const si of sel) {
+  // Sort by line number descending to avoid line shift issues
+  const items = sel.map(si => {
     const el = parsed.stateMap[si.id] || parsed.pseudoMap[si.id] || parsed.groupMap[si.id] || parsed.noteMap[si.id];
-    dsl = removeDSLElement(si.id, dsl, el ? el.line : null);
+    return { id: si.id, line: el ? el.line : null };
+  }).sort((a, b) => (b.line || 0) - (a.line || 0));
+  let dsl = getDsl();
+  for (const item of items) {
+    dsl = removeDSLElement(item.id, dsl, item.line);
   }
   sel = [];
   setDsl(dsl);
@@ -4671,10 +4675,13 @@ function cutSelection() {
   copySelection();
   pushHistory();
   let dsl = getDsl();
-  sel.forEach(si => {
+  const cutItems = sel.map(si => {
     const el = parsed.stateMap[si.id] || parsed.pseudoMap[si.id] || parsed.groupMap[si.id] || parsed.noteMap[si.id];
-    dsl = removeDSLElement(si.id, dsl, el ? el.line : null);
-  });
+    return { id: si.id, line: el ? el.line : null };
+  }).sort((a, b) => (b.line || 0) - (a.line || 0));
+  for (const item of cutItems) {
+    dsl = removeDSLElement(item.id, dsl, item.line);
+  }
   sel = [];
   setDsl(dsl);
   refresh();

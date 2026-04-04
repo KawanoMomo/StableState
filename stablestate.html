@@ -2508,12 +2508,10 @@ function renderTable(parsed) {
       const curGuard = existing ? existing.guard || '' : '';
       let curAction = existing ? existing.action || '' : '';
       let curTargetId = existing ? (existing.kind === 'internal' ? '' : (resolveStateRef(existing.to, parsed) || {}).id || '') : '';
-      if (existing) {
-        const ifElse = actionToIfElse(existing.to, parsed);
-        if (ifElse) {
-          curAction = ifElse;
-          curTargetId = ''; // Choice target: clear dropdown so user can select default target
-        }
+      // If target is a choice, clear action and target dropdown (user must explicitly type if/else)
+      if (existing && parsed.pseudoMap[existing.to] && parsed.pseudoMap[existing.to].type === 'choice') {
+        curAction = '';
+        curTargetId = '';
       }
 
       html += `<div class="prop-sub" style="margin-bottom:4px">${esc(evName || '')}</div>`;

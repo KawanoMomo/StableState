@@ -2333,8 +2333,12 @@ function renderTable(parsed) {
         const fromEl = resolveStateRef(t.from, parsed);
         return fromEl && fromEl.id === lc.id;
       });
-      const val = matching.length > 0 && matching[0].action ? matching[0].action : '-';
-      bodyHtml += `<td class="table-editable" data-field="action" data-state="${lc.id}" data-event="${esc(evName)}" style="cursor:pointer;color:#C3E88D">${esc(val).replace(/\\n/g, '<br>')}</td>`;
+      let val = matching.length > 0 && matching[0].action ? matching[0].action : '-';
+      if (matching.length > 0) {
+        const ifElse = actionToIfElse(matching[0].to, parsed);
+        if (ifElse) val = ifElse;
+      }
+      bodyHtml += `<td class="table-editable" data-field="action" data-state="${lc.id}" data-event="${esc(evName)}" style="cursor:pointer;color:#C3E88D">${esc(val).replace(/\\n/g, '<br>').replace(/\n/g, '<br>').replace(/\t/g, '&emsp;')}</td>`;
     }
     bodyHtml += '</tr>';
 
@@ -2428,8 +2432,12 @@ function renderTable(parsed) {
       });
       const existing = mt.length > 0 ? mt[0] : null;
       const curGuard = existing ? existing.guard || '' : '';
-      const curAction = existing ? existing.action || '' : '';
+      let curAction = existing ? existing.action || '' : '';
       const curTargetId = existing ? (existing.kind === 'internal' ? '' : (resolveStateRef(existing.to, parsed) || {}).id || '') : '';
+      if (existing) {
+        const ifElse = actionToIfElse(existing.to, parsed);
+        if (ifElse) curAction = ifElse;
+      }
 
       html += `<div class="prop-sub" style="margin-bottom:4px">${esc(evName || '')}</div>`;
       html += `<div class="prop-sub">target</div>`;

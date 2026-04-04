@@ -1117,7 +1117,7 @@ function parseIfElseAction(text) {
     const line = lines[i].trim();
     let guard = null;
 
-    if (line.startsWith('if [') || line.startsWith('elif [')) {
+    if (line.startsWith('if [') || line.startsWith('elif [') || line.startsWith('else if [')) {
       const gm = line.match(/\[([^\]]*)\]/);
       guard = gm ? gm[1].trim() : null;
     } else if (line === 'else') {
@@ -1224,9 +1224,9 @@ function actionToIfElse(transitionTo, parsed) {
 
     if (t.guard) {
       const keyword = (i === 0) ? 'if' : 'elif';
-      parts.push(keyword + ' [' + t.guard + ']\n\t-> ' + targetLabel + actionPart);
+      parts.push(keyword + ' [' + t.guard + ']\n  -> ' + targetLabel + actionPart);
     } else {
-      parts.push('else\n\t-> ' + targetLabel + actionPart);
+      parts.push('else\n  -> ' + targetLabel + actionPart);
     }
   }
 
@@ -2338,7 +2338,7 @@ function renderTable(parsed) {
         const ifElse = actionToIfElse(matching[0].to, parsed);
         if (ifElse) val = ifElse;
       }
-      bodyHtml += `<td class="table-editable" data-field="action" data-state="${lc.id}" data-event="${esc(evName)}" style="cursor:pointer;color:#C3E88D">${esc(val).replace(/\\n/g, '<br>').replace(/\n/g, '<br>').replace(/\t/g, '&emsp;')}</td>`;
+      bodyHtml += `<td class="table-editable" data-field="action" data-state="${lc.id}" data-event="${esc(evName)}" style="cursor:pointer;color:#C3E88D;white-space:pre-wrap">${esc(val).replace(/\\n/g, '\n')}</td>`;
     }
     bodyHtml += '</tr>';
 
@@ -2459,6 +2459,17 @@ function renderTable(parsed) {
       if (field === 'guard') document.getElementById('pp-table-guard').focus();
       else if (field === 'action') document.getElementById('pp-table-action').focus();
       else document.getElementById('pp-table-target').focus();
+
+      // Allow Tab key to insert spaces in action textarea
+      document.getElementById('pp-table-action').addEventListener('keydown', function(e) {
+        if (e.key === 'Tab') {
+          e.preventDefault();
+          const ta = this;
+          const start = ta.selectionStart;
+          ta.value = ta.value.substring(0, start) + '  ' + ta.value.substring(ta.selectionEnd);
+          ta.selectionStart = ta.selectionEnd = start + 2;
+        }
+      });
 
       document.getElementById('pp-table-apply').addEventListener('click', function() {
         const target = document.getElementById('pp-table-target').value;

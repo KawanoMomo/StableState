@@ -2744,7 +2744,7 @@ function renderTable(parsed) {
       function buildCandidates(type, prefix) {
         if (type === 'state') {
           if (!parsed) return [];
-          return parsed.states.map(s => stateDotPath(s.id));
+          return parsed.states.map(s => s.path || s.id);
         }
         if (type === 'keyword') {
           return AC_KEYWORDS;

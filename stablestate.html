@@ -564,20 +564,30 @@ function parseDSL(text) {
     const pseudoMatch = trimmed.match(/^(initial|final|choice|history|deephistory|fork|join)\s+(\S+)\s+at\s+(-?[\d.]+)\s*,\s*(-?[\d.]+)(?:\s+size\s+(-?[\d.]+)\s*x\s*(-?[\d.]+))?/);
     if (pseudoMatch) {
       const id = pseudoMatch[2];
-      // Duplicate ID check across all maps
-      if (checkDuplicate(id, lineNum, result)) continue;
+      const psParentEntry = nestingStack.length > 0 ? nestingStack.findLast(e => e.type === 'state') : null;
+      const psParentId = psParentEntry ? psParentEntry.id : null;
+      const psParentPath = psParentEntry ? psParentEntry.path : null;
+      const psPath = psParentPath ? psParentPath + '.' + id : id;
+      // Duplicate ID check by path
+      if (result.pseudoMap[psPath]) {
+        result.errors.push({ line: lineNum, msg: 'Duplicate pseudo-state path: ' + psPath });
+        continue;
+      }
       const ps = {
         type: pseudoMatch[1],
         id: id,
+        path: psPath,
         x: parseFloat(pseudoMatch[3]),
         y: parseFloat(pseudoMatch[4]),
         w: pseudoMatch[5] ? parseFloat(pseudoMatch[5]) : null,
         h: pseudoMatch[6] ? parseFloat(pseudoMatch[6]) : null,
-        parent: nestingStack.length > 0 ? nestingStack.findLast(e => e.type === 'state')?.id || null : null,
+        parent: psParentId,
+        parentPath: psParentPath,
         line: lineNum
       };
       result.pseudoStates.push(ps);
-      result.pseudoMap[id] = ps;
+      result.pseudoMap[psPath] = ps;
+      if (!result.pseudoMap[id]) result.pseudoMap[id] = ps;
       continue;
     }
 
@@ -4751,7 +4761,9 @@ function fixIds() {
   for (const el of allElements) {
     const newId = labelToId(el.label);
     if (!newId || newId === el.id) continue;
-    if (parsed.stateMap[newId] || parsed.pseudoMap[newId] || parsed.groupMap[newId] || parsed.noteMap[newId]) continue;
+    // Check collision using path (allows same bare ID under different parents)
+    const newPath = el.parentPath ? el.parentPath + '.' + newId : newId;
+    if (parsed.stateMap[newPath] || parsed.pseudoMap[newId] || parsed.groupMap[newId] || parsed.noteMap[newId]) continue;
     const idRe = new RegExp('\\b' + el.id.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\b', 'g');
     dsl = dsl.replace(idRe, newId);
   }

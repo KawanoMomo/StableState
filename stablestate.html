@@ -302,7 +302,7 @@ let currentTool = 'select';
 let connectFrom = null; // first element ID in connect mode
 let showActions = false;
 let zoomLevel = 100;
-let sel = []; // [{type, id}, ...] — StableBlock compatible
+let sel = []; // [{type, id}, ...] — id is path for states/pseudo, bare for groups/notes
 function isSel(id) { return sel.some(s => s.id === id); }
 function isSelected(id) { return isSel(id); } // renderSVG compat wrapper
 
@@ -1562,7 +1562,7 @@ function renderSVG(parsed) {
     const border = st.borderColor || '#6366F1';
     const textClr = st.textColor || '#e0e0e0';
     const round = st.round != null ? st.round : 10;
-    const elSel = isSelected(st.id);
+    const elSel = isSelected(st.path || st.id);
     const strokeClr = elSel ? 'white' : border;
     const strokeW = elSel ? 2.5 : 1.5;
     const dashAttr = st.style === 'dashed' ? ' stroke-dasharray="6 3"' : '';
@@ -1572,7 +1572,7 @@ function renderSVG(parsed) {
     const dimSt = dimStVal ? ` opacity="${dimStVal}"` : '';
     const stShadow = elSel ? 'filter="drop-shadow(0 4px 12px rgba(99,102,241,0.5))"' : shadow;
 
-    svg += `<g data-type="state" data-id="${st.id}" style="cursor:${annotationMode?'default':'grab'}"${dimSt}>`;
+    svg += `<g data-type="state" data-id="${st.path || st.id}" style="cursor:${annotationMode?'default':'grab'}"${dimSt}>`;
     svg += `<rect x="${pos.x}" y="${pos.y}" width="${pw}" height="${ph}" rx="${round}" ry="${round}" fill="${esc(fill)}" stroke="${esc(strokeClr)}" stroke-width="${strokeW}"${dashAttr} ${stShadow}/>`;
     svg += `<text x="${pos.x + 10}" y="${pos.y + 18}" font-family="${sans}" font-size="12" font-weight="600" fill="${esc(textClr)}" style="pointer-events:none">${esc(st.label)}</text>`;
 
@@ -1617,7 +1617,7 @@ function renderSVG(parsed) {
     const border = st.borderColor || '#818CF8';
     const textClr = st.textColor || '#e0e0e0';
     const round = st.round != null ? st.round : 10;
-    const elSel = isSelected(st.id);
+    const elSel = isSelected(st.path || st.id);
     const strokeClr = elSel ? 'white' : border;
     const strokeW = elSel ? 2.5 : 1.5;
     const dashAttr = st.style === 'dashed' ? ' stroke-dasharray="6 3"' : '';
@@ -1628,7 +1628,7 @@ function renderSVG(parsed) {
     const dimSt = dimStVal ? ` opacity="${dimStVal}"` : '';
     const stShadow = elSel ? 'filter="drop-shadow(0 4px 12px rgba(99,102,241,0.5))"' : shadow;
 
-    svg += `<g data-type="state" data-id="${st.id}" style="cursor:${annotationMode?'default':'grab'}"${dimSt}>`;
+    svg += `<g data-type="state" data-id="${st.path || st.id}" style="cursor:${annotationMode?'default':'grab'}"${dimSt}>`;
     svg += `<rect x="${pos.x}" y="${pos.y}" width="${pw}" height="${ph}" rx="${round}" ry="${round}" fill="${esc(fill)}" stroke="${esc(strokeClr)}" stroke-width="${strokeW}"${dashAttr} ${stShadow}/>`;
 
     if (hasActions) {
@@ -1664,9 +1664,9 @@ function renderSVG(parsed) {
     const dimPsHl = hlIds && !hlIds.has(ps.id) ? 0.15 : null;
     const dimPsVal = dimPsSearch || dimPsHl;
     const dimPs = dimPsVal ? ` opacity="${dimPsVal}"` : '';
-    const psSel = isSelected(ps.id);
+    const psSel = isSelected(ps.path || ps.id);
     const psShadow = psSel ? 'filter="drop-shadow(0 4px 12px rgba(99,102,241,0.5))"' : shadow;
-    svg += `<g data-type="${ps.type}" data-id="${ps.id}" style="cursor:grab"${dimPs}>`;
+    svg += `<g data-type="${ps.type}" data-id="${ps.path || ps.id}" style="cursor:grab"${dimPs}>`;
 
     // Selection highlight ring
     if (psSel) {
@@ -5011,8 +5011,8 @@ document.addEventListener('keydown', function(e) {
       sel = parsed.notes.map(n => ({type: 'note', id: n.id}));
     } else {
       sel = [
-        ...parsed.states.map(s => ({type: 'state', id: s.id})),
-        ...parsed.pseudoStates.map(p => ({type: p.type, id: p.id})),
+        ...parsed.states.map(s => ({type: 'state', id: s.path || s.id})),
+        ...parsed.pseudoStates.map(p => ({type: p.type, id: p.path || p.id})),
         ...parsed.groups.map(g => ({type: 'group', id: g.id}))
       ];
     }
@@ -5098,7 +5098,7 @@ if (isVSCode) {
     if (msg.type === 'paste') { pasteSelection(); }
     if (msg.type === 'selectAll') {
       if (!parsed) return;
-      sel = [...parsed.states.map(s => ({type:'state',id:s.id})), ...parsed.pseudoStates.map(p => ({type:p.type,id:p.id})), ...parsed.groups.map(g => ({type:'group',id:g.id}))];
+      sel = [...parsed.states.map(s => ({type:'state',id:s.path||s.id})), ...parsed.pseudoStates.map(p => ({type:p.type,id:p.path||p.id})), ...parsed.groups.map(g => ({type:'group',id:g.id}))];
       refresh();
     }
   });

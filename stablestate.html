@@ -1138,8 +1138,13 @@ function parseIfElseAction(text) {
       const bodyIndent = getIndent(lines[i]);
       const body = lines[i].trim();
       const tm = body.match(/^->\s*(\S+)(?:\s*\/\s*(.*))?$/);
+      const am = body.match(/^\/\s*(.+)$/);
       if (tm) {
         branches.push({ guard: guard, target: tm[1], action: tm[2] ? tm[2].trim() : null, children: null });
+        i++;
+      } else if (am) {
+        // Action only, no target → use default target
+        branches.push({ guard: guard, target: null, action: am[1].trim(), children: null });
         i++;
       } else if (body.startsWith('if [')) {
         // Nested if/else block
@@ -1158,7 +1163,7 @@ function parseIfElseAction(text) {
 }
 
 // Apply if/else branches as choice pseudo-state + transitions in DSL (supports nesting)
-function applyChoiceBranches(stateId, evName, branches, parsed, dsl) {
+function applyChoiceBranches(stateId, evName, branches, parsed, dsl, defaultTarget) {
   const ev = evName === '(none)' ? null : evName;
   const fromPath = stateDotPath(stateId);
 
@@ -1231,8 +1236,10 @@ function applyChoiceBranches(stateId, evName, branches, parsed, dsl) {
         dsl = addTransition(choiceId, subChoiceId, null, b.guard, null, null, dsl);
         applyBranches(subChoiceId, b.children, parentState);
       } else {
-        // Leaf: add transition to target
-        const targetPath = stateDotPath(b.target);
+        // Leaf: add transition to target (use defaultTarget if target is null)
+        const tgt = b.target || defaultTarget;
+        if (!tgt) continue;
+        const targetPath = stateDotPath(tgt);
         dsl = addTransition(choiceId, targetPath, null, b.guard, b.action, null, dsl);
       }
     }
@@ -2538,7 +2545,7 @@ function renderTable(parsed) {
         // Check if action is if/else syntax
         const branches = parseIfElseAction(actionRaw);
         if (branches) {
-          dsl = applyChoiceBranches(stateId, evName, branches, parsed, dsl);
+          dsl = applyChoiceBranches(stateId, evName, branches, parsed, dsl, target || null);
         } else {
           const action = actionRaw.replace(/\n/g, '\\n').trim();
           let targetId, kind = null;

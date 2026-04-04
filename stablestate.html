@@ -1418,6 +1418,36 @@ function renderSVG(parsed) {
   // Helper: determine which side of source/target to connect
   // ADR-006: Edge-gap algorithm instead of angle-based
   function computePortSide(srcBox, tgtBox) {
+    // Containment detection: parent-child transitions use same-side (U-shape) routing
+    const srcContainsTgt = srcBox.x <= tgtBox.x && srcBox.y <= tgtBox.y &&
+      srcBox.x + srcBox.w >= tgtBox.x + tgtBox.w && srcBox.y + srcBox.h >= tgtBox.y + tgtBox.h;
+    const tgtContainsSrc = tgtBox.x <= srcBox.x && tgtBox.y <= srcBox.y &&
+      tgtBox.x + tgtBox.w >= srcBox.x + srcBox.w && tgtBox.y + tgtBox.h >= srcBox.y + srcBox.h;
+
+    if (srcContainsTgt) {
+      const dTop = tgtBox.y - srcBox.y;
+      const dBottom = (srcBox.y + srcBox.h) - (tgtBox.y + tgtBox.h);
+      const dLeft = tgtBox.x - srcBox.x;
+      const dRight = (srcBox.x + srcBox.w) - (tgtBox.x + tgtBox.w);
+      const minD = Math.min(dTop, dBottom, dLeft, dRight);
+      if (minD === dTop) return { srcSide: 'top', tgtSide: 'top' };
+      if (minD === dBottom) return { srcSide: 'bottom', tgtSide: 'bottom' };
+      if (minD === dLeft) return { srcSide: 'left', tgtSide: 'left' };
+      return { srcSide: 'right', tgtSide: 'right' };
+    }
+    if (tgtContainsSrc) {
+      const dTop = srcBox.y - tgtBox.y;
+      const dBottom = (tgtBox.y + tgtBox.h) - (srcBox.y + srcBox.h);
+      const dLeft = srcBox.x - tgtBox.x;
+      const dRight = (tgtBox.x + tgtBox.w) - (srcBox.x + srcBox.w);
+      const minD = Math.min(dTop, dBottom, dLeft, dRight);
+      if (minD === dTop) return { srcSide: 'top', tgtSide: 'top' };
+      if (minD === dBottom) return { srcSide: 'bottom', tgtSide: 'bottom' };
+      if (minD === dLeft) return { srcSide: 'left', tgtSide: 'left' };
+      return { srcSide: 'right', tgtSide: 'right' };
+    }
+
+    // Non-overlapping boxes: use gap-based algorithm
     const gapR = tgtBox.x - (srcBox.x + srcBox.w);
     const gapL = srcBox.x - (tgtBox.x + tgtBox.w);
     const gapB = tgtBox.y - (srcBox.y + srcBox.h);

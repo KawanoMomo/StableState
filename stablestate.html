@@ -2049,7 +2049,7 @@ function renderTable(parsed) {
     for (const lc of leafColumns) {
       const val = lc.state[field] || '-';
       const mw = calcMinWidth(val);
-      bodyHtml += `<td class="table-editable" data-field="${field}" data-state="${lc.id}" style="min-width:${mw}px;cursor:pointer">${esc(val)}</td>`;
+      bodyHtml += `<td class="table-editable" data-field="${field}" data-state="${lc.id}" style="min-width:${mw}px;cursor:pointer">${esc(val).replace(/\\n/g, '<br>')}</td>`;
     }
     bodyHtml += '</tr>';
   });
@@ -2070,7 +2070,7 @@ function renderTable(parsed) {
         return fromEl && fromEl.id === lc.id;
       });
       const val = matching.length > 0 && matching[0].guard ? matching[0].guard : '-';
-      bodyHtml += `<td class="table-editable" data-field="guard" data-state="${lc.id}" data-event="${esc(evName)}" style="cursor:pointer;color:#C3E88D">${esc(val)}</td>`;
+      bodyHtml += `<td class="table-editable" data-field="guard" data-state="${lc.id}" data-event="${esc(evName)}" style="cursor:pointer;color:#C3E88D">${esc(val).replace(/\\n/g, '<br>')}</td>`;
     }
     bodyHtml += '</tr>';
 
@@ -2082,7 +2082,7 @@ function renderTable(parsed) {
         return fromEl && fromEl.id === lc.id;
       });
       const val = matching.length > 0 && matching[0].action ? matching[0].action : '-';
-      bodyHtml += `<td class="table-editable" data-field="action" data-state="${lc.id}" data-event="${esc(evName)}" style="cursor:pointer;color:#C3E88D">${esc(val)}</td>`;
+      bodyHtml += `<td class="table-editable" data-field="action" data-state="${lc.id}" data-event="${esc(evName)}" style="cursor:pointer;color:#C3E88D">${esc(val).replace(/\\n/g, '<br>')}</td>`;
     }
     bodyHtml += '</tr>';
 

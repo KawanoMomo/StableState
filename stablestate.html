@@ -402,6 +402,27 @@ function setTool(name) {
 }
 
 // ═══════════════════════════════════════════════
+// Table Zoom
+// ═══════════════════════════════════════════════
+function setTableZoom(delta) {
+  tableZoom = Math.max(0.25, Math.min(3, tableZoom + delta * 0.25));
+  document.getElementById('table-zoom-label').textContent = Math.round(tableZoom * 100) + '%';
+  const scaleWrap = document.getElementById('table-scale-wrap');
+  const tableEl = document.getElementById('state-table');
+  if (scaleWrap && tableEl) {
+    scaleWrap.style.transform = 'scale(' + tableZoom + ')';
+    scaleWrap.style.width = (tableEl.offsetWidth) + 'px';
+    scaleWrap.style.height = (tableEl.offsetHeight) + 'px';
+  }
+}
+
+document.getElementById('table-wrap').addEventListener('wheel', function(e) {
+  if (e.ctrlKey || e.metaKey) {
+    e.preventDefault();
+    setTableZoom(e.deltaY < 0 ? 1 : -1);
+  }
+}, { passive: false });
+
 // Actions Toggle
 // ═══════════════════════════════════════════════
 function toggleActions() {
@@ -2218,7 +2239,17 @@ function renderTable(parsed) {
   const thead = tableEl.querySelector('thead');
   if (tableWrap && thead) {
     tableWrap.addEventListener('scroll', function() {
-      thead.style.transform = 'translateY(' + tableWrap.scrollTop + 'px)';
+      thead.style.transform = 'translateY(' + (tableWrap.scrollTop / tableZoom) + 'px)';
+    });
+  }
+
+  // ─── Apply current table zoom ───
+  const scaleWrap = document.getElementById('table-scale-wrap');
+  if (scaleWrap && tableEl) {
+    scaleWrap.style.transform = 'scale(' + tableZoom + ')';
+    requestAnimationFrame(function() {
+      scaleWrap.style.width = (tableEl.offsetWidth) + 'px';
+      scaleWrap.style.height = (tableEl.offsetHeight) + 'px';
     });
   }
 

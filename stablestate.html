@@ -2158,7 +2158,11 @@ function renderSVG(parsed) {
       const labelLines = [];
       if (tr.event) labelLines.push({ text: tr.event, color: '#FFCB6B', size: 10 });
       const guardAction = [];
-      if (tr.guard) guardAction.push('[' + tr.guard + ']');
+      if (tr.guard) {
+        guardAction.push('[' + tr.guard + ']');
+      } else if (!tr.event && parsed.pseudoMap[tr.from] && parsed.pseudoMap[tr.from].type === 'choice') {
+        guardAction.push('[else]');
+      }
       if (tr.action) guardAction.push('/ Act');
       if (guardAction.length > 0) {
         labelLines.push({ text: guardAction.join(' '), color: '#C3E88D', size: 9 });

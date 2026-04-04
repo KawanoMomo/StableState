@@ -1283,7 +1283,7 @@ function applyChoiceBranches(stateId, evName, branches, defaultTarget, parsed, d
   let choiceId = null;
   for (const t of parsed.transitions) {
     const fromEl = resolveStateRef(t.from, parsed);
-    if (fromEl && fromEl.id === stateId && (t.event || null) === ev) {
+    if (fromEl && (fromEl.path === stateId || fromEl.id === stateId) && (t.event || null) === ev) {
       if (parsed.pseudoMap[t.to] && parsed.pseudoMap[t.to].type === 'choice') {
         choiceId = t.to;
         break;
@@ -1324,7 +1324,7 @@ function applyChoiceBranches(stateId, evName, branches, defaultTarget, parsed, d
     // Point source transition to the choice
     const existingTrans = parsed.transitions.find(t => {
       const fromEl = resolveStateRef(t.from, parsed);
-      return fromEl && fromEl.id === stateId && (t.event || null) === ev;
+      return fromEl && (fromEl.path === stateId || fromEl.id === stateId) && (t.event || null) === ev;
     });
     if (existingTrans) {
       dsl = replaceTransition(existingTrans.from, existingTrans.to, existingTrans.event, existingTrans.guard,
@@ -2543,7 +2543,7 @@ function renderTable(parsed) {
     for (const lc of leafColumns) {
       const matching = transitions.filter(function(t) {
         const fromEl = resolveStateRef(t.from, parsed);
-        return fromEl && fromEl.id === lc.id;
+        return fromEl && (fromEl.path === lc.id || fromEl.id === lc.id);
       });
       const val = matching.length > 0 && matching[0].guard ? matching[0].guard : '-';
       bodyHtml += `<td class="table-editable" data-field="guard" data-state="${lc.id}" data-event="${esc(evName)}" style="cursor:pointer;color:#C3E88D">${esc(val).replace(/\\n/g, '<br>')}</td>`;
@@ -2555,7 +2555,7 @@ function renderTable(parsed) {
     for (const lc of leafColumns) {
       const matching = transitions.filter(function(t) {
         const fromEl = resolveStateRef(t.from, parsed);
-        return fromEl && fromEl.id === lc.id;
+        return fromEl && (fromEl.path === lc.id || fromEl.id === lc.id);
       });
       let val = matching.length > 0 && matching[0].action ? matching[0].action : '-';
       if (matching.length > 0) {
@@ -2571,7 +2571,7 @@ function renderTable(parsed) {
     for (const lc of leafColumns) {
       const matching = transitions.filter(function(t) {
         const fromEl = resolveStateRef(t.from, parsed);
-        return fromEl && fromEl.id === lc.id;
+        return fromEl && (fromEl.path === lc.id || fromEl.id === lc.id);
       });
       let val = '-';
       if (matching.length > 0) {
@@ -2668,7 +2668,7 @@ function renderTable(parsed) {
       // Transition fields — unified target/guard/action form
       const mt = parsed.transitions.filter(function(t) {
         const fromEl = resolveStateRef(t.from, parsed);
-        return fromEl && fromEl.id === stateId && (t.event || '(none)') === evName;
+        return fromEl && (fromEl.path === stateId || fromEl.id === stateId) && (t.event || '(none)') === evName;
       });
       const existing = mt.length > 0 ? mt[0] : null;
       const curGuard = existing ? existing.guard || '' : '';
@@ -3709,7 +3709,7 @@ function buildExcelData(p) {
       for (const lc of leafCols) {
         const matching = transitions.filter(function(t) {
           const fromEl = resolveStateRef(t.from, data);
-          return fromEl && fromEl.id === lc.id;
+          return fromEl && (fromEl.path === lc.id || fromEl.id === lc.id);
         });
         let val = '-';
         if (matching.length > 0) {

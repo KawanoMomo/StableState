@@ -808,9 +808,6 @@ function parseDSL(text) {
     result.errors.push({ line: lines.length, msg: 'Unclosed composite state: ' + nestingStack.join(', ') });
   }
 
-  console.log('[parseDSL] states:', result.states.map(s => ({id: s.id, path: s.path, parent: s.parent, line: s.line})));
-  console.log('[parseDSL] stateMap keys:', Object.keys(result.stateMap));
-  console.log('[parseDSL] errors:', result.errors);
   return result;
 }
 
@@ -4147,6 +4144,10 @@ function setupInteractions() {
       if (e.button !== 0) return;
       e.preventDefault();
       e.stopPropagation();
+      // Remove focus from DSL editor so Delete key works for app
+      if (document.activeElement && document.activeElement.tagName === 'TEXTAREA') {
+        document.activeElement.blur();
+      }
       const id = gEl.dataset.id;
       const type = gEl.dataset.type;
 
@@ -4394,8 +4395,7 @@ function removeDSLElement(id, dsl, lineNum) {
 }
 
 function deleteSelected() {
-  console.log('[deleteSelected] sel=', JSON.stringify(sel));
-  if (!sel.length) { console.log('[deleteSelected] sel empty'); return; }
+  if (!sel.length) return;
   pushHistory();
   // Sort by line number descending to avoid line shift issues
   const items = sel.map(si => {

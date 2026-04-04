@@ -4365,7 +4365,7 @@ document.addEventListener('keydown', function(e) {
   // Don't intercept while editing DSL
   if (ae === ta) return;
   if (ae && (ae.tagName === 'INPUT' || ae.tagName === 'SELECT' || ae.tagName === 'TEXTAREA')) {
-    if (!e.ctrlKey && !e.metaKey) return;
+    return;
   }
 
   // Ctrl+C: Copy

@@ -2412,24 +2412,14 @@ function renderTable(parsed) {
         if (matching[0].kind === 'internal') {
           val = '-';
         } else {
-          const tgtPs = parsed.pseudoMap[matching[0].to];
-          if (tgtPs && tgtPs.type === 'choice') {
-            const branches = parsed.transitions.filter(t => t.from === matching[0].to);
-            const targets = [...new Set(branches.map(function(b) {
-              const el = resolveStateRef(b.to, parsed);
-              return el ? el.label || el.id : b.to;
-            }))];
-            val = targets.join(', ');
-          } else {
-            const tgtEl = resolveStateRef(matching[0].to, parsed);
-            val = tgtEl ? tgtEl.label || tgtEl.id : matching[0].to;
-            if (matching[0].kind && matching[0].kind !== parsed.config.transition) {
-              val += ' @' + matching[0].kind;
-            }
+          const tgtEl = resolveStateRef(matching[0].to, parsed);
+          val = tgtEl ? tgtEl.label || tgtEl.id : matching[0].to;
+          if (matching[0].kind && matching[0].kind !== parsed.config.transition) {
+            val += ' @' + matching[0].kind;
           }
         }
       }
-      bodyHtml += `<td class="table-editable" data-field="target" data-state="${lc.id}" data-event="${esc(evName)}" style="cursor:pointer;white-space:pre-wrap">${esc(val)}</td>`;
+      bodyHtml += `<td class="table-editable" data-field="target" data-state="${lc.id}" data-event="${esc(evName)}" style="cursor:pointer">${esc(val)}</td>`;
     }
     bodyHtml += '</tr>';
   }

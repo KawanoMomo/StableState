@@ -1146,9 +1146,11 @@ function parseIfElseAction(text) {
         i++;
       }
 
-      // Check if body starts with nested if/else
+      // Check if body starts with nested if/else (must have deeper-indented body lines after it)
       const firstBodyLine = bodyStart < lines.length ? lines[bodyStart].trim() : '';
-      if (firstBodyLine.startsWith('if [')) {
+      const hasNestedBody = firstBodyLine.startsWith('if [') && (bodyStart + 1) < i &&
+        getIndent(lines[bodyStart + 1]) > bodyIndent;
+      if (hasNestedBody) {
         // Recurse into nested if/else
         const nested = parseLevel(bodyStart, bodyIndent);
         branches.push({ guard: guard, target: null, action: null, children: nested });

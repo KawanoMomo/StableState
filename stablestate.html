@@ -1104,6 +1104,47 @@ function replaceTransition(oldFrom, oldTo, oldEvent, oldGuard, newFrom, newTo, n
   return dsl + '\n' + newLine;
 }
 
+// Parse if/else action syntax into branch array
+// Returns null if not if/else syntax, or [{guard, target, action}] array
+function parseIfElseAction(text) {
+  if (!text) return null;
+  const lines = text.split('\n');
+  if (!lines[0].trim().startsWith('if [')) return null;
+
+  const branches = [];
+  let i = 0;
+  while (i < lines.length) {
+    const line = lines[i].trim();
+    let guard = null;
+
+    if (line.startsWith('if [') || line.startsWith('elif [')) {
+      const gm = line.match(/\[([^\]]*)\]/);
+      guard = gm ? gm[1].trim() : null;
+    } else if (line === 'else') {
+      guard = null;
+    } else {
+      i++;
+      continue;
+    }
+
+    // Next line should be tab + -> target [/ action]
+    i++;
+    if (i >= lines.length) break;
+    const body = lines[i].trim();
+    const tm = body.match(/^->\s*(\S+)(?:\s*\/\s*(.*))?$/);
+    if (tm) {
+      branches.push({
+        guard: guard,
+        target: tm[1],
+        action: tm[2] ? tm[2].trim() : null
+      });
+    }
+    i++;
+  }
+
+  return branches.length > 0 ? branches : null;
+}
+
 // Update a specific field of a matching transition line
 function updateTransition(from, to, event, guard, field, val, dsl) {
   const lines = dsl.split('\n');

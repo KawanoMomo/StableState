@@ -2415,11 +2415,11 @@ function renderTable(parsed) {
           const tgtPs = parsed.pseudoMap[matching[0].to];
           if (tgtPs && tgtPs.type === 'choice') {
             const branches = parsed.transitions.filter(t => t.from === matching[0].to);
-            val = branches.map(function(b) {
+            const targets = [...new Set(branches.map(function(b) {
               const el = resolveStateRef(b.to, parsed);
-              const label = el ? el.label || el.id : b.to;
-              return b.guard ? '[' + b.guard + '] ' + label : label;
-            }).join('\n');
+              return el ? el.label || el.id : b.to;
+            }))];
+            val = targets.join(', ');
           } else {
             const tgtEl = resolveStateRef(matching[0].to, parsed);
             val = tgtEl ? tgtEl.label || tgtEl.id : matching[0].to;

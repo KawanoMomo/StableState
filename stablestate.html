@@ -2412,10 +2412,20 @@ function renderTable(parsed) {
         if (matching[0].kind === 'internal') {
           val = '-';
         } else {
-          const tgtEl = resolveStateRef(matching[0].to, parsed);
-          val = tgtEl ? tgtEl.label || tgtEl.id : matching[0].to;
-          if (matching[0].kind && matching[0].kind !== parsed.config.transition) {
-            val += ' @' + matching[0].kind;
+          const tgtPs = parsed.pseudoMap[matching[0].to];
+          if (tgtPs && tgtPs.type === 'choice') {
+            // Choice: show fallback target (guardless/else branch), or '-' if none
+            const fallback = parsed.transitions.find(t => t.from === matching[0].to && !t.guard);
+            if (fallback) {
+              const fbEl = resolveStateRef(fallback.to, parsed);
+              val = fbEl ? fbEl.label || fbEl.id : fallback.to;
+            }
+          } else {
+            const tgtEl = resolveStateRef(matching[0].to, parsed);
+            val = tgtEl ? tgtEl.label || tgtEl.id : matching[0].to;
+            if (matching[0].kind && matching[0].kind !== parsed.config.transition) {
+              val += ' @' + matching[0].kind;
+            }
           }
         }
       }

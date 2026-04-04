@@ -2455,19 +2455,28 @@ function renderTable(parsed) {
       document.getElementById('pp-table-apply').addEventListener('click', function() {
         const target = document.getElementById('pp-table-target').value;
         const guard = document.getElementById('pp-table-guard').value.trim();
-        const action = document.getElementById('pp-table-action').value.replace(/\n/g, '\\n').trim();
-        let targetId, kind = null;
-        if (!target) { targetId = stateDotPath(stateId); kind = 'internal'; }
-        else { targetId = stateDotPath(target); }
+        const actionRaw = document.getElementById('pp-table-action').value;
         const ev = evName === '(none)' ? null : evName;
         pushHistory();
         let dsl = getDsl();
-        if (existing) {
-          dsl = replaceTransition(existing.from, existing.to, existing.event, existing.guard,
-            stateDotPath(stateId), targetId, ev, guard || null, action || null, kind, dsl);
+
+        // Check if action is if/else syntax
+        const branches = parseIfElseAction(actionRaw);
+        if (branches) {
+          dsl = applyChoiceBranches(stateId, evName, branches, parsed, dsl);
         } else {
-          dsl = addTransition(stateDotPath(stateId), targetId, ev, guard || null, action || null, kind, dsl);
+          const action = actionRaw.replace(/\n/g, '\\n').trim();
+          let targetId, kind = null;
+          if (!target) { targetId = stateDotPath(stateId); kind = 'internal'; }
+          else { targetId = stateDotPath(target); }
+          if (existing) {
+            dsl = replaceTransition(existing.from, existing.to, existing.event, existing.guard,
+              stateDotPath(stateId), targetId, ev, guard || null, action || null, kind, dsl);
+          } else {
+            dsl = addTransition(stateDotPath(stateId), targetId, ev, guard || null, action || null, kind, dsl);
+          }
         }
+
         setDsl(dsl);
         refresh();
       });

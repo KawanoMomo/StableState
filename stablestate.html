@@ -1349,19 +1349,29 @@ function applyChoiceBranches(stateId, evName, branches, defaultTarget, parsed, d
   // Recursively apply branches to a choice node
   function applyBranchesToChoice(cId, branchList, existingOutgoing) {
     const newBranches = [];
+    const nestedRecursions = []; // [{subId, children, subOutgoing}]
     let hasElse = false;
-    for (const b of branchList) {
+    for (let bi = 0; bi < branchList.length; bi++) {
+      const b = branchList[bi];
       if (!b.guard) hasElse = true;
       if (b.children && b.children.length > 0) {
-        // Nested: create sub-choice
-        const subId = nextAutoId();
-        const srcState = parsed.stateMap[stateId];
-        const cx = srcState ? srcState.x + srcState.w + 4 : 12;
-        const cy = srcState ? srcState.y + Math.floor(srcState.h / 2) + 2 : 12;
-        dsl = dsl.trimEnd() + '\nchoice ' + subId + ' at ' + cx + ',' + cy + '\n';
+        // Nested: reuse existing sub-choice if possible
+        let subId = null;
+        const existingAtIdx = existingOutgoing && existingOutgoing[bi];
+        if (existingAtIdx && parsed.pseudoMap[existingAtIdx.to] && parsed.pseudoMap[existingAtIdx.to].type === 'choice') {
+          subId = existingAtIdx.to;
+        } else {
+          // Create new sub-choice
+          subId = nextAutoId();
+          const srcState = parsed.stateMap[stateId];
+          const cx = srcState ? srcState.x + srcState.w + 4 : 12;
+          const cy = srcState ? srcState.y + Math.floor(srcState.h / 2) + 2 : 12;
+          dsl = dsl.trimEnd() + '\nchoice ' + subId + ' at ' + cx + ',' + cy + '\n';
+        }
         newBranches.push({ target: subId, guard: b.guard, action: null });
-        // Recurse into sub-choice
-        applyBranchesToChoice(subId, b.children, []);
+        // Queue recursion with existing sub-choice's outgoing transitions
+        const subOutgoing = parsed.transitions.filter(t => t.from === subId);
+        nestedRecursions.push({ subId, children: b.children, subOutgoing });
       } else {
         const tgt = b.target || defaultTarget;
         if (tgt) {
@@ -1395,6 +1405,10 @@ function applyChoiceBranches(stateId, evName, branches, defaultTarget, parsed, d
       for (const nb of newBranches) {
         dsl = addTransition(cId, nb.target, null, nb.guard, nb.action, null, dsl);
       }
+    }
+    // Recursively process nested sub-choices
+    for (const nr of nestedRecursions) {
+      applyBranchesToChoice(nr.subId, nr.children, nr.subOutgoing);
     }
   }
 

@@ -1010,6 +1010,63 @@ function removeTransition(from, to, event, guard, dsl) {
   return result.join('\n');
 }
 
+// Replace a matching transition line in-place (preserves DSL order)
+function replaceTransition(oldFrom, oldTo, oldEvent, oldGuard, newFrom, newTo, newEvent, newGuard, newAction, newKind, dsl) {
+  // Build the new transition line (same logic as addTransition)
+  let defaultKind = 'local';
+  const configMatch = dsl.match(/^@config\s+transition=(\S+)/m);
+  if (configMatch) defaultKind = configMatch[1];
+
+  let newLine = `${newFrom} -> ${newTo}`;
+  const hasEvent = newEvent != null && newEvent !== '';
+  const hasGuard = newGuard != null && newGuard !== '';
+  const hasAction = newAction != null && newAction !== '';
+  const hasKind = newKind != null && newKind !== '' && newKind !== defaultKind;
+
+  if (hasEvent || hasGuard || hasAction || hasKind) {
+    newLine += ' :';
+    if (hasEvent) newLine += ` ${newEvent}`;
+    if (hasGuard) newLine += ` [${newGuard}]`;
+    if (hasAction) newLine += ` / ${newAction}`;
+    if (hasKind) newLine += ` @${newKind}`;
+  }
+
+  // Find and replace the matching line (same matching logic as removeTransition)
+  const lines = dsl.split('\n');
+  let replaced = false;
+  for (let i = 0; i < lines.length; i++) {
+    const trimmed = lines[i].trim();
+    const m = trimmed.match(/^(\S+)\s*->\s*(\S+)(.*)$/);
+    if (m && m[1] === oldFrom && m[2] === oldTo) {
+      const rest = m[3].trim();
+      let lineEvent = null, lineGuard = null;
+      if (rest.startsWith(':')) {
+        let detail = rest.slice(1).trim();
+        detail = detail.replace(/@(local|external|internal)\s*$/, '').trim();
+        const slashIdx = detail.indexOf('/');
+        if (slashIdx !== -1) detail = detail.slice(0, slashIdx).trim();
+        const gm = detail.match(/\[([^\]]*)\]/);
+        if (gm) {
+          lineGuard = gm[1].trim() || null;
+          detail = detail.slice(0, detail.indexOf('[')).trim();
+        }
+        lineEvent = detail || null;
+      }
+      const eMatch = (oldEvent == null || oldEvent === '') ? (lineEvent == null || lineEvent === '') : lineEvent === oldEvent;
+      const gMatch = (oldGuard == null || oldGuard === '') ? (lineGuard == null || lineGuard === '') : lineGuard === oldGuard;
+      if (eMatch && gMatch) {
+        lines[i] = newLine;
+        replaced = true;
+        break;
+      }
+    }
+  }
+
+  if (replaced) return lines.join('\n');
+  // Fallback: append (same as addTransition)
+  return dsl + '\n' + newLine;
+}
+
 // Update a specific field of a matching transition line
 function updateTransition(from, to, event, guard, field, val, dsl) {
   const lines = dsl.split('\n');

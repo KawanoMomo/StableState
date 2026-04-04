@@ -4340,6 +4340,7 @@ function connectSelected() {
 // ═══════════════════════════════════════════════
 function removeDSLElement(id, dsl, lineNum) {
   const bareId = id.includes('.') ? id.split('.').pop() : id;
+  console.log('[removeDSLElement] id=', id, 'bareId=', bareId, 'lineNum=', lineNum);
   const lines = dsl.split('\n');
   const result = [];
   let skipNesting = 0;
@@ -4349,12 +4350,17 @@ function removeDSLElement(id, dsl, lineNum) {
     const trimmed = line.trim();
     // Check if this line defines the element
     const isDefLine = trimmed.match(new RegExp(`^(state|group|note|initial|final|choice|history|deephistory|fork|join)\\s+${bareId}\\b`));
+    if (isDefLine) {
+      console.log('[removeDSLElement] found def at line', li + 1, ':', trimmed);
+    }
     if (isDefLine && !foundDefLine) {
       // If lineNum specified, only match that specific line
       if (lineNum != null && (li + 1) !== lineNum) {
+        console.log('[removeDSLElement] skipping line', li + 1, '(not target)');
         result.push(line);
         continue;
       }
+      console.log('[removeDSLElement] DELETING line', li + 1);
       foundDefLine = true;
       if (trimmed.endsWith('{')) skipNesting = 1;
       continue; // skip this line

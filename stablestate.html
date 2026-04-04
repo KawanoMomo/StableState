@@ -4397,7 +4397,8 @@ function removeDSLElement(id, dsl, lineNum) {
 }
 
 function deleteSelected() {
-  if (!sel.length) return;
+  console.log('[deleteSelected] called, sel=', JSON.stringify(sel));
+  if (!sel.length) { console.log('[deleteSelected] sel empty, returning'); return; }
   pushHistory();
   // Sort by line number descending to avoid line shift issues
   const items = sel.map(si => {
@@ -5088,7 +5089,7 @@ document.addEventListener('keydown', function(e) {
   // Ctrl+V: Paste
   if ((e.ctrlKey || e.metaKey) && e.key === 'v') { e.preventDefault(); pasteSelection(); return; }
   // Delete / Backspace
-  if (e.key === 'Delete' || e.key === 'Backspace') { e.preventDefault(); deleteSelected(); return; }
+  if (e.key === 'Delete' || e.key === 'Backspace') { console.log('[keydown] Delete pressed'); e.preventDefault(); deleteSelected(); return; }
   // Ctrl+A: Select all
   if ((e.ctrlKey || e.metaKey) && e.key === 'a') {
     e.preventDefault();

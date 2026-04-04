@@ -89,6 +89,7 @@ body { background: var(--bg); color: var(--text); font-family: 'IBM Plex Sans','
 /* Table view — single table with sticky header */
 #table-view { flex:1; display:none; flex-direction:column; overflow:hidden; }
 #table-wrap { flex:1; overflow:auto; }
+#table-scale-wrap { transform-origin:top left; }
 .st-table { width:100%; border-collapse:separate; border-spacing:0; font-size:12px; table-layout:fixed; }
 .st-table th, .st-table td { border-bottom:1px solid var(--border); border-right:1px solid var(--border); padding:4px 8px; text-align:left; }
 .st-table th:first-child, .st-table td:first-child { border-left:1px solid var(--border); }
@@ -188,6 +189,16 @@ input[type=number]::-webkit-inner-spin-button { -webkit-appearance:none; }
     <button class="tb tb-accent" onclick="exportPlantUML()" title="PlantUML形式でエクスポート">PUML</button>
     <button class="tb tb-accent" onclick="exportDSL()" title="DSLファイルをダウンロード">Save</button>
     <label class="tb tb-accent" style="cursor:pointer" title="DSLファイルを読み込み">Open<input type="file" accept=".sstate,.txt" style="display:none" onchange="importDSL(this)"></label>
+    <div class="sep"></div>
+    <span style="font-size:10px;color:#64748B">Zoom</span>
+    <button class="tb" onclick="setTableZoom(-1)">&minus;</button>
+    <span id="table-zoom-label" style="font-size:11px;color:#94A3B8;min-width:36px;text-align:center">100%</span>
+    <button class="tb" onclick="setTableZoom(1)">+</button>
+    <div class="sep"></div>
+    <span style="font-size:10px;color:#64748B">Cell W</span>
+    <button class="tb" onclick="setTableCellWidth(-1)">&minus;</button>
+    <span id="table-cw-label" style="font-size:11px;color:#94A3B8;min-width:36px;text-align:center">80px</span>
+    <button class="tb" onclick="setTableCellWidth(1)">+</button>
   </div>
 </div>
 
@@ -246,7 +257,7 @@ error -> fin : EvShutdown</textarea>
         <span style="margin-left:auto;color:var(--dim);font-weight:400">セルをクリックして編集</span>
       </div>
       <div id="table-empty">DSLをパースして状態遷移表を生成します</div>
-      <div id="table-wrap"><table id="state-table" class="st-table"></table></div>
+      <div id="table-wrap"><div id="table-scale-wrap"><table id="state-table" class="st-table"></table></div></div>
     </div>
   </div>
 
@@ -332,6 +343,8 @@ let redoFuture = [];       // redo stack
 const MAX_HISTORY = 100;
 let clipboard = null;      // copied DSL lines
 let zoom = 1.0;
+let tableZoom = 1.0;
+let tableCellWidth = 80;
 let snapGuides = [];       // [{axis:'x'|'y', pos:number}] for rendering
 let searchFilter = '';     // ADR-026: search/filter string
 let searchMatchIds = null; // Set of matching IDs, or null if no filter

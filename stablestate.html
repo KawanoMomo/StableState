@@ -3541,6 +3541,14 @@ function getExportSVGString() {
   const clone = svgEl.cloneNode(true);
   const banner = clone.querySelector('#annotation-banner');
   if (banner) banner.remove();
+  // OBS-08: Strip selection resize handles. renderSVG() emits 2 rects per
+  // handle per selected element (8 handles = 16 rects): one hit rect with
+  // `data-resize="<edge>"` and one visible decoration rect with
+  // `fill="#6366F1" stroke="#fff"` (indigo for states/pseudo-states) or
+  // `fill="#F59E0B" stroke="#fff"` (amber for notes). Both are strictly
+  // editor UI chrome and must not be baked into exported SVG/PNG artifacts.
+  clone.querySelectorAll('[data-resize]').forEach(el => el.remove());
+  clone.querySelectorAll('rect[fill="#6366F1"][stroke="#fff"], rect[fill="#F59E0B"][stroke="#fff"]').forEach(el => el.remove());
   return new XMLSerializer().serializeToString(clone);
 }
 

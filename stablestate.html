@@ -1195,38 +1195,57 @@ function updateSize(type, id, nw, nh, dsl, lineNum) {
 }
 
 // Add or replace a property (key=value) on an element line
+// Format a prop value for DSL emission: quote if it contains whitespace or
+// the 2-char `\n` escape literal, otherwise emit bare. Embedded `"` are
+// escaped as `\"` for the quoted form.
+function formatPropValue(val) {
+  if (val == null) return '';
+  const s = String(val);
+  if (s === '') return '';
+  // Need quotes if whitespace (including raw \n/\t) OR the 2-char \n escape
+  // OR contains a double quote itself.
+  if (/[\s"]|\\n/.test(s)) {
+    return '"' + s.replace(/"/g, '\\"') + '"';
+  }
+  return s;
+}
+
 function updateProp(type, id, prop, val, dsl, lineNum) {
+  const emit = formatPropValue(val);
+  // Match either a quoted value (with \" escapes) or a bare non-whitespace token,
+  // mirroring parseProps so we can replace an existing quoted prop in place.
+  const propValPat = `(?:"(?:[^"\\\\]|\\\\.)*"|\\S+)`;
   if (lineNum != null) {
     const lines = dsl.split('\n');
     const idx = lineNum - 1;
     if (idx >= 0 && idx < lines.length) {
-      const reExist = new RegExp(`^(\\s*${type}\\s+${id}\\s+.*)\\b${prop}=\\S+(.*$)`);
+      const reExist = new RegExp(`^(\\s*${type}\\s+${id}\\s+.*)\\b${prop}=${propValPat}(.*$)`);
       if (reExist.test(lines[idx])) {
-        lines[idx] = lines[idx].replace(reExist, `$1${prop}=${val}$2`);
+        lines[idx] = lines[idx].replace(reExist, `$1${prop}=${emit}$2`);
       } else {
         const trimEnd = lines[idx].trimEnd();
         if (trimEnd.endsWith('{')) {
-          lines[idx] = trimEnd.slice(0, -1).trimEnd() + ` ${prop}=${val} {`;
+          lines[idx] = trimEnd.slice(0, -1).trimEnd() + ` ${prop}=${emit} {`;
         } else {
-          lines[idx] = trimEnd + ` ${prop}=${val}`;
+          lines[idx] = trimEnd + ` ${prop}=${emit}`;
         }
       }
     }
     return lines.join('\n');
   }
   // First try to replace existing prop
-  const reExist = new RegExp(`^(\\s*${type}\\s+${id}\\s+.*)\\b${prop}=\\S+(.*$)`, 'm');
+  const reExist = new RegExp(`^(\\s*${type}\\s+${id}\\s+.*)\\b${prop}=${propValPat}(.*$)`, 'm');
   if (reExist.test(dsl)) {
-    return dsl.replace(reExist, `$1${prop}=${val}$2`);
+    return dsl.replace(reExist, `$1${prop}=${emit}$2`);
   }
   // Prop doesn't exist — append before trailing { or at end of line
   const reLine = new RegExp(`^(\\s*${type}\\s+${id}\\s+.+)$`, 'm');
   return dsl.replace(reLine, function(wholeLine) {
     const trimEnd = wholeLine.trimEnd();
     if (trimEnd.endsWith('{')) {
-      return trimEnd.slice(0, -1).trimEnd() + ` ${prop}=${val} {`;
+      return trimEnd.slice(0, -1).trimEnd() + ` ${prop}=${emit} {`;
     }
-    return trimEnd + ` ${prop}=${val}`;
+    return trimEnd + ` ${prop}=${emit}`;
   });
 }
 
@@ -3307,7 +3326,7 @@ function renderProps() {
       html += `</div>`;
       html += `<div class="prop-section"><div class="prop-label">Actions</div>`;
       html += `<div class="prop-row"><input class="prop-input" id="pp-entry" value="${esc(st.entry || '')}" placeholder="entry"></div>`;
-      html += `<div class="prop-row"><input class="prop-input" id="pp-do" value="${esc(st.do || '')}" placeholder="do"></div>`;
+      html += `<div class="prop-row"><textarea class="prop-input" id="pp-do" placeholder="do" style="min-height:40px;resize:vertical;font-family:Consolas,monospace;font-size:11px;line-height:1.4;white-space:pre">${esc((st.do || '').replace(/\\n/g, '\n'))}</textarea></div>`;
       html += `<div class="prop-row"><input class="prop-input" id="pp-exit" value="${esc(st.exit || '')}" placeholder="exit"></div>`;
       html += `</div>`;
       // Color palette
@@ -3633,24 +3652,55 @@ function renderProps() {
   if (pph) pph.addEventListener('change', handleSizeChange);
 
   // Actions (entry, do, exit)
-  ['entry', 'do', 'exit'].forEach(function(field) {
+  // pp-do is a textarea (Task 9) — supports multi-line content with \n escape
+  // for DSL storage. pp-entry and pp-exit remain single-line <input>.
+  function saveActionField(field, rawValue) {
+    const info = getElTypeAndId();
+    if (!info) return;
+    pushHistory();
+    let dsl = getDsl();
+    // For pp-do textarea: escape real newlines to \n 2-char literal before
+    // writing back to the DSL. updateProp/formatPropValue then decides whether
+    // to quote the value.
+    const val = (field === 'do')
+      ? rawValue.replace(/\n/g, '\\n').trim()
+      : rawValue.trim();
+    if (val) {
+      dsl = updateProp(info.type, info.id, field, val, dsl, info.line);
+    } else {
+      // Remove the property. Match either a quoted value (with \" escapes) or
+      // a bare non-whitespace token, so we can also strip previously-quoted
+      // values (e.g. do="multi line").
+      const re = new RegExp(
+        `(^\\s*${info.type}\\s+${info.id}\\s+.*)\\b${field}=(?:"(?:[^"\\\\]|\\\\.)*"|\\S+)`,
+        'm'
+      );
+      dsl = dsl.replace(re, '$1');
+    }
+    setDsl(dsl);
+    refreshView();
+  }
+  ['entry', 'exit'].forEach(function(field) {
     propChange('pp-' + field, function() {
-      const info = getElTypeAndId();
-      if (!info) return;
-      pushHistory();
-      let dsl = getDsl();
-      const val = this.value.trim();
-      if (val) {
-        dsl = updateProp(info.type, info.id, field, val, dsl, info.line);
-      } else {
-        // Remove the property by replacing with empty — use regex to strip
-        const re = new RegExp(`(^\\s*${info.type}\\s+${info.id}\\s+.*)\\b${field}=\\S+`, 'm');
-        dsl = dsl.replace(re, '$1');
-      }
-      setDsl(dsl);
-      refreshView();
+      saveActionField(field, this.value);
     });
   });
+  // pp-do: listen on 'input' so live typing saves back (matches table-action
+  // multi-line editor UX). Also attach autocomplete helper for state names.
+  const doTa = document.getElementById('pp-do');
+  if (doTa) {
+    doTa.addEventListener('change', function() {
+      saveActionField('do', this.value);
+    });
+    if (doTa.tagName === 'TEXTAREA') {
+      attachMultilineAutocomplete(doTa, {
+        stateCandidates: function() {
+          return parsed ? parsed.states.map(s => s.path || s.id) : [];
+        }
+        // No keywordCandidates — pp-do is for state-name completion only.
+      });
+    }
+  }
 
   // Color dots
   panel.querySelectorAll('.color-dot[data-prop]').forEach(function(dot) {

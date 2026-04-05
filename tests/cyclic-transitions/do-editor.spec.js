@@ -72,3 +72,120 @@ i -> idle`);
     expect(s.do).toBe('if (Ready) -> active');
   });
 });
+
+test.describe('do editor — UI textarea', () => {
+  test.beforeEach(async ({ page }) => {
+    await page.goto(BASE);
+    await page.waitForFunction(() => typeof parsed !== 'undefined');
+  });
+
+  async function setDslAndOpenIdle(page, dsl) {
+    await page.evaluate((d) => {
+      const ta = document.querySelector('#editor');
+      ta.value = d;
+      ta.dispatchEvent(new Event('input', { bubbles: true }));
+    }, dsl);
+    await page.waitForTimeout(100);
+    // Select idle state by assigning sel directly (mirrors mouse-click path).
+    await page.evaluate(() => {
+      // eslint-disable-next-line no-eval
+      eval('sel = [{type: "state", id: "idle"}]');
+      // eslint-disable-next-line no-eval
+      eval('renderProps()');
+    });
+    await page.waitForTimeout(50);
+  }
+
+  test('pp-do is a textarea element', async ({ page }) => {
+    await setDslAndOpenIdle(page, `initial i at 1,1
+state idle "Idle" at 3,3 size 8x5 do=Poll
+i -> idle`);
+    const tag = await page.evaluate(() => {
+      const el = document.getElementById('pp-do');
+      return el ? el.tagName : null;
+    });
+    expect(tag).toBe('TEXTAREA');
+  });
+
+  test('pp-do shows multiline content as real newlines', async ({ page }) => {
+    await setDslAndOpenIdle(page, `initial i at 1,1
+state idle "Idle" at 3,3 size 8x5 do="Check1\\nCheck2"
+i -> idle`);
+    const val = await page.evaluate(() => document.getElementById('pp-do').value);
+    expect(val).toBe('Check1\nCheck2');
+  });
+
+  test('Tab key inserts 2 spaces when autocomplete not showing', async ({ page }) => {
+    await setDslAndOpenIdle(page, `initial i at 1,1
+state idle "Idle" at 3,3 size 8x5 do=Poll
+i -> idle`);
+    await page.evaluate(() => {
+      const el = document.getElementById('pp-do');
+      el.focus();
+      el.setSelectionRange(el.value.length, el.value.length);
+    });
+    await page.keyboard.press('Tab');
+    const val = await page.evaluate(() => document.getElementById('pp-do').value);
+    expect(val).toBe('Poll  ');
+  });
+
+  test('-> prefix triggers state autocomplete dropdown', async ({ page }) => {
+    await setDslAndOpenIdle(page, `initial i at 1,1
+state idle "Idle" at 3,3 size 8x5 do=Poll
+state active "Active" at 14,3 size 8x5
+state area "Area" at 25,3 size 8x5
+i -> idle`);
+    await page.evaluate(() => {
+      const el = document.getElementById('pp-do');
+      el.focus();
+      el.value = 'Poll\n-> a';
+      el.setSelectionRange(el.value.length, el.value.length);
+      el.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    await page.waitForTimeout(100);
+    const items = await page.evaluate(() => {
+      const list = document.querySelector('.ac-list');
+      if (!list) return [];
+      return Array.from(list.querySelectorAll('.ac-item')).map(el => el.textContent);
+    });
+    expect(items.length).toBeGreaterThanOrEqual(2);
+    expect(items.some(i => /active/i.test(i))).toBe(true);
+    expect(items.some(i => /area/i.test(i))).toBe(true);
+  });
+
+  test('Enter in autocomplete confirms selection', async ({ page }) => {
+    await setDslAndOpenIdle(page, `initial i at 1,1
+state idle "Idle" at 3,3 size 8x5 do=Poll
+state active "Active" at 14,3 size 8x5
+i -> idle`);
+    await page.evaluate(() => {
+      const el = document.getElementById('pp-do');
+      el.focus();
+      el.value = 'Poll\n-> a';
+      el.setSelectionRange(el.value.length, el.value.length);
+      el.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    await page.waitForTimeout(100);
+    await page.keyboard.press('Enter');
+    const val = await page.evaluate(() => document.getElementById('pp-do').value);
+    expect(val).toContain('active');
+  });
+
+  test('editing pp-do writes back to DSL with \\n escape', async ({ page }) => {
+    await setDslAndOpenIdle(page, `initial i at 1,1
+state idle "Idle" at 3,3 size 8x5 do=Poll
+state active "Active" at 14,3 size 8x5
+i -> idle`);
+    await page.evaluate(() => {
+      const el = document.getElementById('pp-do');
+      el.value = 'CheckReady\n-> active';
+      el.dispatchEvent(new Event('input', { bubbles: true }));
+      el.dispatchEvent(new Event('change', { bubbles: true }));
+      el.dispatchEvent(new Event('blur', { bubbles: true }));
+    });
+    await page.waitForTimeout(150);
+    const dsl = await page.evaluate(() => getDsl());
+    // Should contain do="CheckReady\n-> active" (quoted + \n escape)
+    expect(dsl).toMatch(/do="CheckReady\\n-> active"/);
+  });
+});

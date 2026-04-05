@@ -5392,10 +5392,54 @@ function addNewElement(type) {
   const defX = parentState ? 1 : 10;
   const defY = parentState ? 2 : 10;
 
+  // OBS-01 fix: for root-level new states, scan existing top-level states
+  // (and groups) and pick a non-overlapping slot. Without this, every
+  // `+State` click lands on `at 10,10` and consecutive clicks stack
+  // invisibly at the same origin. `parentState`-scoped adds keep their
+  // old behaviour — they insert into a composite's local coordinate
+  // frame and the visible overlap there is a separate concern.
+  function findFreeRootSlot(w, h) {
+    const rects = [];
+    if (parsed) {
+      for (const s of parsed.states) {
+        if (s.parentPath || s.parent) continue; // only top-level
+        rects.push({ x: s.x, y: s.y, w: s.w || 1, h: s.h || 1 });
+      }
+      for (const gEl of (parsed.groups || [])) {
+        rects.push({ x: gEl.x, y: gEl.y, w: gEl.w || 1, h: gEl.h || 1 });
+      }
+    }
+    const overlaps = (x, y) => rects.some(r =>
+      !(x + w <= r.x || r.x + r.w <= x || y + h <= r.y || r.y + r.h <= y)
+    );
+    // Canvas-aware wrap width (fall back to a generous default).
+    const cw = (parsed && parsed.canvas && parsed.canvas.width)
+      ? Math.max(20, Math.floor(parsed.canvas.width / (parsed.canvas.grid || 20)))
+      : 60;
+    const stepX = w + 2;
+    const stepY = h + 2;
+    for (let y = 10; y < 10 + stepY * 40; y += stepY) {
+      for (let x = 10; x < cw; x += stepX) {
+        if (!overlaps(x, y)) return { x, y };
+      }
+    }
+    // Fallback: stack below the lowest existing rect so we never return 10,10
+    // when the canvas is full. Guarantees distinct coords across calls.
+    let maxBottom = 10;
+    for (const r of rects) maxBottom = Math.max(maxBottom, r.y + r.h);
+    return { x: 10, y: maxBottom + 2 };
+  }
+
   switch (type) {
     case 'state': {
       const id = `__new_${addCounter++}`;
-      line = `state ${id} "New State" at ${defX},${defY} size 8x4`;
+      let nx = defX, ny = defY;
+      if (!parentState) {
+        const slot = findFreeRootSlot(8, 4);
+        nx = slot.x;
+        ny = slot.y;
+      }
+      line = `state ${id} "New State" at ${nx},${ny} size 8x4`;
       break;
     }
     case 'group': {

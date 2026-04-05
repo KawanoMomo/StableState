@@ -167,6 +167,96 @@ test.describe('OBS-04: AutoRoute no longer throws ReferenceError', () => {
     expect(pageErrors, `page errors: ${pageErrors.join('\n')}`).toEqual([]);
   });
 
+  // Shared evaluator for AC2: loads `dsl` into the page, snapshots the SVG
+  // geometry, invokes autoRoute(), and returns before/after snapshots plus
+  // the transition count. Used by the three AC2 literal tests below.
+  async function snapshotAutoRouteDelta(page, dsl) {
+    page.on('dialog', d => d.dismiss().catch(() => {}));
+    await page.goto('/stablestate.html');
+    await page.waitForFunction(() => typeof window.autoRoute === 'function' && typeof window.setDsl === 'function');
+    return page.evaluate(dslText => {
+      window.setDsl(dslText);
+      if (typeof window.refresh === 'function') window.refresh();
+      function snapshot() {
+        // renderSVG is injected into #svg-wrap as innerHTML; the inner
+        // <svg> element itself has no id.
+        const wrap = document.getElementById('svg-wrap');
+        if (!wrap) return [];
+        const out = [];
+        const polylines = wrap.querySelectorAll('polyline');
+        for (const el of polylines) {
+          out.push('polyline:' + (el.getAttribute('points') || ''));
+        }
+        const paths = wrap.querySelectorAll('path');
+        for (const el of paths) {
+          out.push('path:' + (el.getAttribute('d') || ''));
+        }
+        return out;
+      }
+      const before = snapshot();
+      // eslint-disable-next-line no-eval
+      const pBefore = eval('parsed');
+      const transitionCount = pBefore && pBefore.transitions ? pBefore.transitions.length : -1;
+      // Invoke autoRoute. autoRoute is expected to re-render the SVG itself;
+      // the test deliberately does NOT call refresh() between snapshots.
+      window.autoRoute();
+      const after = snapshot();
+      return { before, after, transitionCount };
+    }, dsl);
+  }
+
+  function assertAC2Delta(result, label) {
+    expect(result.transitionCount, `${label}: DSL should have >= 2 transitions`).toBeGreaterThanOrEqual(2);
+    expect(result.before.length, `${label}: snapshot should contain at least one geometry entry`).toBeGreaterThan(0);
+    expect(result.after.length, `${label}: snapshot length should be stable across autoRoute`).toBe(result.before.length);
+    const diffs = [];
+    for (let i = 0; i < result.before.length; i++) {
+      if (result.before[i] !== result.after[i]) {
+        diffs.push({ i, before: result.before[i], after: result.after[i] });
+      }
+    }
+    expect(
+      diffs.length,
+      `${label} (AC2): expected at least 1 transition path to change after autoRoute, got 0.\n` +
+      `Before snapshot (${result.before.length} entries):\n${result.before.join('\n')}\n\n` +
+      `After snapshot (${result.after.length} entries):\n${result.after.join('\n')}`
+    ).toBeGreaterThanOrEqual(1);
+  }
+
+  test('AC2 literal (synthetic): autoRoute causes at least one transition\'s d/points to change', async ({ page }) => {
+    // AC2 wording from docs/ux-brushup/plan.md:
+    //   "同上操作の前後で、少なくとも 1 本の遷移の `d` 属性 (SVG path) または
+    //    中継点が変化する (Playwright snapshot 差分で確認)。
+    //    「クリックしても何も変化しない」状態ではなくなったことを証拠化する。"
+    //
+    // The previous OBS-04 fix only restored the getBox helper so autoRoute
+    // wouldn't throw ReferenceError — but the function still silently early-
+    // returned on `currentCrossings === 0` and never wrote its results back
+    // to any rendered element, so zero polylines/paths changed after click.
+    // This test snapshots every transition's rendered geometry before and
+    // after autoRoute and asserts at least one entry differs.
+    const result = await snapshotAutoRouteDelta(page, MULTI_TRANS_DSL);
+    assertAC2Delta(result, 'MULTI_TRANS_DSL');
+  });
+
+  test('AC2 literal (tcp-connection.sstate): autoRoute changes at least one transition\'s geometry', async ({ page }) => {
+    // Real sample file the Evaluator exercised during Sprint 1 review. The
+    // previous fix produced 0 deltas on this file (evaluator report AC2).
+    const result = await snapshotAutoRouteDelta(page, EXAMPLE_DSL);
+    assertAC2Delta(result, 'tcp-connection.sstate');
+  });
+
+  test('AC2 literal (automotive-ecu.sstate): autoRoute changes at least one transition\'s geometry', async ({ page }) => {
+    // Second real sample file the Evaluator exercised during Sprint 1 review.
+    // 26 transitions, includes reverse-direction pairs and nested composites.
+    const AUTOMOTIVE_DSL = fs.readFileSync(
+      path.join(__dirname, '..', '..', '..', 'examples', 'automotive-ecu.sstate'),
+      'utf8'
+    );
+    const result = await snapshotAutoRouteDelta(page, AUTOMOTIVE_DSL);
+    assertAC2Delta(result, 'automotive-ecu.sstate');
+  });
+
   test('AC5 regression: examples still load with 0 errorBar entries', async ({ page }) => {
     // Handle any accidental dialogs so they don't hang the test
     page.on('dialog', d => d.dismiss().catch(() => {}));

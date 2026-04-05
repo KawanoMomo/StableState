@@ -502,6 +502,17 @@ function parseDSL(text) {
   // the user only sees `L<stray>: Unexpected closing brace` and has no
   // breadcrumb toward the actual missing opening brace upstream.
   let lastPoppedFrame = null;
+  // OBS-18 (Sprint 6): when a stray `}` is reached, `lastPoppedFrame` is
+  // usually an innocent sibling that balanced itself out — the real culprit
+  // is typically an ancestor state declaration whose `{` was typo'd away,
+  // causing the parser to treat that line as a leaf. We track every such
+  // leaf state declaration together with its source indentation so we can
+  // do a cheap indentation-smoking-gun walk when the stray `}` hits: a
+  // leaf state whose immediately-following non-empty line is at strictly
+  // deeper indentation is the smoking gun (the indentation author expected
+  // that line to live inside a composite body). This is the indent-based
+  // heuristic adopted in plan.md Sprint 6.
+  const leafStateDecls = []; // [{id, path, line, indent}]
 
   for (let i = 0; i < lines.length; i++) {
     const lineNum = i + 1;
@@ -516,14 +527,53 @@ function parseDSL(text) {
       if (nestingStack.length === 0) {
         // Stray `}` with no matching `{` on the stack. Keep the existing
         // error (plan.md Sprint 3 OBS-16: the fix is ADDITIVE, not a
-        // rewrite) and additionally surface a hint that points back to
-        // the most recently closed composite — that is the deepest frame
-        // the parser *did* balance, so the missing `{` is almost always
-        // an ancestor of it. Without this hint the user is sent chasing
-        // the far-away stray `}` (e.g. L68 in automotive-ecu.sstate) with
-        // no breadcrumb toward the real root cause.
+        // rewrite) and surface a hint pointing back to the real root
+        // cause.
+        //
+        // OBS-18 (Sprint 6): the earlier Sprint 3 implementation pointed
+        // at `lastPoppedFrame`, which in multi-level nests turns out to
+        // be an innocent sibling that balanced itself out before the
+        // stray `}` was reached (e.g. automotive-ecu.sstate: removing
+        // L19 `run`'s `{` made the hint cite L49 `failsafe`). We now
+        // prefer an indent-smoking-gun heuristic over the tracked leaf
+        // state declarations: find the LATEST leaf-state declaration
+        // whose immediately-following non-empty, non-comment line is at
+        // STRICTLY DEEPER indentation. That deeper-indented successor
+        // is the smoking gun that the declaration was meant to be a
+        // composite body. We fall back to the Sprint 3 behaviour when
+        // the heuristic finds nothing (e.g. single-level DSL where only
+        // `lastPoppedFrame` info is available).
         result.errors.push({ line: lineNum, msg: 'Unexpected closing brace }' });
-        if (lastPoppedFrame) {
+        let culprit = null;
+        for (let k = leafStateDecls.length - 1; k >= 0; k--) {
+          const cand = leafStateDecls[k];
+          if (cand.line >= lineNum) continue;
+          // Scan forward from the declaration for the next non-empty,
+          // non-comment line.
+          for (let j = cand.line; j < lines.length; j++) {
+            const nextRaw = lines[j];
+            const nextTrim = nextRaw.trim();
+            if (nextTrim === '' || nextTrim.startsWith('#')) continue;
+            // A `}` on the next line is not "content", skip it too — it
+            // would make the leaf look like it's followed by a closer
+            // even though the closer is for something else.
+            if (nextTrim.startsWith('}')) break;
+            const nextIndent = nextRaw.length - nextRaw.replace(/^[ \t]+/, '').length;
+            if (nextIndent > cand.indent) culprit = cand;
+            break;
+          }
+          if (culprit) break;
+        }
+        if (culprit) {
+          const culpritId = culprit.path || culprit.id;
+          result.errors.push({
+            line: culprit.line,
+            msg: "Hint: no matching '{' found for '}' on line " + lineNum +
+                 "; state '" + culpritId + "' (declared here at L" +
+                 culprit.line +
+                 ") is likely missing its opening '{'."
+          });
+        } else if (lastPoppedFrame) {
           const nearId = lastPoppedFrame.path || lastPoppedFrame.id;
           result.errors.push({
             line: lastPoppedFrame.openLine,
@@ -708,6 +758,15 @@ function parseDSL(text) {
         // Track the line where this `{` was opened so we can report the
         // real root cause on an Unclosed brace (OBS-16).
         nestingStack.push({ type: 'state', id: id, path: path, openLine: lineNum });
+      } else {
+        // OBS-18 (Sprint 6): record the declaration as a candidate
+        // culprit for the indent-smoking-gun heuristic, in case a
+        // stray `}` later reveals that this line was meant to open a
+        // composite body. We capture the source-line indentation here
+        // (the `raw` string before trimming) so the later heuristic
+        // can compare it against the following line's indentation.
+        const leadingIndent = raw.length - raw.replace(/^[ \t]+/, '').length;
+        leafStateDecls.push({ id: id, path: path, line: lineNum, indent: leadingIndent });
       }
       continue;
     }

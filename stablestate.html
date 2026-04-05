@@ -800,7 +800,16 @@ function parseDSL(text) {
     }
 
     // ─── Unrecognized line ───
-    result.errors.push({ line: lineNum, msg: 'Unrecognized syntax: ' + trimmed });
+    // Append a short template hint so first-time users know the required
+    // shape of a state declaration (OBS-02). We include the hint on every
+    // Unrecognized syntax error — it is advisory text and does not change
+    // which lines are flagged. Valid DSL never reaches this branch, so
+    // this cannot produce false positives on well-formed files.
+    result.errors.push({
+      line: lineNum,
+      msg: 'Unrecognized syntax: ' + trimmed +
+        '  (expected: state <id> "<label>" at <x>,<y> size <w>x<h>)'
+    });
   }
 
   // Check for unclosed braces

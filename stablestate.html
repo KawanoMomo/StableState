@@ -1131,25 +1131,32 @@ function replaceTransition(oldFrom, oldTo, oldEvent, oldGuard, newFrom, newTo, n
   const configMatch = dsl.match(/^@config\s+transition=(\S+)/m);
   if (configMatch) defaultKind = configMatch[1];
 
-  let newLine = `${newFrom} -> ${newTo}`;
-  const hasEvent = newEvent != null && newEvent !== '';
-  const hasGuard = newGuard != null && newGuard !== '';
-  const hasAction = newAction != null && newAction !== '';
-  const hasKind = newKind != null && newKind !== '' && newKind !== defaultKind;
-
-  if (hasEvent || hasGuard || hasAction || hasKind) {
-    newLine += ' :';
-    if (hasEvent) newLine += ` ${newEvent}`;
-    if (hasGuard) newLine += ` [${newGuard}]`;
-    if (hasAction) newLine += ` / ${newAction}`;
-    if (hasKind) newLine += ` @${newKind}`;
+  // Helper: assemble a transition line given from/to tokens and an optional
+  // indent prefix. Shared between the in-place replace branch (which reuses
+  // the matched line's original indent and literal from/to) and the append
+  // fallback branch.
+  function buildLine(prefix, fromTok, toTok) {
+    let line = `${prefix}${fromTok} -> ${toTok}`;
+    const hasEv = newEvent != null && newEvent !== '';
+    const hasG = newGuard != null && newGuard !== '';
+    const hasA = newAction != null && newAction !== '';
+    const hasK = newKind != null && newKind !== '' && newKind !== defaultKind;
+    if (hasEv || hasG || hasA || hasK) {
+      line += ' :';
+      if (hasEv) line += ` ${newEvent}`;
+      if (hasG) line += ` [${newGuard}]`;
+      if (hasA) line += ` / ${newAction}`;
+      if (hasK) line += ` @${newKind}`;
+    }
+    return line;
   }
 
   // Find and replace the matching line (same matching logic as removeTransition)
   const lines = dsl.split('\n');
   let replaced = false;
   for (let i = 0; i < lines.length; i++) {
-    const trimmed = lines[i].trim();
+    const rawLine = lines[i];
+    const trimmed = rawLine.trim();
     const m = trimmed.match(/^(\S+)\s*->\s*(\S+)(.*)$/);
     if (m && m[1] === oldFrom && m[2] === oldTo) {
       const rest = m[3].trim();
@@ -1169,7 +1176,30 @@ function replaceTransition(oldFrom, oldTo, oldEvent, oldGuard, newFrom, newTo, n
       const eMatch = (oldEvent == null || oldEvent === '') ? (lineEvent == null || lineEvent === '') : lineEvent === oldEvent;
       const gMatch = (oldGuard == null || oldGuard === '') ? (lineGuard == null || lineGuard === '') : lineGuard === oldGuard;
       if (eMatch && gMatch) {
-        lines[i] = newLine;
+        // OBS-13 fix: preserve the original line's indent AND its literal
+        // from/to tokens whenever the edit does not change the resolved
+        // source/target state. Otherwise the table-edit path (which always
+        // passes absolute dotted paths as newFrom/newTo) would rewrite
+        // "    idle -> active : ..." into
+        // "run.normal.idle -> run.normal.active : ..." and break the
+        // surrounding composite block's indentation/id convention.
+        const prefix = rawLine.match(/^(\s*)/)[1];
+        const origFrom = m[1];
+        const origTo = m[2];
+        // If stateDotPath is available (running inside stablestate.html),
+        // compare resolved paths so a literal like "idle" is still treated
+        // as equal to the dotted "run.normal.idle" the caller passed in.
+        // In a pure-Node context (unit tests calling the function outside
+        // the app), fall back to literal equality.
+        let fromTok = newFrom, toTok = newTo;
+        if (typeof stateDotPath === 'function') {
+          if (stateDotPath(origFrom) === stateDotPath(newFrom)) fromTok = origFrom;
+          if (stateDotPath(origTo) === stateDotPath(newTo)) toTok = origTo;
+        } else {
+          if (origFrom === newFrom) fromTok = origFrom;
+          if (origTo === newTo) toTok = origTo;
+        }
+        lines[i] = buildLine(prefix, fromTok, toTok);
         replaced = true;
         break;
       }
@@ -1177,8 +1207,9 @@ function replaceTransition(oldFrom, oldTo, oldEvent, oldGuard, newFrom, newTo, n
   }
 
   if (replaced) return lines.join('\n');
-  // Fallback: append (same as addTransition)
-  return dsl + '\n' + newLine;
+  // Fallback: append (same as addTransition). No original line to mirror, so
+  // emit the new transition at column 0 with the caller-provided from/to.
+  return dsl + '\n' + buildLine('', newFrom, newTo);
 }
 
 // Parse if/else action syntax into branch array

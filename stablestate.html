@@ -1197,7 +1197,9 @@ function updateSize(type, id, nw, nh, dsl, lineNum) {
 // Add or replace a property (key=value) on an element line
 // Format a prop value for DSL emission: quote if it contains whitespace or
 // the 2-char `\n` escape literal, otherwise emit bare. Embedded `"` are
-// escaped as `\"` for the quoted form.
+// escaped as `\"` for the quoted form. Backslashes are NOT re-escaped here —
+// the 2-char-literal convention (`\n`, `\\`, `\t` stay as raw 2-char
+// sequences) is the contract with parseProps (see Task 7).
 function formatPropValue(val) {
   if (val == null) return '';
   const s = String(val);
@@ -3685,8 +3687,9 @@ function renderProps() {
       saveActionField(field, this.value);
     });
   });
-  // pp-do: listen on 'input' so live typing saves back (matches table-action
-  // multi-line editor UX). Also attach autocomplete helper for state names.
+  // pp-do: listen on 'change' (fires on blur/commit) to save back, consistent
+  // with pp-entry / pp-exit. attachMultilineAutocomplete also provides live
+  // autocomplete wiring for state names after the `-> ` prefix.
   const doTa = document.getElementById('pp-do');
   if (doTa) {
     doTa.addEventListener('change', function() {

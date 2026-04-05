@@ -4,8 +4,9 @@
 - **Design Doc**: `E:/00_Git/04_StableState/docs/ux-brushup/design.md`
 - **Target File**: `E:/00_Git/04_StableState/stablestate.html` (single-file editor)
 - **Working Branch**: `fix/ux-review-2026-04-05` (already checked out)
-- **Total Sprints**: 4 (serial)
-- **Total OBS in Scope**: 8 (OBS-04, OBS-13, OBS-08, OBS-11, OBS-02, OBS-16, OBS-15, OBS-01)
+- **Total Sprints**: 6 (serial)
+- **Total OBS in Scope**: 10 (OBS-04, OBS-13, OBS-08, OBS-11, OBS-02, OBS-16, OBS-15, OBS-01, OBS-19, OBS-18)
+- **Follow-up Queue**: `E:/00_Git/04_StableState/docs/ux-brushup/known-issues.md` (OBS-18 / OBS-19 の詳細はここに一次記録済み; Sprint 5/6 で消化する)
 
 ---
 
@@ -51,6 +52,10 @@
    design.md 第 5 節の「スコープ外」に挙げた OBS-03/05/06/07/09/12/14 は
    本パスで一切編集しない。近傍を触る必要がある場合も、副作用で挙動が
    変わらないよう最小限にとどめる。
+   **注**: OBS-18 / OBS-19 は `known-issues.md` で enqueue された追加
+   スコープであり、Sprint 5 / Sprint 6 で消化する (design.md のスコープ
+   表記より plan.md の Sprint 定義が優先)。Sprint 5/6 も同一ブランチ
+   `fix/ux-review-2026-04-05` 内で完結させ、新規ブランチを切らない。
 
 ---
 
@@ -64,11 +69,19 @@ Sprint 2 (Export quality: OBS-08, OBS-11)
 Sprint 3 (Error messages: OBS-02, OBS-16)
         ↓
 Sprint 4 (Edit consistency: OBS-15, OBS-01)
+        ↓
+Sprint 5 (Reliability / silent data loss: OBS-19)   ← known-issues.md から追加
+        ↓
+Sprint 6 (Error message accuracy: OBS-18)           ← known-issues.md から追加
 ```
 
 直列構成。Top-level conductor は逐次実行する (並列化しない)。理由は
 いずれのスプリントも `stablestate.html` という単一ファイルを編集するため、
 並列化するとマージコンフリクトが不可避だから。
+
+Sprint 5 / 6 は本サイクル実行中 (Sprint 1〜4) の副次発見として `known-issues.md`
+に enqueue されたものを、同一ブランチ `fix/ux-review-2026-04-05` 内で追加消化する
+扱い。新規 design.md は作成せず、既存 design.md のスコープ拡張として進める。
 
 ---
 
@@ -317,6 +330,192 @@ Sprint 4 (Edit consistency: OBS-15, OBS-01)
 
 ---
 
+## Sprint 5: P1 信頼性 — `@internal` self-transition の silent data loss を止める
+
+- **sprint_number**: 5
+- **status**: pending
+- **depends_on**: [4]
+- **description**:
+  `known-issues.md` OBS-19 を消化する。`cleanupInternalTransitions()`
+  (`stablestate.html` L4074-4089) が `refresh()` の先頭で呼ばれる際、
+  「`@internal` かつ `/ action` 無し」の遷移行を無条件に物理削除するため、
+  `examples/automotive-ecu.sstate` L85 の
+  `run -> run : EvWatchdogKick @internal` のように **trigger イベント
+  そのものに意味がある self-transition** が、ユーザーに通知されないまま
+  DSL から消失する (Sprint 4 evaluator 計測で 3973→3841 bytes の silent
+  reduction を観測)。組込/自動車 ECU の watchdog / heartbeat / poll /
+  carrier detect 系の self-transition を壊すため、信頼性の致命傷。
+  Sprint 1 attempt 1 と Sprint 4 の 2 つの独立 evaluator が別経路で
+  同じ現象を発見している。**最小修正方針** で、trigger が載っている
+  @internal self-transition は保持し、trigger も action も無い
+  完全に空の `X -> X : @internal` のみ従来通り掃除対象として残す。
+
+- **deliverables**:
+  - `stablestate.html` の `cleanupInternalTransitions()` の判定条件を
+    「trigger も action も無い完全に空の @internal self-transition」のみに
+    絞り込む (OBS-19 の最小修正方針)
+  - 必要であれば parser / renderer / table view / PlantUML export layer で、
+    `@internal` を保持した遷移が `parsed.transitions` に載ったあと
+    各描画・出力経路で破綻しないかの最小調整 (既存の @internal 扱いを
+    尊重し、アーキテクチャ変更はしない)
+  - 再現テスト: `tests/ux-brushup/sprint-5/obs-19-internal-self-transition-preserved.spec.*`
+  - 反例テスト (従来仕様維持): 空 `@internal` が従来通り掃除されることを
+    保証するケースを同テストファイルまたは隣接ファイルに追加
+
+- **acceptance_criteria**:
+  - [ ] **AC1 (OBS-19 再現防止 / 本丸)**:
+        `examples/automotive-ecu.sstate` をロード直後、
+        `browser_evaluate('getDsl()')` で取得した DSL 文字列に
+        `run -> run : EvWatchdogKick @internal` (またはロード前の同一行全文)
+        が **1 回以上含まれる** (`indexOf >= 0`)。
+        ロード前後で該当行が silent drop されないことを文字列検索で確認。
+  - [ ] **AC2 (他の遷移が巻き添えで消えていない)**:
+        同 DSL 内の **矢印 (`->`) を含む行の総数** が、ファイルの
+        オリジナル (`examples/automotive-ecu.sstate` を fetch した生テキスト)
+        と一致する。他に silent drop されている行がないことを担保する。
+  - [ ] **AC3 (runtime 側にも反映)**:
+        `browser_evaluate('parsed.transitions')` 相当で runtime 内部表現に
+        該当の @internal self-transition が含まれる、もしくは後続の
+        PlantUML export / Table view のいずれかで trigger 情報
+        (`EvWatchdogKick`) が参照可能な形で残っている。
+        (実装方針により "parser が保持" か "cleanup が手を出さない" かの
+         どちらでもよいが、少なくとも 1 経路で trigger が生存していること)
+  - [ ] **AC4 (反例: 本当に空の @internal は従来通り掃除される)**:
+        合成 DSL に `X -> X : @internal` (trigger も action もない空の行)
+        のみを含めてロードしたとき、`cleanupInternalTransitions()` 経由で
+        その行が従来通り DSL から除去される。本 sprint の修正が
+        「条件の絞り込み」であり「cleanup 全廃止」ではないことを専用
+        テストで証明する。
+  - [ ] **AC5 (描画回帰)**:
+        `examples/automotive-ecu.sstate` と `examples/tcp-connection.sstate`
+        の両方について、ロード直後に errorBar が 0 件、Diagram / Table
+        ビュー双方に切り替え可能で、SVG ルートが非空。修正の副作用で
+        描画が壊れていないことを確認。
+  - [ ] **AC6 (Sprint 1〜4 全スモーク)**:
+        Sprint 1 の AC1〜AC6、Sprint 2 の AC1〜AC8、Sprint 3 の AC1〜AC6、
+        Sprint 4 の AC1〜AC7 に対応する既存再現テスト (tests/ux-brushup/
+        sprint-1〜4 配下の全 28 テスト) が GREEN のまま。
+        特に OBS-15 (削除時の孤立遷移掃除) と本修正が干渉していないこと
+        を明示的に確認。
+  - [ ] **AC7 (暗黙)**: `console.error` が 0 件
+        (`.eval/ux-brushup-sprint-5/console.log` に記録)。
+
+- **test_strategy**:
+  - **本丸は DSL 文字列の差分**。`browser_evaluate` で `getDsl()` を
+    ロード直後に取得し、`EvWatchdogKick` の出現回数と `@internal` を含む
+    矢印行のカウントを検証する (決定的)。
+  - **反例テスト** (AC4) は専用の合成 DSL を `setDsl` で流し込んで
+    cleanup 後に該当行が消えていることをアサートする。
+  - Sprint 1〜4 全スモーク (AC6) は `.spec.*` ファイル単位で再実行。
+    Top-level conductor は Evaluator に既存全スプリント分を回させる。
+  - `.eval/ux-brushup-sprint-5/` 配下に以下を残すこと:
+    - `artifacts/automotive-ecu-dsl-after-load.txt` (ロード直後の `getDsl()` 出力)
+    - `artifacts/automotive-ecu-original.sstate` (fetch した生テキスト)
+    - `artifacts/diff-transitions-count.txt` (矢印行カウント比較)
+    - `console.log`
+
+- **commit_format**:
+  - `fix(ux): OBS-19 preserve @internal self-transitions that carry a meaningful trigger`
+
+---
+
+## Sprint 6: P2 エラー回復 — ブレース不整合ヒントを真因フレームに anchor する
+
+- **sprint_number**: 6
+- **status**: pending
+- **depends_on**: [5]
+- **description**:
+  `known-issues.md` OBS-18 を消化する。Sprint 3 で OBS-16 の一次修正として
+  `nestingStack` + `lastPoppedFrame` を使った
+  `Hint: no matching '{' found ... opened here at L<N>` 補足を追加したが、
+  多段ネスト構造で深い方の `{` を削除すると、stray `}` 到達時点で真因
+  フレームは既に LIFO スタックから pop 済みとなり、`lastPoppedFrame` は
+  **最後に pop された兄弟** (automotive-ecu で L19 `run` の `{` を消した場合、
+  実測では L49 `failsafe`) を指してしまう。Sprint 3 の AC3 は OR 条件で
+  literal pass しているため本 sprint は「精度向上」だが、実務 DSL で
+  ユーザーを誤誘導しうるため次サイクル対応と位置付けた。
+  真因フレーム (外側で `{` が欠落した親) をより正確に指すよう、
+  ブレース検査ロジックのヒント生成を改善する。
+
+- **deliverables**:
+  - `stablestate.html` のブレース検査ロジック (Sprint 3 で追加された
+    `nestingStack` + `lastPoppedFrame` + `Unclosed '{' opened here for ...`
+    系統のコード近傍、~L497 / ~L516 / ~L850) への heuristic 改善
+    - 方針は Generator に委ねるが、Planner の想定は
+      (a) stray `}` を検出した時点で未 close のままスタックに残っている
+      フレームを優先して指す、
+      (b) stray `}` 到達時にトークン列を上向き走査して直近の
+      「開始行だが対応する `}` を持たない状態宣言」を heuristic で特定、
+      のいずれか、もしくは両系統のメッセージを統合する。
+  - 再現テスト: `tests/ux-brushup/sprint-6/obs-18-brace-hint-true-culprit.spec.*`
+    - automotive-ecu ケース: L19 `run` の `{` を削除 → ヒントが `run` または L19 を指す
+    - 合成 3 段ネストケース: 最外の `{` を消す → 最外の開始行を指す
+    - 正常 DSL ケース: ヒントメッセージが**出ない** (誤検知しない)
+
+- **acceptance_criteria**:
+  - [ ] **AC1 (OBS-18 真因 anchor / automotive-ecu)**:
+        `examples/automotive-ecu.sstate` をロードし、`browser_evaluate` で
+        L19 `state run "Run" ... {` の `{` を削除して `refresh()` を走らせた後、
+        errorBar (または `errors` 配列) のヒントメッセージのいずれかに
+        **`run` という識別子**、または **`L19` という行番号リテラル**
+        (もしくは削除前の開始行番号) が含まれる。
+        Sprint 3 実装で観測されていた `failsafe` / `L49` への誤誘導が
+        発生しないことを、メッセージ全文のアサーションで証明する。
+  - [ ] **AC2 (OBS-18 真因 anchor / 合成 3 段ネスト)**:
+        合成 DSL として 3 段複合状態 (`outer { mid { leaf { ... } } }`) を
+        用意し、最外 `outer` の `{` を削除したとき、ヒストが
+        **`outer` または最外の開始行番号** を指す。
+        同じ DSL で中段 `mid` の `{` を削除したときは **`mid` または中段の
+        開始行番号** を指す。深さに依らず真因フレームが選ばれることを
+        2 ケースで検証。
+  - [ ] **AC3 (既存メッセージ系統の改善確認)**:
+        Sprint 3 で追加された 2 系統のメッセージ
+        (`Hint: no matching '{' found ...` と `Unclosed '{' opened here for ...`)
+        のうち、ユーザーに見える文言は本 sprint 修正後も人間可読のまま
+        (文法崩壊していない) で、かつ AC1/AC2 の真因フレームを参照している。
+        2 系統を統合する実装でも、片方を残したまま改善する実装でも可。
+  - [ ] **AC4 (誤検知ゼロ)**:
+        `examples/automotive-ecu.sstate` と `examples/tcp-connection.sstate`
+        を**そのまま** (ブレースを削らずに) ロードしたとき、
+        `Hint: no matching '{' found` / `Unclosed '{' opened here for`
+        いずれのメッセージも errorBar に**一切出ない**。errors 配列も
+        0 件のまま。正常 DSL での誤発火がないことを担保する。
+  - [ ] **AC5 (OBS-17 best-effort 描画維持)**:
+        AC1 の破壊試験 (automotive-ecu の `{` 削除) 中にも Diagram が
+        パース可能な範囲で描画され続け、SVG ルートが非空 (白紙にならない)。
+        Sprint 3 で保証したベストエフォート描画が退行していないことを
+        snapshot で証拠化。
+  - [ ] **AC6 (Sprint 1〜5 全スモーク)**:
+        Sprint 1〜5 の全再現テスト (tests/ux-brushup/sprint-1〜5 配下、
+        計 30+ テスト) が GREEN のまま。特に Sprint 3 の OBS-16 再現テストが
+        新しいヒントメッセージ文言でも依然 PASS すること (AC3 の文言
+        改善に追従するテスト更新が必要な場合は同コミット内で実施)。
+  - [ ] **AC7 (暗黙)**: `console.error` が 0 件
+        (`.eval/ux-brushup-sprint-6/console.log` に記録)。
+
+- **test_strategy**:
+  - automotive-ecu ケース (AC1) と合成 3 段ネストケース (AC2) を別
+    テストとして書く。errorBar のテキスト全文を取得して、
+    真因フレームの ID / 行番号が含まれるかを正規表現 + 文字列検索で検証。
+  - AC4 の誤検知チェックは、正常ロード時に errors を取得して
+    "Hint: no matching '{'" / "Unclosed '{'" の部分文字列が
+    0 回であることを検証する負の assertion。
+  - Sprint 3 の OBS-16 再現テストは、本 sprint の文言変更後も論理的に
+    PASS することを事前に確認する。文言変更が必要なら Generator が
+    同コミット内で更新する。
+  - `.eval/ux-brushup-sprint-6/` 配下に以下を残すこと:
+    - `artifacts/automotive-ecu-brace-removed-errors.txt` (改善後 errorBar 全文)
+    - `artifacts/synthetic-3level-outer-removed-errors.txt`
+    - `artifacts/synthetic-3level-mid-removed-errors.txt`
+    - `artifacts/false-positive-check-errors.txt` (正常ロード時の errors dump、空であるべき)
+    - `screenshots/best-effort-render.png`
+    - `console.log`
+
+- **commit_format**:
+  - `fix(ux): OBS-18 anchor brace mismatch hint to the true unclosed frame`
+
+---
+
 ## 付録: スプリント完了時の Top-level conductor チェックリスト
 
 各スプリント完了時、Top-level conductor は以下を順に実施する
@@ -332,3 +531,12 @@ Sprint 4 (Edit consistency: OBS-15, OBS-01)
    Generator に再修正を指示する。
 5. 全 4 スプリントが done になったら、design.md の第 6 節「成功の定義」を
    最終チェックとして 1 回だけ通し、完了を宣言する。
+6. **Sprint 5 / 6 追加サイクル**: Sprint 5 と Sprint 6 は `known-issues.md` 由来の
+   追加スコープ。Sprint 6 完了時、Top-level conductor は以下を最終確認する。
+   - 計 10 OBS (OBS-01/02/04/08/11/13/15/16/18/19) 全てが plan.md 上で
+     `status: done` になっていること。
+   - tests/ux-brushup/sprint-1〜6 配下の全再現テストが GREEN であること。
+   - `known-issues.md` の OBS-18 / OBS-19 セクションに「Sprint 5/6 で消化済み」
+     の 1 行を追記する (文書は残すがクローズ扱い)。
+   - design.md のスコープ表記が Sprint 5/6 を含むかどうかを確認し、必要なら
+     最小限の追記 (Sprint 5/6 を本サイクル内で吸収した旨) を加える。

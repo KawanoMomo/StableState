@@ -4739,6 +4739,156 @@ function autoRoute() {
   // Auto-route tries alternate side assignments and picks the one with fewest crossings.
   const g = parsed.canvas.grid;
 
+  // OBS-04 fix: these routing helpers mirror the ones inside renderSVG()
+  // (L1787+). They were previously unreachable from this top-level scope,
+  // which caused `ReferenceError: getBox is not defined` on every click of
+  // the AutoRoute toolbar button. They intentionally duplicate the bodies
+  // instead of being hoisted, so the rendering path stays untouched.
+  function getBox(ref) {
+    const el = resolveStateRef(ref, parsed);
+    if (!el) return null;
+    const pos = getAbsolutePos(el, parsed);
+    if (el.type === 'state') {
+      return { x: pos.x, y: pos.y, w: el.w * g, h: el.h * g };
+    }
+    switch (el.type) {
+      case 'initial':
+        return { x: pos.x - 10, y: pos.y - 10, w: 20, h: 20 };
+      case 'final':
+        return { x: pos.x - 12, y: pos.y - 12, w: 24, h: 24 };
+      case 'choice':
+        return { x: pos.x - 12, y: pos.y - 12, w: 24, h: 24 };
+      case 'history':
+      case 'deephistory':
+        return { x: pos.x - 16, y: pos.y - 16, w: 32, h: 32 };
+      case 'fork':
+      case 'join': {
+        const pw = el.w != null ? el.w * g : 6;
+        const ph = el.h != null ? el.h * g : 40;
+        return { x: pos.x - pw / 2, y: pos.y - ph / 2, w: pw, h: ph };
+      }
+      default:
+        return { x: pos.x - 10, y: pos.y - 10, w: 20, h: 20 };
+    }
+  }
+
+  function computePortSide(srcBox, tgtBox) {
+    const srcContainsTgt = srcBox.x <= tgtBox.x && srcBox.y <= tgtBox.y &&
+      srcBox.x + srcBox.w >= tgtBox.x + tgtBox.w && srcBox.y + srcBox.h >= tgtBox.y + tgtBox.h;
+    const tgtContainsSrc = tgtBox.x <= srcBox.x && tgtBox.y <= srcBox.y &&
+      tgtBox.x + tgtBox.w >= srcBox.x + srcBox.w && tgtBox.y + tgtBox.h >= srcBox.y + srcBox.h;
+    if (srcContainsTgt) {
+      const dTop = tgtBox.y - srcBox.y;
+      const dBottom = (srcBox.y + srcBox.h) - (tgtBox.y + tgtBox.h);
+      const dLeft = tgtBox.x - srcBox.x;
+      const dRight = (srcBox.x + srcBox.w) - (tgtBox.x + tgtBox.w);
+      const minD = Math.min(dTop, dBottom, dLeft, dRight);
+      if (minD === dTop) return { srcSide: 'top', tgtSide: 'top' };
+      if (minD === dBottom) return { srcSide: 'bottom', tgtSide: 'bottom' };
+      if (minD === dLeft) return { srcSide: 'left', tgtSide: 'left' };
+      return { srcSide: 'right', tgtSide: 'right' };
+    }
+    if (tgtContainsSrc) {
+      const dTop = srcBox.y - tgtBox.y;
+      const dBottom = (tgtBox.y + tgtBox.h) - (srcBox.y + srcBox.h);
+      const dLeft = srcBox.x - tgtBox.x;
+      const dRight = (tgtBox.x + tgtBox.w) - (srcBox.x + srcBox.w);
+      const minD = Math.min(dTop, dBottom, dLeft, dRight);
+      if (minD === dTop) return { srcSide: 'top', tgtSide: 'top' };
+      if (minD === dBottom) return { srcSide: 'bottom', tgtSide: 'bottom' };
+      if (minD === dLeft) return { srcSide: 'left', tgtSide: 'left' };
+      return { srcSide: 'right', tgtSide: 'right' };
+    }
+    const gapR = tgtBox.x - (srcBox.x + srcBox.w);
+    const gapL = srcBox.x - (tgtBox.x + tgtBox.w);
+    const gapB = tgtBox.y - (srcBox.y + srcBox.h);
+    const gapT = srcBox.y - (tgtBox.y + tgtBox.h);
+    const hBest = Math.max(gapR, gapL);
+    const vBest = Math.max(gapB, gapT);
+    if (vBest >= hBest) {
+      return gapB >= gapT
+        ? { srcSide: 'bottom', tgtSide: 'top' }
+        : { srcSide: 'top', tgtSide: 'bottom' };
+    } else {
+      return gapR >= gapL
+        ? { srcSide: 'right', tgtSide: 'left' }
+        : { srcSide: 'left', tgtSide: 'right' };
+    }
+  }
+
+  function getPortPoint(box, side, portIndex, portCount) {
+    const pad = portCount <= 2 ? 0.4 : portCount <= 4 ? 0.25 : 0.15;
+    const t = portCount <= 1 ? 0.5 : pad + (1 - 2 * pad) * portIndex / (portCount - 1);
+    switch (side) {
+      case 'top': return { x: box.x + box.w * t, y: box.y };
+      case 'bottom': return { x: box.x + box.w * t, y: box.y + box.h };
+      case 'left': return { x: box.x, y: box.y + box.h * t };
+      case 'right': return { x: box.x + box.w, y: box.y + box.h * t };
+    }
+    return { x: box.x + box.w / 2, y: box.y + box.h / 2 };
+  }
+
+  function buildRoute(fromPt, toPt, fromSide, toSide, channelOffset, routeIndex) {
+    const points = [fromPt];
+    const margin = 20;
+    const co = channelOffset || 0;
+    const ri = (routeIndex || 0) * 30;
+    if (fromSide === 'right' && toSide === 'left') {
+      if (Math.abs(fromPt.y - toPt.y) < 2 && Math.abs(co) < 1) points.push(toPt);
+      else { const midX = (fromPt.x + toPt.x) / 2 + co; points.push({ x: midX, y: fromPt.y }); points.push({ x: midX, y: toPt.y }); points.push(toPt); }
+    } else if (fromSide === 'left' && toSide === 'right') {
+      if (Math.abs(fromPt.y - toPt.y) < 2 && Math.abs(co) < 1) points.push(toPt);
+      else { const midX = (fromPt.x + toPt.x) / 2 + co; points.push({ x: midX, y: fromPt.y }); points.push({ x: midX, y: toPt.y }); points.push(toPt); }
+    } else if (fromSide === 'bottom' && toSide === 'top') {
+      if (Math.abs(fromPt.x - toPt.x) < 2 && Math.abs(co) < 1) points.push(toPt);
+      else { const midY = (fromPt.y + toPt.y) / 2 + co; points.push({ x: fromPt.x, y: midY }); points.push({ x: toPt.x, y: midY }); points.push(toPt); }
+    } else if (fromSide === 'top' && toSide === 'bottom') {
+      if (Math.abs(fromPt.x - toPt.x) < 2 && Math.abs(co) < 1) points.push(toPt);
+      else { const midY = (fromPt.y + toPt.y) / 2 + co; points.push({ x: fromPt.x, y: midY }); points.push({ x: toPt.x, y: midY }); points.push(toPt); }
+    } else if (fromSide === 'right' && toSide === 'right') {
+      const outX = Math.max(fromPt.x, toPt.x) + margin + ri;
+      points.push({ x: outX, y: fromPt.y }); points.push({ x: outX, y: toPt.y }); points.push(toPt);
+    } else if (fromSide === 'left' && toSide === 'left') {
+      const outX = Math.min(fromPt.x, toPt.x) - margin - ri;
+      points.push({ x: outX, y: fromPt.y }); points.push({ x: outX, y: toPt.y }); points.push(toPt);
+    } else if (fromSide === 'top' && toSide === 'top') {
+      const outY = Math.min(fromPt.y, toPt.y) - margin - ri;
+      points.push({ x: fromPt.x, y: outY }); points.push({ x: toPt.x, y: outY }); points.push(toPt);
+    } else if (fromSide === 'bottom' && toSide === 'bottom') {
+      const outY = Math.max(fromPt.y, toPt.y) + margin + ri;
+      points.push({ x: fromPt.x, y: outY }); points.push({ x: toPt.x, y: outY }); points.push(toPt);
+    } else {
+      points.push({ x: toPt.x + co, y: fromPt.y });
+      points.push({ x: toPt.x + co, y: toPt.y });
+      points.push(toPt);
+    }
+    return points;
+  }
+
+  function buildSelfRoute(box) {
+    const margin = 30;
+    return [
+      { x: box.x + box.w, y: box.y + box.h / 2 },
+      { x: box.x + box.w + margin, y: box.y + box.h / 2 },
+      { x: box.x + box.w + margin, y: box.y - margin },
+      { x: box.x + box.w / 2, y: box.y - margin },
+      { x: box.x + box.w / 2, y: box.y }
+    ];
+  }
+
+  function segmentIntersection(a1, a2, b1, b2) {
+    const d1x = a2.x - a1.x, d1y = a2.y - a1.y;
+    const d2x = b2.x - b1.x, d2y = b2.y - b1.y;
+    const cross = d1x * d2y - d1y * d2x;
+    if (Math.abs(cross) < 0.001) return null;
+    const t = ((b1.x - a1.x) * d2y - (b1.y - a1.y) * d2x) / cross;
+    const u = ((b1.x - a1.x) * d1y - (b1.y - a1.y) * d1x) / cross;
+    if (t >= 0.01 && t <= 0.99 && u >= 0.01 && u <= 0.99) {
+      return { x: a1.x + t * d1x, y: a1.y + t * d1y };
+    }
+    return null;
+  }
+
   function countCrossings(routes) {
     let count = 0;
     for (let i = 0; i < routes.length; i++) {

@@ -6,6 +6,10 @@ __pycache__/
 .pytest_cache/
 *.egg-info/
 
+# Playwright
+test-results/
+playwright-report/
+
 # Internal development files
 CLAUDE.md
 docs/superpowers/

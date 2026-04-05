@@ -600,7 +600,7 @@ function parseDSL(text) {
         // Parse trailing props on the closing brace line: } entry=Foo exit=Bar
         const afterBrace = trimmed.slice(1).trim();
         if (afterBrace && result.stateMap[popped.path || popped.id]) {
-          parseProps(afterBrace, result.stateMap[popped.path || popped.id]);
+          parseProps(afterBrace, result.stateMap[popped.path || popped.id], lineNum, result.errors);
         }
       }
       continue;
@@ -742,7 +742,7 @@ function parseDSL(text) {
       };
 
       // Parse props
-      if (propsStr) parseProps(propsStr, st);
+      if (propsStr) parseProps(propsStr, st, lineNum, result.errors);
 
       result.states.push(st);
       result.stateMap[path] = st;
@@ -792,7 +792,7 @@ function parseDSL(text) {
         style: null,
         line: lineNum
       };
-      if (rest) parseProps(rest, g);
+      if (rest) parseProps(rest, g, lineNum, result.errors);
       result.groups.push(g);
       result.groupMap[id] = g;
       continue;
@@ -816,7 +816,7 @@ function parseDSL(text) {
         textColor: null,
         line: lineNum
       };
-      if (rest) parseProps(rest, n);
+      if (rest) parseProps(rest, n, lineNum, result.errors);
       result.notes.push(n);
       result.noteMap[id] = n;
       continue;
@@ -944,14 +944,22 @@ function parseDSL(text) {
   return result;
 }
 
-/** Parse key=value props and apply them to target object */
-function parseProps(propsStr, target) {
-  // Match key=value pairs where value can be #HEX, word, or quoted
-  const propRe = /(\w+)=(\S+)/g;
+/** Parse key=value props and apply them to target object.
+ *  Supports bare values (non-whitespace) and double-quoted values with \n / \" escapes.
+ *  When lineNum and errors are provided, pushes E4 errors for unclosed quotes. */
+function parseProps(propsStr, target, lineNum, errors) {
+  // Match either a quoted value "..." (with \" escapes) or a bare non-whitespace token.
+  // The quoted alternative uses [^"\\]|\\. so that escaped chars inside don't terminate it.
+  const propRe = /(\w+)=("(?:[^"\\]|\\.)*"|\S+)/g;
   let m;
   while ((m = propRe.exec(propsStr)) !== null) {
     const key = m[1];
-    const val = m[2];
+    let val = m[2];
+    // Unquote if fully quoted: strip outer quotes, unescape \" → " (keep \n as 2-char literal
+    // so UI layer can later convert to real newline for textarea display).
+    if (val.length >= 2 && val.charCodeAt(0) === 34 && val.charCodeAt(val.length - 1) === 34) {
+      val = val.slice(1, -1).replace(/\\"/g, '"');
+    }
     switch (key) {
       case 'entry': target.entry = val; break;
       case 'do': target.do = val; break;
@@ -961,6 +969,17 @@ function parseProps(propsStr, target) {
       case 'border': target.borderColor = val; break;
       case 'round': target.round = parseFloat(val); break;
       case 'style': target.style = val; break;
+    }
+  }
+  // E4: detect unclosed quoted values. When the input is e.g. `do="unclosed` with no closing
+  // quote, the quoted alternative of propRe fails but the bare \S+ alternative still matches
+  // (capturing `do=` + `"unclosed`), bypassing the unquote branch. We scan the raw input
+  // separately for this pattern so we can emit a precise diagnostic.
+  if (errors && lineNum != null) {
+    const unclosedRe = /(\w+)="[^"]*$/;
+    const um = propsStr.match(unclosedRe);
+    if (um) {
+      errors.push({ line: lineNum, msg: "L" + lineNum + ": unclosed quoted value for '" + um[1] + "'" });
     }
   }
 }

@@ -3609,17 +3609,152 @@ async function copyPNG() {
 function exportPlantUML(p) {
   const data = p || parsed;
   if (!data) return;
-  const initialIds = new Set(data.pseudoStates.filter(ps => ps.type === 'initial').map(ps => ps.id));
-  const finalIds = new Set(data.pseudoStates.filter(ps => ps.type === 'final').map(ps => ps.id));
+
+  // OBS-11: Emit PlantUML with composite states nested in `{}`, history
+  // pseudo-states declared with `<<history>>`, final pseudo-states declared
+  // with `<<end>>`, and each transition placed in its lowest common ancestor
+  // composite scope (not flattened to root). Fixes the four breakages in
+  // .eval/ux-review-2026-04-05/artifacts/persona2-exported-puml.puml:
+  //   1) `[*] --> cooling` at root (cooling is inside Running)
+  //   2) `h_run` referenced but never declared
+  //   3) `final shutdown` flattened to plain `[*]` (initial/final混在)
+  //   4) `cooling --> heating` emitted outside `state Running { }`
+
+  // ─── Helpers: resolve a transition endpoint ref to its element, and walk
+  //     ancestors to find the scope (parent composite state id) it lives in.
+  //     Scope is `null` for root. Endpoint ref may be a bare id, a dotted
+  //     path, or a pseudo-state id.
+  function resolveRef(ref) {
+    if (data.stateMap[ref]) return data.stateMap[ref];
+    if (data.pseudoMap[ref]) return data.pseudoMap[ref];
+    return resolveStateRef(ref, data);
+  }
+  function ancestorsOf(el) {
+    // Returns [parentId, grandparentId, ..., null] for placement scopes.
+    const chain = [];
+    let cur = el;
+    while (cur) {
+      const pid = cur.parent || null;
+      chain.push(pid);
+      if (!pid) break;
+      cur = data.stateMap[cur.parentPath || pid] || null;
+    }
+    if (chain[chain.length - 1] !== null) chain.push(null);
+    return chain;
+  }
+  function scopeOfEndpoint(ref) {
+    // The scope of a pseudo-state is its own parent (it lives IN that scope).
+    // The scope of a regular state, when used as an endpoint, is also its
+    // parent: `normal --> diagnostic` sits inside `run` because both are
+    // children of `run`.
+    const el = resolveRef(ref);
+    if (!el) return null;
+    return el.parent || null;
+  }
+  function lca(aRef, bRef) {
+    // Lowest Common Ancestor scope for a transition (a, b). We walk from
+    // each endpoint's scope upward and intersect. Result is the id of the
+    // deepest composite that contains both endpoints as descendants, or
+    // `null` for root.
+    const aEl = resolveRef(aRef);
+    const bEl = resolveRef(bRef);
+    if (!aEl || !bEl) return null;
+    const aAnc = ancestorsOf(aEl); // [parent, grand, ..., null]
+    const bAnc = ancestorsOf(bEl);
+    // Candidate scopes for a: aAnc itself. For a *self-transition* we want
+    // the scope to be a's parent (not a's own id), which is aAnc[0].
+    const bSet = new Set(bAnc);
+    for (const s of aAnc) {
+      if (bSet.has(s)) return s;
+    }
+    return null;
+  }
+
+  // ─── Group transitions by their placement scope ───
+  const transByScope = new Map(); // scopeId (or null) -> [tr, ...]
+  for (const tr of data.transitions) {
+    const scope = lca(tr.from, tr.to);
+    if (!transByScope.has(scope)) transByScope.set(scope, []);
+    transByScope.get(scope).push(tr);
+  }
+
+  // ─── Group pseudo-states (history/final/choice) by their parent scope ───
+  // history and final need explicit declarations in PlantUML.
+  // initial collapses to `[*]` and does NOT need a declaration.
+  const pseudosByScope = new Map(); // scopeId -> { history:[], final:[], choice:[] }
+  function pseudoBucket(scope) {
+    if (!pseudosByScope.has(scope)) pseudosByScope.set(scope, { history: [], final: [], choice: [] });
+    return pseudosByScope.get(scope);
+  }
+  for (const ps of data.pseudoStates) {
+    const scope = ps.parent || null;
+    if (ps.type === 'history' || ps.type === 'deephistory') pseudoBucket(scope).history.push(ps);
+    else if (ps.type === 'final') pseudoBucket(scope).final.push(ps);
+    else if (ps.type === 'choice') pseudoBucket(scope).choice.push(ps);
+    // initial/fork/join intentionally skipped — initial becomes [*], and
+    // fork/join are not referenced by the current export format.
+  }
+
+  // ─── initial pseudo-state ids (so transitions `from` a specific initial
+  //     render as `[*] --> X`). final pseudo-state ids are kept by id, not
+  //     collapsed, so they survive as `state <id> <<end>>` targets.
+  const initialIds = new Set(
+    data.pseudoStates.filter(ps => ps.type === 'initial').map(ps => ps.id)
+  );
+
+  function renderLabel(tr) {
+    if (!tr.event && !tr.guard && !tr.action) return '';
+    const parts = [];
+    if (tr.event) parts.push(tr.event);
+    if (tr.guard) parts.push('[' + tr.guard + ']');
+    if (tr.action) parts.push('/ ' + tr.action);
+    return ' : ' + parts.join(' ');
+  }
+  function renderEndpoint(ref) {
+    // `from` side of initial becomes `[*]`. final stays as its id (it was
+    // declared as `state <id> <<end>>`). Everything else stays as-is so
+    // PlantUML can match the id to its state/pseudo declaration.
+    if (initialIds.has(ref)) return '[*]';
+    // Normalize dotted path endpoints to bare leaf id. PlantUML composite
+    // nesting keeps ids unique per scope, and the editor DSL often uses
+    // bare ids; using the leaf id produces cleaner output.
+    const el = resolveRef(ref);
+    if (el) return el.id;
+    // Fallback: raw ref (may be a dotted path we couldn't resolve)
+    const parts = ref.split('.');
+    return parts[parts.length - 1];
+  }
+
   const lines = ['@startuml'];
 
+  // ─── Recursive state renderer: emits `state "Label" as id { ... }` and,
+  //     inside the block, emits the state's child states AND the pseudo-
+  //     state declarations AND the transitions whose LCA is this state.
   function renderState(st, indent) {
     const pad = '  '.repeat(indent);
-    if (st.children.length > 0) {
+    const hasChildren = st.children.length > 0;
+    const bucket = pseudosByScope.get(st.id);
+    const innerTrans = transByScope.get(st.id) || [];
+    const hasInterior = hasChildren || !!bucket || innerTrans.length > 0;
+
+    if (hasInterior) {
       lines.push(pad + 'state "' + st.label + '" as ' + st.id + ' {');
+      const innerPad = '  '.repeat(indent + 1);
+      // Pseudo-state declarations first (history/final/choice) so references
+      // below them resolve. initial is implicit via `[*]`.
+      if (bucket) {
+        for (const ps of bucket.history) lines.push(innerPad + 'state ' + ps.id + ' <<history>>');
+        for (const ps of bucket.final)   lines.push(innerPad + 'state ' + ps.id + ' <<end>>');
+        for (const ps of bucket.choice)  lines.push(innerPad + 'state ' + ps.id + ' <<choice>>');
+      }
+      // Child states (recursive).
       for (const childId of st.children) {
         const child = data.stateMap[childId];
         if (child) renderState(child, indent + 1);
+      }
+      // Interior transitions: all transitions whose LCA is this composite.
+      for (const tr of innerTrans) {
+        lines.push(innerPad + renderEndpoint(tr.from) + ' --> ' + renderEndpoint(tr.to) + renderLabel(tr));
       }
       lines.push(pad + '}');
     } else {
@@ -3627,23 +3762,24 @@ function exportPlantUML(p) {
     }
   }
 
-  for (const st of data.states.filter(s => s.parent === null)) renderState(st, 0);
-  for (const ps of data.pseudoStates.filter(p2 => p2.type === 'choice')) lines.push('state ' + ps.id + ' <<choice>>');
-  lines.push('');
-
-  for (const tr of data.transitions) {
-    const from = initialIds.has(tr.from) ? '[*]' : tr.from;
-    const to = finalIds.has(tr.to) ? '[*]' : tr.to;
-    let label = '';
-    if (tr.event || tr.guard || tr.action) {
-      const parts = [];
-      if (tr.event) parts.push(tr.event);
-      if (tr.guard) parts.push('[' + tr.guard + ']');
-      if (tr.action) parts.push('/ ' + tr.action);
-      label = ' : ' + parts.join(' ');
-    }
-    lines.push(from + ' --> ' + to + label);
+  // ─── Root-level declarations ───
+  // Pseudo-states whose parent is null (root scope) are declared first so
+  // subsequent references (in root states or root transitions) can resolve.
+  const rootBucket = pseudosByScope.get(null);
+  if (rootBucket) {
+    for (const ps of rootBucket.history) lines.push('state ' + ps.id + ' <<history>>');
+    for (const ps of rootBucket.final)   lines.push('state ' + ps.id + ' <<end>>');
+    for (const ps of rootBucket.choice)  lines.push('state ' + ps.id + ' <<choice>>');
   }
+  // Root-level states (recursive).
+  for (const st of data.states.filter(s => s.parent === null)) renderState(st, 0);
+  lines.push('');
+  // Root-level transitions (those whose LCA is root).
+  const rootTrans = transByScope.get(null) || [];
+  for (const tr of rootTrans) {
+    lines.push(renderEndpoint(tr.from) + ' --> ' + renderEndpoint(tr.to) + renderLabel(tr));
+  }
+
   lines.push('@enduml');
   const text = lines.join('\n');
 

@@ -1,10 +1,21 @@
 # StableState UX Brushup — Known Issues (2026-04-05 以降のキュー)
 
-この文書は UX ブラッシュアップサイクル (2026-04-05 実施、plan.md / design.md 参照) の実行中に**副次的に発見された**新規 OBS を、次サイクルへエンキューする目的で記録する。
+この文書は UX ブラッシュアップサイクル (2026-04-05 実施、plan.md / design.md 参照) の実行中に**副次的に発見された**新規 OBS を、次サイクルへエンキューする目的で記録していた。
 
 - 元 UX レビュー: `.eval/ux-review-2026-04-05/report.md` (OBS-01〜OBS-17)
-- 実装サイクル: `fix/ux-review-2026-04-05` ブランチ (14 commits、base=`bc29026`)
-- 本文書の位置づけ: 元レポートの addendum (in-scope の 8 OBS は全て done、ここに書く 2 件は次サイクル候補)
+- 実装サイクル: `fix/ux-review-2026-04-05` ブランチ
+- 本文書の位置づけ: 元レポートの addendum
+
+## 現状 (2026-04-05 updated)
+
+**両 OBS とも同一 addendum サイクル内で消化済み。**
+
+| OBS | 元ステータス | 現ステータス | 消化 sprint | HEAD | Evaluator 証拠 |
+|---|---|---|---|---|---|
+| **OBS-18** | Medium / 次サイクル候補 | **CLOSED** | Sprint 6 | `91bd7a0` | `.eval/ux-brushup-sprint-6/report.md` |
+| **OBS-19** | High / 次サイクル P1 候補 | **CLOSED** | Sprint 5 | `8fd3f57` | `.eval/ux-brushup-sprint-5/report.md` |
+
+本文書はクローズ済み。今後新たな副次発見があれば新規 known-issues ファイル (日付サフィックス付き) を作成する運用とする。
 
 ---
 

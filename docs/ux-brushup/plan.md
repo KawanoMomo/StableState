@@ -422,7 +422,7 @@ Sprint 5 / 6 は本サイクル実行中 (Sprint 1〜4) の副次発見として
 ## Sprint 6: P2 エラー回復 — ブレース不整合ヒントを真因フレームに anchor する
 
 - **sprint_number**: 6
-- **status**: pending
+- **status**: done (2026-04-05, HEAD=91bd7a0, attempt 0/10, evaluator evidence at `.eval/ux-brushup-sprint-6/report.md`; indent-smoking-gun heuristic で automotive-ecu/run/L19, 合成3段ネスト outer/L3 + mid/L5 いずれも真因命中)
 - **depends_on**: [5]
 - **description**:
   `known-issues.md` OBS-18 を消化する。Sprint 3 で OBS-16 の一次修正として

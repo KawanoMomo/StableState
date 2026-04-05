@@ -139,7 +139,7 @@ Sprint 4 (Edit consistency: OBS-15, OBS-01)
 ## Sprint 2: Export 品質 (SVG/PNG からハンドル除去 + PlantUML 構造化)
 
 - **sprint_number**: 2
-- **status**: pending
+- **status**: done (2026-04-05, HEAD=08d9850, attempt 0/10, evaluator evidence at `.eval/ux-brushup-sprint-2/report.md`)
 - **depends_on**: [1]
 - **description**:
   外部共有される成果物 (エクスポート出力) の信頼性を回復する。

@@ -333,7 +333,7 @@ Sprint 5 / 6 は本サイクル実行中 (Sprint 1〜4) の副次発見として
 ## Sprint 5: P1 信頼性 — `@internal` self-transition の silent data loss を止める
 
 - **sprint_number**: 5
-- **status**: pending
+- **status**: done (2026-04-05, HEAD=8fd3f57, attempt 0/10, evaluator evidence at `.eval/ux-brushup-sprint-5/report.md`; AC2 byte-delta=0 after CRLF norm; note: PlantUML export emits `run --> run : EvWatchdogKick` as regular self-arrow — trigger preserved but true-internal syntax `state run : EvWatchdogKick` は次サイクル polish 候補)
 - **depends_on**: [4]
 - **description**:
   `known-issues.md` OBS-19 を消化する。`cleanupInternalTransitions()`

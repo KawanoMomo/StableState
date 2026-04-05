@@ -2636,6 +2636,175 @@ function renderSVG(parsed) {
 }
 
 // ═══════════════════════════════════════════════
+// Multiline Autocomplete Helper
+// ═══════════════════════════════════════════════
+// Attach state-name autocomplete and Tab-indent behavior to a textarea.
+// Used by pp-table-action (action cell editor) and will be reused by
+// pp-do (Task 9: do-activity editor).
+//
+// opts:
+//   stateCandidates:   () => string[]   function returning current state IDs
+//                                       for "-> " state-name completion
+//   keywordCandidates: string[]         optional keyword completions
+//                                       (e.g. `if []`, `else`, `-> `).
+//                                       When omitted/empty, keyword autocomplete
+//                                       is disabled but Tab-indent still works.
+function attachMultilineAutocomplete(ta, opts) {
+  const getStates = (opts && opts.stateCandidates) || (function() { return []; });
+  const keywords = (opts && opts.keywordCandidates) || [];
+  let acList = null, acItems = [], acIdx = -1, acPrefix = '', acStart = 0;
+
+  function getAcContext() {
+    const pos = ta.selectionStart;
+    const textBefore = ta.value.substring(0, pos);
+    const lineStart = textBefore.lastIndexOf('\n') + 1;
+    const line = textBefore.substring(lineStart);
+    // Check for "-> prefix" (state name completion)
+    const arrowMatch = line.match(/->\s*(\S*)$/);
+    if (arrowMatch) return { type: 'state', prefix: arrowMatch[1], start: pos - arrowMatch[1].length };
+    // Check for keyword at line start (after optional indent)
+    const kwMatch = line.match(/^(\s*)(\S*)$/);
+    if (kwMatch && kwMatch[2].length > 0) return { type: 'keyword', prefix: kwMatch[2], start: pos - kwMatch[2].length };
+    return null;
+  }
+
+  function buildCandidates(type, prefix) {
+    if (type === 'state') {
+      return getStates();
+    }
+    if (type === 'keyword') {
+      return keywords;
+    }
+    return [];
+  }
+
+  function getCaretCoords() {
+    // Mirror element technique: copy textarea content into a hidden div,
+    // place a marker span at cursor position, measure its offset
+    const mirror = document.createElement('div');
+    const cs = getComputedStyle(ta);
+    ['fontFamily','fontSize','fontWeight','lineHeight','letterSpacing','wordSpacing',
+     'textIndent','whiteSpace','wordWrap','overflowWrap','padding','borderWidth','boxSizing'
+    ].forEach(p => mirror.style[p] = cs[p]);
+    mirror.style.position = 'absolute';
+    mirror.style.left = '-9999px';
+    mirror.style.top = '0';
+    mirror.style.width = cs.width;
+    mirror.style.overflow = 'hidden';
+    const pos = ta.selectionStart;
+    const textBefore = ta.value.substring(0, pos);
+    const textAfter = ta.value.substring(pos);
+    mirror.textContent = textBefore;
+    const marker = document.createElement('span');
+    marker.textContent = textAfter || '.';
+    mirror.appendChild(marker);
+    document.body.appendChild(mirror);
+    const markerRect = marker.getBoundingClientRect();
+    const mirrorRect = mirror.getBoundingClientRect();
+    const x = markerRect.left - mirrorRect.left;
+    const y = markerRect.top - mirrorRect.top - ta.scrollTop;
+    document.body.removeChild(mirror);
+    return { x: x, y: y };
+  }
+
+  function showAc(candidates) {
+    hideAc();
+    if (candidates.length === 0) return;
+    acList = document.createElement('div');
+    acList.className = 'ac-list';
+    acList.style.position = 'absolute';
+    // Position at caret
+    const caret = getCaretCoords();
+    const taRect = ta.getBoundingClientRect();
+    const panelRect = ta.parentNode.getBoundingClientRect();
+    acList.style.left = (taRect.left - panelRect.left + caret.x) + 'px';
+    acList.style.top = (taRect.top - panelRect.top + caret.y + parseInt(getComputedStyle(ta).lineHeight) || 18) + 'px';
+    acList.style.width = 'auto';
+    acList.style.minWidth = '120px';
+    acItems = candidates.slice(0, 5);
+    acIdx = 0;
+    for (let i = 0; i < acItems.length; i++) {
+      const div = document.createElement('div');
+      div.className = 'ac-item' + (i === 0 ? ' active' : '');
+      div.textContent = acItems[i];
+      div.addEventListener('mousedown', function(ev) { ev.preventDefault(); acceptAc(i); });
+      acList.appendChild(div);
+    }
+    ta.parentNode.style.position = 'relative';
+    ta.parentNode.appendChild(acList);
+  }
+
+  function hideAc() {
+    if (acList && acList.parentNode) acList.parentNode.removeChild(acList);
+    acList = null; acItems = []; acIdx = -1;
+  }
+
+  function acceptAc(idx) {
+    const val = acItems[idx];
+    const before = ta.value.substring(0, acStart);
+    const after = ta.value.substring(ta.selectionStart);
+    ta.value = before + val + after;
+    // Place cursor inside [] if keyword has brackets
+    const bracketPos = val.indexOf('[]');
+    if (bracketPos >= 0) {
+      ta.selectionStart = ta.selectionEnd = acStart + bracketPos + 1;
+    } else {
+      ta.selectionStart = ta.selectionEnd = acStart + val.length;
+    }
+    hideAc();
+  }
+
+  function updateAc() {
+    const ctx = getAcContext();
+    if (!ctx || ctx.prefix.length === 0) { hideAc(); return; }
+    acPrefix = ctx.prefix.toLowerCase();
+    acStart = ctx.start;
+    const all = buildCandidates(ctx.type, ctx.prefix);
+    const filtered = all.filter(c => c.toLowerCase().startsWith(acPrefix));
+    if (filtered.length > 0) showAc(filtered);
+    else hideAc();
+  }
+
+  ta.addEventListener('input', updateAc);
+
+  ta.addEventListener('keydown', function(e) {
+    if (acList) {
+      if (e.key === 'Tab' || e.key === 'Enter') {
+        e.preventDefault();
+        if (acIdx >= 0) acceptAc(acIdx);
+        return;
+      }
+      if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        acIdx = Math.min(acIdx + 1, acItems.length - 1);
+        acList.querySelectorAll('.ac-item').forEach((el, i) => el.classList.toggle('active', i === acIdx));
+        return;
+      }
+      if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        acIdx = Math.max(acIdx - 1, 0);
+        acList.querySelectorAll('.ac-item').forEach((el, i) => el.classList.toggle('active', i === acIdx));
+        return;
+      }
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        hideAc();
+        return;
+      }
+    } else {
+      // Tab inserts 2 spaces when no autocomplete showing
+      if (e.key === 'Tab') {
+        e.preventDefault();
+        const start = this.selectionStart;
+        this.value = this.value.substring(0, start) + '  ' + this.value.substring(this.selectionEnd);
+        this.selectionStart = this.selectionEnd = start + 2;
+        return;
+      }
+    }
+  });
+}
+
+// ═══════════════════════════════════════════════
 // Table Renderer
 // ═══════════════════════════════════════════════
 function renderTable(parsed) {
@@ -3021,160 +3190,16 @@ function renderTable(parsed) {
         });
       }
 
-      // Autocomplete for state names after "-> "
+      // Autocomplete for state names after "-> " and keyword completion
+      // (extracted into attachMultilineAutocomplete helper; Task 9 will reuse
+      //  it for the pp-do textarea, passing only stateCandidates.)
       const actionTa = document.getElementById('pp-table-action');
-      let acList = null, acItems = [], acIdx = -1, acPrefix = '', acStart = 0;
-
-      function getAcContext() {
-        const pos = actionTa.selectionStart;
-        const textBefore = actionTa.value.substring(0, pos);
-        const lineStart = textBefore.lastIndexOf('\n') + 1;
-        const line = textBefore.substring(lineStart);
-        // Check for "-> prefix" (state name completion)
-        const arrowMatch = line.match(/->\s*(\S*)$/);
-        if (arrowMatch) return { type: 'state', prefix: arrowMatch[1], start: pos - arrowMatch[1].length };
-        // Check for keyword at line start (after optional indent)
-        const kwMatch = line.match(/^(\s*)(\S*)$/);
-        if (kwMatch && kwMatch[2].length > 0) return { type: 'keyword', prefix: kwMatch[2], start: pos - kwMatch[2].length };
-        return null;
-      }
-
       const AC_KEYWORDS = ['if []', 'elif []', 'else if []', 'else', '-> '];
-
-      function buildCandidates(type, prefix) {
-        if (type === 'state') {
-          if (!parsed) return [];
-          return parsed.states.map(s => s.path || s.id);
-        }
-        if (type === 'keyword') {
-          return AC_KEYWORDS;
-        }
-        return [];
-      }
-
-      function getCaretCoords() {
-        // Mirror element technique: copy textarea content into a hidden div,
-        // place a marker span at cursor position, measure its offset
-        const mirror = document.createElement('div');
-        const cs = getComputedStyle(actionTa);
-        ['fontFamily','fontSize','fontWeight','lineHeight','letterSpacing','wordSpacing',
-         'textIndent','whiteSpace','wordWrap','overflowWrap','padding','borderWidth','boxSizing'
-        ].forEach(p => mirror.style[p] = cs[p]);
-        mirror.style.position = 'absolute';
-        mirror.style.left = '-9999px';
-        mirror.style.top = '0';
-        mirror.style.width = cs.width;
-        mirror.style.overflow = 'hidden';
-        const pos = actionTa.selectionStart;
-        const textBefore = actionTa.value.substring(0, pos);
-        const textAfter = actionTa.value.substring(pos);
-        mirror.textContent = textBefore;
-        const marker = document.createElement('span');
-        marker.textContent = textAfter || '.';
-        mirror.appendChild(marker);
-        document.body.appendChild(mirror);
-        const markerRect = marker.getBoundingClientRect();
-        const mirrorRect = mirror.getBoundingClientRect();
-        const x = markerRect.left - mirrorRect.left;
-        const y = markerRect.top - mirrorRect.top - actionTa.scrollTop;
-        document.body.removeChild(mirror);
-        return { x: x, y: y };
-      }
-
-      function showAc(candidates) {
-        hideAc();
-        if (candidates.length === 0) return;
-        acList = document.createElement('div');
-        acList.className = 'ac-list';
-        acList.style.position = 'absolute';
-        // Position at caret
-        const caret = getCaretCoords();
-        const taRect = actionTa.getBoundingClientRect();
-        const panelRect = actionTa.parentNode.getBoundingClientRect();
-        acList.style.left = (taRect.left - panelRect.left + caret.x) + 'px';
-        acList.style.top = (taRect.top - panelRect.top + caret.y + parseInt(getComputedStyle(actionTa).lineHeight) || 18) + 'px';
-        acList.style.width = 'auto';
-        acList.style.minWidth = '120px';
-        acItems = candidates.slice(0, 5);
-        acIdx = 0;
-        for (let i = 0; i < acItems.length; i++) {
-          const div = document.createElement('div');
-          div.className = 'ac-item' + (i === 0 ? ' active' : '');
-          div.textContent = acItems[i];
-          div.addEventListener('mousedown', function(ev) { ev.preventDefault(); acceptAc(i); });
-          acList.appendChild(div);
-        }
-        actionTa.parentNode.style.position = 'relative';
-        actionTa.parentNode.appendChild(acList);
-      }
-
-      function hideAc() {
-        if (acList && acList.parentNode) acList.parentNode.removeChild(acList);
-        acList = null; acItems = []; acIdx = -1;
-      }
-
-      function acceptAc(idx) {
-        const val = acItems[idx];
-        const before = actionTa.value.substring(0, acStart);
-        const after = actionTa.value.substring(actionTa.selectionStart);
-        actionTa.value = before + val + after;
-        // Place cursor inside [] if keyword has brackets
-        const bracketPos = val.indexOf('[]');
-        if (bracketPos >= 0) {
-          actionTa.selectionStart = actionTa.selectionEnd = acStart + bracketPos + 1;
-        } else {
-          actionTa.selectionStart = actionTa.selectionEnd = acStart + val.length;
-        }
-        hideAc();
-      }
-
-      function updateAc() {
-        const ctx = getAcContext();
-        if (!ctx || ctx.prefix.length === 0) { hideAc(); return; }
-        acPrefix = ctx.prefix.toLowerCase();
-        acStart = ctx.start;
-        const all = buildCandidates(ctx.type, ctx.prefix);
-        const filtered = all.filter(c => c.toLowerCase().startsWith(acPrefix));
-        if (filtered.length > 0) showAc(filtered);
-        else hideAc();
-      }
-
-      actionTa.addEventListener('input', updateAc);
-
-      actionTa.addEventListener('keydown', function(e) {
-        if (acList) {
-          if (e.key === 'Tab' || e.key === 'Enter') {
-            e.preventDefault();
-            if (acIdx >= 0) acceptAc(acIdx);
-            return;
-          }
-          if (e.key === 'ArrowDown') {
-            e.preventDefault();
-            acIdx = Math.min(acIdx + 1, acItems.length - 1);
-            acList.querySelectorAll('.ac-item').forEach((el, i) => el.classList.toggle('active', i === acIdx));
-            return;
-          }
-          if (e.key === 'ArrowUp') {
-            e.preventDefault();
-            acIdx = Math.max(acIdx - 1, 0);
-            acList.querySelectorAll('.ac-item').forEach((el, i) => el.classList.toggle('active', i === acIdx));
-            return;
-          }
-          if (e.key === 'Escape') {
-            e.preventDefault();
-            hideAc();
-            return;
-          }
-        } else {
-          // Tab inserts 2 spaces when no autocomplete showing
-          if (e.key === 'Tab') {
-            e.preventDefault();
-            const start = this.selectionStart;
-            this.value = this.value.substring(0, start) + '  ' + this.value.substring(this.selectionEnd);
-            this.selectionStart = this.selectionEnd = start + 2;
-            return;
-          }
-        }
+      attachMultilineAutocomplete(actionTa, {
+        stateCandidates: function() {
+          return parsed ? parsed.states.map(s => s.path || s.id) : [];
+        },
+        keywordCandidates: AC_KEYWORDS
       });
 
       document.getElementById('pp-table-apply').addEventListener('click', function() {

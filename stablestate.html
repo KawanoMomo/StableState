@@ -859,6 +859,9 @@ function parseDSL(text) {
         // @cyclic is orthogonal to @kind — both may appear, in either order.
         // Loop strips whichever suffix currently terminates `remaining` until
         // neither matches, which handles "@kind @cyclic" and "@cyclic @kind".
+        // NOTE: We use a local shape here instead of stripTransitionSuffixes()
+        // because we need to capture kind/isCyclic into locals. The strip-only
+        // variant of this loop is used by removeTransition/replaceTransition.
         let suffixChanged = true;
         while (suffixChanged) {
           suffixChanged = false;
@@ -1219,6 +1222,23 @@ function addTransition(from, to, event, guard, action, kind, dsl, cyclic) {
   return dsl + '\n' + line;
 }
 
+// Strip trailing @cyclic and @(local|external|internal) suffixes from a transition
+// detail string, in any order. Used by removeTransition and replaceTransition for
+// match comparisons (capture-less strip). The parseDSL body uses a shape variant
+// that captures kind/isCyclic and is NOT consolidated here.
+function stripTransitionSuffixes(s) {
+  let changed = true;
+  while (changed) {
+    changed = false;
+    const before = s;
+    s = s.replace(/@cyclic\s*$/, '').trim();
+    if (s !== before) { changed = true; continue; }
+    s = s.replace(/@(local|external|internal)\s*$/, '').trim();
+    if (s !== before) changed = true;
+  }
+  return s;
+}
+
 // Remove a matching transition line (match by from, to, event, guard)
 function removeTransition(from, to, event, guard, dsl) {
   const lines = dsl.split('\n');
@@ -1233,15 +1253,7 @@ function removeTransition(from, to, event, guard, dsl) {
       if (rest.startsWith(':')) {
         let detail = rest.slice(1).trim();
         // Remove @cyclic and @kind suffixes (either order)
-        let stripped = true;
-        while (stripped) {
-          stripped = false;
-          const before = detail;
-          detail = detail.replace(/@cyclic\s*$/, '').trim();
-          if (detail !== before) { stripped = true; continue; }
-          detail = detail.replace(/@(local|external|internal)\s*$/, '').trim();
-          if (detail !== before) stripped = true;
-        }
+        detail = stripTransitionSuffixes(detail);
         // Remove action
         const slashIdx = detail.indexOf('/');
         if (slashIdx !== -1) detail = detail.slice(0, slashIdx).trim();
@@ -1306,15 +1318,7 @@ function replaceTransition(oldFrom, oldTo, oldEvent, oldGuard, newFrom, newTo, n
         let detail = rest.slice(1).trim();
         // Strip @cyclic and @kind suffixes (either order) before extracting
         // event/guard for the match comparison.
-        let stripped = true;
-        while (stripped) {
-          stripped = false;
-          const before = detail;
-          detail = detail.replace(/@cyclic\s*$/, '').trim();
-          if (detail !== before) { stripped = true; continue; }
-          detail = detail.replace(/@(local|external|internal)\s*$/, '').trim();
-          if (detail !== before) stripped = true;
-        }
+        detail = stripTransitionSuffixes(detail);
         const slashIdx = detail.indexOf('/');
         if (slashIdx !== -1) detail = detail.slice(0, slashIdx).trim();
         const gm = detail.match(/\[([^\]]*)\]/);

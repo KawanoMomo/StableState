@@ -14,7 +14,7 @@ async function setDslAndGetParsed(page, dsl) {
     return {
       transitions: parsed.transitions.map(t => ({
         from: t.from, to: t.to, event: t.event, guard: t.guard,
-        action: t.action, kind: t.kind, cyclic: t.cyclic === true
+        action: t.action, kind: t.kind, cyclic: t.cyclic
       })),
       errors: parsed.errors.map(e => e.msg)
     };

@@ -1967,6 +1967,8 @@ function renderSVG(parsed) {
     const mid = 'ah_' + c.replace(/[^a-zA-Z0-9]/g, '');
     svg += `<marker id="${mid}" markerWidth="10" markerHeight="8" refX="10" refY="4" orient="auto"><path d="M0,0 L10,4 L0,8 Z" fill="${c}"/></marker>`;
   }
+  // Cyclic arrow marker (amber, for transitions with @cyclic flag)
+  svg += `<marker id="arr-cyclic" markerWidth="10" markerHeight="8" refX="10" refY="4" orient="auto"><path d="M0,0 L10,4 L0,8 Z" fill="#F59E0B"/></marker>`;
   svg += `</defs>`;
 
   // Helper: get bounding box {x, y, w, h} in pixels for a state or pseudo-state
@@ -2379,9 +2381,20 @@ function renderSVG(parsed) {
 
     // Build SVG path
     const sw = tr.width || 1.5;
-    const sc = tr.color || '#89DDFF';
-    const dashAttr = tr.style === 'dashed' ? ' stroke-dasharray="6 3"' : '';
-    const _amid = 'ah_' + sc.replace(/[^a-zA-Z0-9]/g, '');
+    // Cyclic default stroke color is amber; user's explicit color= wins
+    let sc;
+    if (tr.color) sc = tr.color;
+    else if (tr.cyclic) sc = '#F59E0B';
+    else sc = '#89DDFF';
+    // Cyclic default line is dashed; user's explicit style= wins
+    let dashAttr;
+    if (tr.style === 'dashed') dashAttr = ' stroke-dasharray="6 3"';
+    else if (tr.style === 'dotted') dashAttr = ' stroke-dasharray="2,3"';
+    else if (tr.style === 'solid') dashAttr = '';
+    else if (tr.cyclic) dashAttr = ' stroke-dasharray="6,4"';
+    else dashAttr = '';
+    // Cyclic uses a dedicated amber marker unless user provided a custom color
+    const _amid = (tr.cyclic && !tr.color) ? 'arr-cyclic' : ('ah_' + sc.replace(/[^a-zA-Z0-9]/g, ''));
     if (crossings.length === 0) {
       // Simple polyline
       const pts = route.map(p => `${p.x},${p.y}`).join(' ');
@@ -2424,7 +2437,7 @@ function renderSVG(parsed) {
 
     // Labels — positioned at each route's own midpoint (routes are separated by port distribution)
     const isChoiceElse = !tr.event && !tr.guard && parsed.pseudoMap[tr.from] && parsed.pseudoMap[tr.from].type === 'choice';
-    const hasLabel = tr.event || tr.guard || tr.action || isChoiceElse;
+    const hasLabel = tr.event || tr.guard || tr.action || isChoiceElse || tr.cyclic;
     if (hasLabel) {
       const mid = routeMidpoint(route);
       // Determine if the segment at midpoint is horizontal or vertical
@@ -2442,6 +2455,10 @@ function renderSVG(parsed) {
       // For horizontal segments: label above/below the line
       // For vertical segments: label to the left/right of the line
       const labelLines = [];
+      // Cyclic marker prefix — always shown for @cyclic transitions, cannot be opted out
+      if (tr.cyclic) {
+        labelLines.push({ text: '⟳', color: '#F59E0B', size: 11 });
+      }
       if (tr.event) labelLines.push({ text: tr.event, color: '#FFCB6B', size: 10 });
       const guardAction = [];
       if (tr.guard) {

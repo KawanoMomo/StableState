@@ -262,7 +262,7 @@ Sprint 4 (Edit consistency: OBS-15, OBS-01)
 ## Sprint 4: 編集整合性 (孤立遷移クリーンアップ + 新規状態の座標分散)
 
 - **sprint_number**: 4
-- **status**: pending
+- **status**: done (2026-04-05, HEAD=6939780, attempt 0/10, evaluator evidence at `.eval/ux-brushup-sprint-4/report.md`; side-discovery: `run -> run : EvWatchdogKick @internal` drops on load via cleanupInternalTransitions() — pre-existing, out of scope, recommend separate OBS)
 - **depends_on**: [3]
 - **description**:
   編集操作の副作用で起きる軽度の整合性崩れを 2 件まとめて対応。

@@ -4072,14 +4072,24 @@ function updateHighlight() {
 // Refresh Pipeline
 // ═══════════════════════════════════════════════
 function cleanupInternalTransitions() {
-  // Remove @internal transitions that have no action (they serve no purpose)
+  // OBS-19 (Sprint 5): narrow the predicate so we ONLY drop transitions
+  // whose body after ':' is literally empty apart from the '@internal'
+  // marker — i.e. `X -> Y : @internal` with no trigger, no guard, no
+  // action. Anything meaningful in the body (trigger event like
+  // `EvWatchdogKick`, guard `[...]`, or `/ action`) protects the line
+  // so that self-transitions that carry a meaningful trigger (watchdog
+  // tick, heartbeat, poll, carrier detect, ...) are NOT silently
+  // erased on load.
   let dsl = getDsl();
   let changed = false;
   const lines = dsl.split('\n');
   const result = [];
   for (const line of lines) {
     const t = line.trim();
-    if (t.match(/^(\S+)\s*->\s*(\S+)\s*:.*@internal/) && !t.match(/\/\s*\S+/)) {
+    // Matches e.g. `a -> b : @internal`, `a -> a :@internal`,
+    // `a -> b :   @internal   ` — the content between ':' and
+    // '@internal' is empty, and nothing trails '@internal'.
+    if (/^\S+\s*->\s*\S+\s*:\s*@internal\s*$/.test(t)) {
       changed = true;
       continue; // skip this line
     }

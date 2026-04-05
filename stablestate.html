@@ -1758,6 +1758,14 @@ function getAbsolutePos(element, parsed) {
 }
 
 // ═══════════════════════════════════════════════
+// Cyclic transition visual defaults
+// (used by renderSVG, renderTable, exportPlantUML)
+// ═══════════════════════════════════════════════
+const CYCLIC_COLOR = '#F59E0B';    // amber
+const CYCLIC_DASH  = '6,4';
+const CYCLIC_GLYPH = '⟳';          // U+27F3 CLOCKWISE OPEN CIRCLE ARROW
+
+// ═══════════════════════════════════════════════
 // SVG Renderer
 // ═══════════════════════════════════════════════
 function renderSVG(parsed) {
@@ -1768,11 +1776,6 @@ function renderSVG(parsed) {
   const sans = "'IBM Plex Sans','Noto Sans JP',sans-serif";
   const mono = "'IBM Plex Mono',monospace";
   const shadow = 'filter="drop-shadow(2px 2px 4px rgba(0,0,0,0.4))"';
-
-  // Cyclic transition visual defaults (used when user has not overridden via color=/style=)
-  const CYCLIC_COLOR = '#F59E0B';    // amber
-  const CYCLIC_DASH  = '6,4';
-  const CYCLIC_GLYPH = '⟳';          // U+27F3 CLOCKWISE OPEN CIRCLE ARROW
 
   let svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${canvas.width*zoom}" height="${canvas.height*zoom}" viewBox="0 0 ${canvas.width} ${canvas.height}">`;
 

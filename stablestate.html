@@ -4100,6 +4100,13 @@ function exportPlantUML(p) {
     } else {
       lines.push(pad + 'state "' + st.label + '" as ' + st.id);
     }
+    // Task 11: emit entry/do/exit as state description lines for BOTH composite
+    // and leaf states. PlantUML treats `\n` within a description as a line break,
+    // so multiline `do` (stored as 2-char literal per Task 7 parser contract)
+    // renders naturally without further escape conversion.
+    if (st.entry) lines.push(pad + st.id + ' : entry / ' + st.entry);
+    if (st.do)    lines.push(pad + st.id + ' : do / ' + st.do);
+    if (st.exit)  lines.push(pad + st.id + ' : exit / ' + st.exit);
   }
 
   // ─── Root-level declarations ───

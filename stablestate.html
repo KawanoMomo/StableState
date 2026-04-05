@@ -2946,6 +2946,11 @@ function renderTable(parsed) {
       if (!isChoiceMode) html += `<button class="tb" id="pp-branch-btn" style="font-size:9px;padding:2px 6px;color:#C3E88D;border-color:#C3E88D">+ 分岐</button>`;
       html += `</div>`;
       html += `<textarea class="prop-input" id="pp-table-action" style="height:${isChoiceMode ? 100 : 60}px;resize:vertical;font-size:11px;line-height:1.4;text-align:left;font-family:Consolas,monospace" placeholder="アクション">${esc(curAction).replace(/\\n/g, '\n')}</textarea>`;
+      const curCyclic = existing && existing.cyclic === true;
+      html += `<label class="prop-row" style="display:flex;align-items:center;gap:6px;font-size:11px;color:#94a3b8;margin-top:6px;cursor:pointer">`;
+      html += `<input type="checkbox" id="pp-table-cyclic"${curCyclic ? ' checked' : ''} style="cursor:pointer">`;
+      html += `<span>${CYCLIC_GLYPH} @cyclic (周期評価)</span>`;
+      html += `</label>`;
       html += `<button class="tb tb-accent" id="pp-table-apply" style="width:100%;margin-top:6px">適用</button>`;
       if (existing) html += `<button class="tb" id="pp-table-delete" style="width:100%;margin-top:4px;border-color:#EF4444;color:#FCA5A5">遷移を削除</button>`;
       html += `</div>`;
@@ -3127,6 +3132,7 @@ function renderTable(parsed) {
         const target = document.getElementById('pp-table-target').value;
         const guard = document.getElementById('pp-table-guard').value.trim();
         const actionRaw = document.getElementById('pp-table-action').value;
+        const cyclicVal = document.getElementById('pp-table-cyclic').checked === true;
         const ev = evName === '(none)' ? null : evName;
         pushHistory();
         let dsl = getDsl();
@@ -3144,9 +3150,9 @@ function renderTable(parsed) {
           else { targetId = stateDotPath(target); }
           if (existing) {
             dsl = replaceTransition(existing.from, existing.to, existing.event, existing.guard,
-              stateDotPath(stateId), targetId, ev, guard || null, action || null, kind, dsl);
+              stateDotPath(stateId), targetId, ev, guard || null, action || null, kind, dsl, cyclicVal);
           } else {
-            dsl = addTransition(stateDotPath(stateId), targetId, ev, guard || null, action || null, kind, dsl);
+            dsl = addTransition(stateDotPath(stateId), targetId, ev, guard || null, action || null, kind, dsl, cyclicVal);
           }
         }
 

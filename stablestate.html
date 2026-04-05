@@ -494,8 +494,14 @@ function parseDSL(text) {
   };
 
   const lines = text.split('\n');
-  const nestingStack = []; // stack of {type:'state'|'region', id}
+  const nestingStack = []; // stack of {type:'state'|'region', id, openLine}
   let currentRegion = null; // current region ID (for assigning states to regions)
+  // Track the most recently popped brace frame so that when we later hit a
+  // stray `}` (stack empty), we can point the user back to the nearest
+  // matching `{` context. This is what powers the OBS-16 hint: without it
+  // the user only sees `L<stray>: Unexpected closing brace` and has no
+  // breadcrumb toward the actual missing opening brace upstream.
+  let lastPoppedFrame = null;
 
   for (let i = 0; i < lines.length; i++) {
     const lineNum = i + 1;
@@ -508,10 +514,35 @@ function parseDSL(text) {
     // ─── Closing brace ───
     if (/^\}/.test(trimmed)) {
       if (nestingStack.length === 0) {
+        // Stray `}` with no matching `{` on the stack. Keep the existing
+        // error (plan.md Sprint 3 OBS-16: the fix is ADDITIVE, not a
+        // rewrite) and additionally surface a hint that points back to
+        // the most recently closed composite — that is the deepest frame
+        // the parser *did* balance, so the missing `{` is almost always
+        // an ancestor of it. Without this hint the user is sent chasing
+        // the far-away stray `}` (e.g. L68 in automotive-ecu.sstate) with
+        // no breadcrumb toward the real root cause.
         result.errors.push({ line: lineNum, msg: 'Unexpected closing brace }' });
+        if (lastPoppedFrame) {
+          const nearId = lastPoppedFrame.path || lastPoppedFrame.id;
+          result.errors.push({
+            line: lastPoppedFrame.openLine,
+            msg: "Hint: no matching '{' found for '}' on line " + lineNum +
+                 "; an ancestor of '" + nearId + "' (opened here at L" +
+                 lastPoppedFrame.openLine +
+                 ") is likely missing its opening '{'."
+          });
+        } else {
+          result.errors.push({
+            line: lineNum,
+            msg: "Hint: no matching '{' found for this '}'. An earlier " +
+                 "composite state declaration may be missing its opening '{'."
+          });
+        }
         continue;
       }
       const popped = nestingStack.pop();
+      lastPoppedFrame = popped;
       if (popped.type === 'region') {
         currentRegion = null;
       } else {
@@ -607,7 +638,9 @@ function parseDSL(text) {
       result.regionMap[regionId] = region;
       currentRegion = regionId;
       if (trimmed.endsWith('{')) {
-        nestingStack.push({ type: 'region', id: regionId });
+        // Track the line where this `{` was opened so we can report the
+        // real root cause on an Unclosed brace (OBS-16).
+        nestingStack.push({ type: 'region', id: regionId, openLine: lineNum });
       }
       continue;
     }
@@ -672,7 +705,9 @@ function parseDSL(text) {
 
       // Push onto nesting stack if composite
       if (isComposite) {
-        nestingStack.push({ type: 'state', id: id, path: path });
+        // Track the line where this `{` was opened so we can report the
+        // real root cause on an Unclosed brace (OBS-16).
+        nestingStack.push({ type: 'state', id: id, path: path, openLine: lineNum });
       }
       continue;
     }
@@ -812,9 +847,18 @@ function parseDSL(text) {
     });
   }
 
-  // Check for unclosed braces
+  // Check for unclosed braces. Emit one error per unclosed frame, anchored
+  // at the line where its `{` was opened — this lets the user jump directly
+  // to the real source of the problem instead of staring at EOF. (OBS-16)
   if (nestingStack.length > 0) {
-    result.errors.push({ line: lines.length, msg: 'Unclosed composite state: ' + nestingStack.join(', ') });
+    for (const frame of nestingStack) {
+      const frameId = frame.path || frame.id || '(anonymous)';
+      result.errors.push({
+        line: frame.openLine != null ? frame.openLine : lines.length,
+        msg: "Unclosed '{' opened here for " + frame.type + " '" + frameId +
+             "' — expected a matching '}' before end of file."
+      });
+    }
   }
 
   return result;

@@ -3766,6 +3766,9 @@ function getExportSVGString() {
   // `fill="#6366F1" stroke="#fff"` (indigo for states/pseudo-states) or
   // `fill="#F59E0B" stroke="#fff"` (amber for notes). Both are strictly
   // editor UI chrome and must not be baked into exported SVG/PNG artifacts.
+  // Note: the Task 2 `<marker id="arr-cyclic">` (also amber #F59E0B) is a
+  // <marker> with a <path> child, not a rect, and has no `data-resize`
+  // attribute, so neither selector matches it — cyclic arrows survive export.
   clone.querySelectorAll('[data-resize]').forEach(el => el.remove());
   clone.querySelectorAll('rect[fill="#6366F1"][stroke="#fff"], rect[fill="#F59E0B"][stroke="#fff"]').forEach(el => el.remove());
   return new XMLSerializer().serializeToString(clone);
@@ -3922,12 +3925,18 @@ function exportPlantUML(p) {
   );
 
   function renderLabel(tr) {
-    if (!tr.event && !tr.guard && !tr.action) return '';
     const parts = [];
+    if (tr.cyclic) parts.push(CYCLIC_GLYPH);
     if (tr.event) parts.push(tr.event);
     if (tr.guard) parts.push('[' + tr.guard + ']');
     if (tr.action) parts.push('/ ' + tr.action);
+    if (parts.length === 0) return '';
     return ' : ' + parts.join(' ');
+  }
+  function arrowStr(tr) {
+    // Cyclic transitions render with amber dashed arrow to mirror the SVG
+    // styling (Task 2). Non-cyclic stays as the default PlantUML `-->`.
+    return tr.cyclic ? ('-[' + CYCLIC_COLOR + ',dashed]->') : '-->';
   }
   function renderEndpoint(ref) {
     // `from` side of initial becomes `[*]`. final stays as its id (it was
@@ -3973,7 +3982,7 @@ function exportPlantUML(p) {
       }
       // Interior transitions: all transitions whose LCA is this composite.
       for (const tr of innerTrans) {
-        lines.push(innerPad + renderEndpoint(tr.from) + ' --> ' + renderEndpoint(tr.to) + renderLabel(tr));
+        lines.push(innerPad + renderEndpoint(tr.from) + ' ' + arrowStr(tr) + ' ' + renderEndpoint(tr.to) + renderLabel(tr));
       }
       lines.push(pad + '}');
     } else {
@@ -3996,7 +4005,7 @@ function exportPlantUML(p) {
   // Root-level transitions (those whose LCA is root).
   const rootTrans = transByScope.get(null) || [];
   for (const tr of rootTrans) {
-    lines.push(renderEndpoint(tr.from) + ' --> ' + renderEndpoint(tr.to) + renderLabel(tr));
+    lines.push(renderEndpoint(tr.from) + ' ' + arrowStr(tr) + ' ' + renderEndpoint(tr.to) + renderLabel(tr));
   }
 
   lines.push('@enduml');

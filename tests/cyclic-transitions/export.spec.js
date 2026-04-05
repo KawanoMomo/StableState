@@ -12,10 +12,15 @@ async function setDsl(page, dsl) {
   await page.waitForTimeout(100);
 }
 
-async function capturePlantUMLDownload(page) {
+// Generic download capture: trigger `fn` inside the page, wait for the
+// download event, read the resulting stream as text. Used by both the
+// PlantUML export tests below and the multiline-do describe block that
+// follows — previously each block had its own duplicate copy of this
+// helper (Task 11 code review M2 polish).
+async function captureDl(page, fn) {
   const [dl] = await Promise.all([
     page.waitForEvent('download'),
-    page.evaluate(() => exportPlantUML())
+    page.evaluate(fn)
   ]);
   const stream = await dl.createReadStream();
   if (!stream) return null;
@@ -60,7 +65,7 @@ state a "A" at 3,3 size 8x5 do=Poll
 state b "B" at 14,3 size 8x5
 i -> a
 a -> b : [Ready] / Init @cyclic`);
-    const puml = await capturePlantUMLDownload(page);
+    const puml = await captureDl(page, () => exportPlantUML());
     expect(puml).not.toBeNull();
     expect(puml).toMatch(/a\s+-\[#F59E0B,dashed\]->\s+b/);
     expect(puml).toContain('⟳');
@@ -72,7 +77,7 @@ state a "A" at 3,3 size 8x5
 state b "B" at 14,3 size 8x5
 i -> a
 a -> b : EvX`);
-    const puml = await capturePlantUMLDownload(page);
+    const puml = await captureDl(page, () => exportPlantUML());
     expect(puml).not.toContain('#F59E0B');
     expect(puml).not.toContain('⟳');
     expect(puml).toMatch(/a\s+-->\s+b/);
@@ -84,27 +89,6 @@ test.describe('@cyclic export — multiline do in PlantUML', () => {
     await page.goto(BASE);
     await page.waitForFunction(() => typeof parsed !== 'undefined');
   });
-
-  async function captureDl(page, fn) {
-    const [dl] = await Promise.all([
-      page.waitForEvent('download'),
-      page.evaluate(fn)
-    ]);
-    const stream = await dl.createReadStream();
-    if (!stream) return null;
-    let buf = '';
-    for await (const chunk of stream) buf += chunk.toString();
-    return buf;
-  }
-
-  async function setDsl(page, dsl) {
-    await page.evaluate((d) => {
-      const ta = document.querySelector('#editor');
-      ta.value = d;
-      ta.dispatchEvent(new Event('input', { bubbles: true }));
-    }, dsl);
-    await page.waitForTimeout(100);
-  }
 
   test('single-line do emitted as state description', async ({ page }) => {
     await setDsl(page, `initial i at 1,1

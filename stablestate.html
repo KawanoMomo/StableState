@@ -1769,6 +1769,11 @@ function renderSVG(parsed) {
   const mono = "'IBM Plex Mono',monospace";
   const shadow = 'filter="drop-shadow(2px 2px 4px rgba(0,0,0,0.4))"';
 
+  // Cyclic transition visual defaults (used when user has not overridden via color=/style=)
+  const CYCLIC_COLOR = '#F59E0B';    // amber
+  const CYCLIC_DASH  = '6,4';
+  const CYCLIC_GLYPH = '⟳';          // U+27F3 CLOCKWISE OPEN CIRCLE ARROW
+
   let svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${canvas.width*zoom}" height="${canvas.height*zoom}" viewBox="0 0 ${canvas.width} ${canvas.height}">`;
 
   // ─── 1. Grid pattern ───
@@ -1968,7 +1973,7 @@ function renderSVG(parsed) {
     svg += `<marker id="${mid}" markerWidth="10" markerHeight="8" refX="10" refY="4" orient="auto"><path d="M0,0 L10,4 L0,8 Z" fill="${c}"/></marker>`;
   }
   // Cyclic arrow marker (amber, for transitions with @cyclic flag)
-  svg += `<marker id="arr-cyclic" markerWidth="10" markerHeight="8" refX="10" refY="4" orient="auto"><path d="M0,0 L10,4 L0,8 Z" fill="#F59E0B"/></marker>`;
+  svg += `<marker id="arr-cyclic" markerWidth="10" markerHeight="8" refX="10" refY="4" orient="auto"><path d="M0,0 L10,4 L0,8 Z" fill="${CYCLIC_COLOR}"/></marker>`;
   svg += `</defs>`;
 
   // Helper: get bounding box {x, y, w, h} in pixels for a state or pseudo-state
@@ -2384,14 +2389,13 @@ function renderSVG(parsed) {
     // Cyclic default stroke color is amber; user's explicit color= wins
     let sc;
     if (tr.color) sc = tr.color;
-    else if (tr.cyclic) sc = '#F59E0B';
+    else if (tr.cyclic) sc = CYCLIC_COLOR;
     else sc = '#89DDFF';
     // Cyclic default line is dashed; user's explicit style= wins
     let dashAttr;
     if (tr.style === 'dashed') dashAttr = ' stroke-dasharray="6 3"';
-    else if (tr.style === 'dotted') dashAttr = ' stroke-dasharray="2,3"';
-    else if (tr.style === 'solid') dashAttr = '';
-    else if (tr.cyclic) dashAttr = ' stroke-dasharray="6,4"';
+    else if (tr.style === 'solid') dashAttr = '';  // explicit: beats cyclic fallthrough below
+    else if (tr.cyclic) dashAttr = ` stroke-dasharray="${CYCLIC_DASH}"`;
     else dashAttr = '';
     // Cyclic uses a dedicated amber marker unless user provided a custom color
     const _amid = (tr.cyclic && !tr.color) ? 'arr-cyclic' : ('ah_' + sc.replace(/[^a-zA-Z0-9]/g, ''));
@@ -2457,7 +2461,7 @@ function renderSVG(parsed) {
       const labelLines = [];
       // Cyclic marker prefix — always shown for @cyclic transitions, cannot be opted out
       if (tr.cyclic) {
-        labelLines.push({ text: '⟳', color: '#F59E0B', size: 11 });
+        labelLines.push({ text: CYCLIC_GLYPH, color: CYCLIC_COLOR, size: 11 });
       }
       if (tr.event) labelLines.push({ text: tr.event, color: '#FFCB6B', size: 10 });
       const guardAction = [];

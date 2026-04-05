@@ -487,6 +487,7 @@ function parseDSL(text) {
     notes: [],
     noteConnections: [],
     errors: [],
+    warnings: [],
     stateMap: {},
     pseudoMap: {},
     groupMap: {},
@@ -1056,6 +1057,9 @@ function validate(result) {
       if (t.guard) {
         result.errors.push({ line: t.line, msg: 'initial pseudo-state transition must not have a guard (found: [' + t.guard + '])' });
       }
+      if (t.cyclic) {
+        result.errors.push({ line: t.line, msg: 'initial pseudo-state transition must not have @cyclic' });
+      }
     }
   }
 
@@ -1068,6 +1072,9 @@ function validate(result) {
       if (t.event) {
         result.errors.push({ line: t.line, msg: 'choice pseudo-state transition must not have an event (found: ' + t.event + ')' });
       }
+      if (t.cyclic) {
+        result.errors.push({ line: t.line, msg: 'choice pseudo-state transition must not have @cyclic' });
+      }
       if (!t.guard) {
         guardlessCount++;
       }
@@ -1075,6 +1082,24 @@ function validate(result) {
     if (guardlessCount > 1) {
       result.errors.push({ line: ps.line, msg: 'choice pseudo-state ' + ps.id + ' has ' + guardlessCount + ' guard-less transitions (max 1 allowed as else/default)' });
     }
+  }
+
+  // ─── W1: @cyclic transitions should have a do= activity on their source state ───
+  // Cyclic transitions model periodic guard re-evaluation, which conceptually
+  // requires a do-activity as the "thing that keeps checking". Without one the
+  // author's intent is unclear (who drives the re-check?), so flag a warning.
+  // Pseudo-state sources (initial/choice/etc.) are excluded — E1/E2/E3 own those.
+  for (const t of result.transitions) {
+    if (!t.cyclic) continue;
+    if (result.pseudoMap[t.from]) continue; // pseudo-state source — handled by E1/E2/E3
+    const src = resolveStateRef(t.from, result);
+    if (!src) continue; // unresolved ref — parser/validator already reports
+    if (src.type !== 'state') continue; // pseudo-state resolved via dot-path — skip
+    if (src.do) continue; // has do activity — no warning
+    result.warnings.push({
+      line: t.line,
+      msg: "@cyclic transition leaves state '" + t.from + "' which has no 'do=' activity; consider adding one to clarify who evaluates the guard"
+    });
   }
 
   // ─── Config constraints ───

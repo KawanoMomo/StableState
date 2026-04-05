@@ -189,3 +189,64 @@ i -> idle`);
     expect(dsl).toMatch(/do="CheckReady\\n-> active"/);
   });
 });
+
+test.describe('do editor — state box rendering', () => {
+  test.beforeEach(async ({ page }) => {
+    await page.goto(BASE);
+    await page.waitForFunction(() => typeof parsed !== 'undefined');
+    // Enable showActions so do text is rendered inside the state box
+    await page.evaluate(() => {
+      if (typeof showActions !== 'undefined' && !showActions) {
+        document.getElementById('btn-actions').click();
+      }
+    });
+  });
+
+  async function setDsl(page, dsl) {
+    await page.evaluate((d) => {
+      const ta = document.querySelector('#editor');
+      ta.value = d;
+      ta.dispatchEvent(new Event('input', { bubbles: true }));
+    }, dsl);
+    await page.waitForTimeout(100);
+  }
+
+  test('single-line do shows as-is (no ellipsis)', async ({ page }) => {
+    await setDsl(page, `initial i at 1,1
+state idle "Idle" at 3,3 size 8x5 do=Poll
+i -> idle`);
+    const texts = await page.evaluate(() => {
+      return Array.from(document.querySelectorAll('#svg-wrap svg text'))
+        .map(t => t.textContent).join(' | ');
+    });
+    expect(texts).toContain('do / Poll');
+    expect(texts).not.toContain('…');
+  });
+
+  test('multiline do shows first line + ellipsis', async ({ page }) => {
+    await setDsl(page, `initial i at 1,1
+state idle "Idle" at 3,3 size 8x5 do="Check1\\nCheck2\\nDispatch"
+i -> idle`);
+    const texts = await page.evaluate(() => {
+      return Array.from(document.querySelectorAll('#svg-wrap svg text'))
+        .map(t => t.textContent).join(' | ');
+    });
+    expect(texts).toMatch(/do \/ Check1.*…/);
+    // Subsequent lines must NOT appear in the state box
+    expect(texts).not.toContain('Check2');
+    expect(texts).not.toContain('Dispatch');
+  });
+
+  test('multiline do with spaces in first line rendered correctly', async ({ page }) => {
+    await setDsl(page, `initial i at 1,1
+state idle "Idle" at 3,3 size 8x5 do="if (Ready) -> active\\nPollSensors()"
+state active "Active" at 14,3 size 8x5
+i -> idle`);
+    const texts = await page.evaluate(() => {
+      return Array.from(document.querySelectorAll('#svg-wrap svg text'))
+        .map(t => t.textContent).join(' | ');
+    });
+    expect(texts).toMatch(/do \/ if \(Ready\) -> active.*…/);
+    expect(texts).not.toContain('PollSensors');
+  });
+});

@@ -1908,7 +1908,12 @@ function renderSVG(parsed) {
         ay += 14;
       }
       if (st.do) {
-        svg += `<text x="${pos.x + 10}" y="${ay}" font-family="${mono}" font-size="10" fill="#888888" style="pointer-events:none">do / ${esc(st.do)}</text>`;
+        // Task 10: multiline do shows first logical line + … (U+2026). Box size unchanged.
+        // st.do contains \n as 2-char literal (Task 7 parser contract); split on '\\n'.
+        const doFirstLine = st.do.split('\\n')[0];
+        const doHasMore = st.do.indexOf('\\n') >= 0;
+        const doDisplay = doFirstLine + (doHasMore ? ' …' : '');
+        svg += `<text x="${pos.x + 10}" y="${ay}" font-family="${mono}" font-size="10" fill="#888888" style="pointer-events:none">do / ${esc(doDisplay)}</text>`;
         ay += 14;
       }
       if (st.exit) {
@@ -1968,7 +1973,12 @@ function renderSVG(parsed) {
         ay += 14;
       }
       if (st.do) {
-        svg += `<text x="${pos.x + 8}" y="${ay}" font-family="${mono}" font-size="10" fill="#888888" style="pointer-events:none">do / ${esc(st.do)}</text>`;
+        // Task 10: multiline do shows first logical line + … (U+2026). Box size unchanged.
+        // st.do contains \n as 2-char literal (Task 7 parser contract); split on '\\n'.
+        const doFirstLine = st.do.split('\\n')[0];
+        const doHasMore = st.do.indexOf('\\n') >= 0;
+        const doDisplay = doFirstLine + (doHasMore ? ' …' : '');
+        svg += `<text x="${pos.x + 8}" y="${ay}" font-family="${mono}" font-size="10" fill="#888888" style="pointer-events:none">do / ${esc(doDisplay)}</text>`;
         ay += 14;
       }
       if (st.exit) {

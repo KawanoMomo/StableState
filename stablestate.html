@@ -840,6 +840,7 @@ function parseDSL(text) {
 
       // Parse optional : Event [Guard] / Action @kind width=N style=S color=C default=X
       let event = null, guard = null, action = null, kind = null, width = null, style = null, color = null, defaultTarget = null;
+      let isCyclic = false;
       if (rest.startsWith(':')) {
         const detail = rest.slice(1).trim();
         let remaining = detail;
@@ -854,11 +855,26 @@ function parseDSL(text) {
         }
         // Strip all key=value attrs from remaining
         remaining = remaining.replace(/\b(width|style|color|default)=\S+/g, '').trim();
-        // Parse @kind from the end
-        const kindMatch = remaining.match(/@(local|external|internal)\s*$/);
-        if (kindMatch) {
-          kind = kindMatch[1];
-          remaining = remaining.slice(0, remaining.lastIndexOf('@' + kind)).trim();
+        // Parse @cyclic and @kind suffixes (any order) from the end.
+        // @cyclic is orthogonal to @kind — both may appear, in either order.
+        // Loop strips whichever suffix currently terminates `remaining` until
+        // neither matches, which handles "@kind @cyclic" and "@cyclic @kind".
+        let suffixChanged = true;
+        while (suffixChanged) {
+          suffixChanged = false;
+          const cyclicMatch = remaining.match(/@cyclic\s*$/);
+          if (cyclicMatch) {
+            isCyclic = true;
+            remaining = remaining.slice(0, remaining.lastIndexOf('@cyclic')).trim();
+            suffixChanged = true;
+            continue;
+          }
+          const kindMatch = remaining.match(/@(local|external|internal)\s*$/);
+          if (kindMatch) {
+            kind = kindMatch[1];
+            remaining = remaining.slice(0, remaining.lastIndexOf('@' + kind)).trim();
+            suffixChanged = true;
+          }
         }
         // Parse / Action
         const slashIdx = remaining.indexOf('/');
@@ -883,6 +899,7 @@ function parseDSL(text) {
         guard: guard,
         action: action,
         kind: kind || result.config.transition,
+        cyclic: isCyclic,
         width: width,
         style: style,
         color: color,
@@ -1177,7 +1194,7 @@ function updateLabel(type, id, newLabel, dsl, lineNum) {
 }
 
 // Append a new transition line to the DSL
-function addTransition(from, to, event, guard, action, kind, dsl) {
+function addTransition(from, to, event, guard, action, kind, dsl, cyclic) {
   // Determine default transition kind from @config
   let defaultKind = 'local';
   const configMatch = dsl.match(/^@config\s+transition=(\S+)/m);
@@ -1188,13 +1205,15 @@ function addTransition(from, to, event, guard, action, kind, dsl) {
   const hasGuard = guard != null && guard !== '';
   const hasAction = action != null && action !== '';
   const hasKind = kind != null && kind !== '' && kind !== defaultKind;
+  const hasCyclic = cyclic === true;
 
-  if (hasEvent || hasGuard || hasAction || hasKind) {
+  if (hasEvent || hasGuard || hasAction || hasKind || hasCyclic) {
     line += ' :';
     if (hasEvent) line += ` ${event}`;
     if (hasGuard) line += ` [${guard}]`;
     if (hasAction) line += ` / ${action}`;
     if (hasKind) line += ` @${kind}`;
+    if (hasCyclic) line += ` @cyclic`;
   }
 
   return dsl + '\n' + line;
@@ -1213,8 +1232,16 @@ function removeTransition(from, to, event, guard, dsl) {
       let lineEvent = null, lineGuard = null;
       if (rest.startsWith(':')) {
         let detail = rest.slice(1).trim();
-        // Remove @kind
-        detail = detail.replace(/@(local|external|internal)\s*$/, '').trim();
+        // Remove @cyclic and @kind suffixes (either order)
+        let stripped = true;
+        while (stripped) {
+          stripped = false;
+          const before = detail;
+          detail = detail.replace(/@cyclic\s*$/, '').trim();
+          if (detail !== before) { stripped = true; continue; }
+          detail = detail.replace(/@(local|external|internal)\s*$/, '').trim();
+          if (detail !== before) stripped = true;
+        }
         // Remove action
         const slashIdx = detail.indexOf('/');
         if (slashIdx !== -1) detail = detail.slice(0, slashIdx).trim();
@@ -1237,7 +1264,7 @@ function removeTransition(from, to, event, guard, dsl) {
 }
 
 // Replace a matching transition line in-place (preserves DSL order)
-function replaceTransition(oldFrom, oldTo, oldEvent, oldGuard, newFrom, newTo, newEvent, newGuard, newAction, newKind, dsl) {
+function replaceTransition(oldFrom, oldTo, oldEvent, oldGuard, newFrom, newTo, newEvent, newGuard, newAction, newKind, dsl, newCyclic) {
   // Build the new transition line (same logic as addTransition)
   let defaultKind = 'local';
   const configMatch = dsl.match(/^@config\s+transition=(\S+)/m);
@@ -1253,12 +1280,14 @@ function replaceTransition(oldFrom, oldTo, oldEvent, oldGuard, newFrom, newTo, n
     const hasG = newGuard != null && newGuard !== '';
     const hasA = newAction != null && newAction !== '';
     const hasK = newKind != null && newKind !== '' && newKind !== defaultKind;
-    if (hasEv || hasG || hasA || hasK) {
+    const hasC = newCyclic === true;
+    if (hasEv || hasG || hasA || hasK || hasC) {
       line += ' :';
       if (hasEv) line += ` ${newEvent}`;
       if (hasG) line += ` [${newGuard}]`;
       if (hasA) line += ` / ${newAction}`;
       if (hasK) line += ` @${newKind}`;
+      if (hasC) line += ` @cyclic`;
     }
     return line;
   }
@@ -1275,7 +1304,17 @@ function replaceTransition(oldFrom, oldTo, oldEvent, oldGuard, newFrom, newTo, n
       let lineEvent = null, lineGuard = null;
       if (rest.startsWith(':')) {
         let detail = rest.slice(1).trim();
-        detail = detail.replace(/@(local|external|internal)\s*$/, '').trim();
+        // Strip @cyclic and @kind suffixes (either order) before extracting
+        // event/guard for the match comparison.
+        let stripped = true;
+        while (stripped) {
+          stripped = false;
+          const before = detail;
+          detail = detail.replace(/@cyclic\s*$/, '').trim();
+          if (detail !== before) { stripped = true; continue; }
+          detail = detail.replace(/@(local|external|internal)\s*$/, '').trim();
+          if (detail !== before) stripped = true;
+        }
         const slashIdx = detail.indexOf('/');
         if (slashIdx !== -1) detail = detail.slice(0, slashIdx).trim();
         const gm = detail.match(/\[([^\]]*)\]/);

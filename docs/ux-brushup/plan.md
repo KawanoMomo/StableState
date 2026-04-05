@@ -205,7 +205,7 @@ Sprint 4 (Edit consistency: OBS-15, OBS-01)
 ## Sprint 3: エラーメッセージ改善 (DSL 構文テンプレート + ブレース位置)
 
 - **sprint_number**: 3
-- **status**: pending
+- **status**: done (2026-04-05, HEAD=35cff33, attempt 0/10, evaluator evidence at `.eval/ux-brushup-sprint-3/report.md`; non-blocking note: OBS-16 hint anchors to lastPoppedFrame which in automotive-ecu points to failsafe/L49 instead of run/L19 — AC3 OR-criterion still satisfied via "no matching" wording, future refinement candidate)
 - **depends_on**: [2]
 - **description**:
   ユーザーが詰まる瞬間のエラーメッセージ品質を改善する。

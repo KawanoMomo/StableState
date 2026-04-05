@@ -955,10 +955,15 @@ function parseProps(propsStr, target, lineNum, errors) {
   while ((m = propRe.exec(propsStr)) !== null) {
     const key = m[1];
     let val = m[2];
-    // Unquote if fully quoted: strip outer quotes, unescape \" → " (keep \n as 2-char literal
-    // so UI layer can later convert to real newline for textarea display).
-    if (val.length >= 2 && val.charCodeAt(0) === 34 && val.charCodeAt(val.length - 1) === 34) {
+    // Unquote if fully quoted — strip outer quotes, unescape \" → ", preserve other escapes
+    if (val.length >= 2 && val[0] === '"' && val[val.length - 1] === '"') {
+      // Only \" is unescaped here. \n, \\, \t stay as 2-char literals on
+      // purpose — the textarea/PlantUML layers (Tasks 9-11) own newline handling.
       val = val.slice(1, -1).replace(/\\"/g, '"');
+    } else if (val[0] === '"') {
+      // Malformed: bare branch caught a half-quoted token (unclosed quote).
+      // Skip assignment — the E4 pass below will emit the diagnostic.
+      continue;
     }
     switch (key) {
       case 'entry': target.entry = val; break;
@@ -979,7 +984,7 @@ function parseProps(propsStr, target, lineNum, errors) {
     const unclosedRe = /(\w+)="[^"]*$/;
     const um = propsStr.match(unclosedRe);
     if (um) {
-      errors.push({ line: lineNum, msg: "L" + lineNum + ": unclosed quoted value for '" + um[1] + "'" });
+      errors.push({ line: lineNum, msg: "unclosed quoted value for '" + um[1] + "'" });
     }
   }
 }

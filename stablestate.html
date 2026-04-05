@@ -2783,7 +2783,10 @@ function renderTable(parsed) {
         return fromEl && (fromEl.path === lc.id || fromEl.id === lc.id);
       });
       const val = matching.length > 0 && matching[0].guard ? matching[0].guard : '-';
-      bodyHtml += `<td class="table-editable" data-field="guard" data-state="${lc.id}" data-event="${esc(evName)}" style="cursor:pointer;color:#C3E88D">${esc(val).replace(/\\n/g, '<br>')}</td>`;
+      const isCyclic = matching.length > 0 && matching[0].cyclic === true;
+      const cyclicPrefix = isCyclic ? (CYCLIC_GLYPH + ' ') : '';
+      const cellColor = isCyclic ? CYCLIC_COLOR : '#C3E88D';
+      bodyHtml += `<td class="table-editable" data-field="guard" data-state="${lc.id}" data-event="${esc(evName)}" style="cursor:pointer;color:${cellColor}">${cyclicPrefix}${esc(val).replace(/\\n/g, '<br>')}</td>`;
     }
     bodyHtml += '</tr>';
 
@@ -2799,7 +2802,10 @@ function renderTable(parsed) {
         const ifElse = actionToIfElse(matching[0].to, parsed);
         if (ifElse) val = ifElse;
       }
-      bodyHtml += `<td class="table-editable" data-field="action" data-state="${lc.id}" data-event="${esc(evName)}" style="cursor:pointer;color:#C3E88D;white-space:pre-wrap">${esc(val).replace(/\\n/g, '\n')}</td>`;
+      const isCyclic = matching.length > 0 && matching[0].cyclic === true;
+      const cyclicPrefix = isCyclic ? (CYCLIC_GLYPH + ' ') : '';
+      const cellColor = isCyclic ? CYCLIC_COLOR : '#C3E88D';
+      bodyHtml += `<td class="table-editable" data-field="action" data-state="${lc.id}" data-event="${esc(evName)}" style="cursor:pointer;color:${cellColor};white-space:pre-wrap">${cyclicPrefix}${esc(val).replace(/\\n/g, '\n')}</td>`;
     }
     bodyHtml += '</tr>';
 
@@ -2831,7 +2837,10 @@ function renderTable(parsed) {
           }
         }
       }
-      bodyHtml += `<td class="table-editable" data-field="target" data-state="${lc.id}" data-event="${esc(evName)}" style="cursor:pointer">${esc(val)}</td>`;
+      const isCyclic = matching.length > 0 && matching[0].cyclic === true;
+      const cyclicPrefix = isCyclic ? (CYCLIC_GLYPH + ' ') : '';
+      const cyclicStyle = isCyclic ? `;color:${CYCLIC_COLOR}` : '';
+      bodyHtml += `<td class="table-editable" data-field="target" data-state="${lc.id}" data-event="${esc(evName)}" style="cursor:pointer${cyclicStyle}">${cyclicPrefix}${esc(val)}</td>`;
     }
     bodyHtml += '</tr>';
   }

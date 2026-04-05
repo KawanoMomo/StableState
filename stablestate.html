@@ -4626,9 +4626,22 @@ function removeDSLElement(id, dsl, lineNum) {
       if (trimmed.endsWith('{')) skipNesting++;
       continue;
     }
-    // Remove transitions referencing this ID (as source or target, using path or bare ID)
+    // OBS-15 fix: remove transitions referencing this ID as source or target.
+    // Callers pass either the full dotted path (e.g. `run.normal.active.cruise`
+    // from a click selection) or the bare ID. Inside composite blocks, the
+    // DSL typically uses the bare ID, so we must test BOTH forms — otherwise
+    // nested-state deletion leaves orphan transitions that then fail the
+    // `Undefined state reference` check.
     const transId = id.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    if (trimmed.match(new RegExp(`^${transId}\\s*->`)) || trimmed.match(new RegExp(`->\\s*${transId}(\\s|$)`))) {
+    const refRegexes = [
+      new RegExp(`^${transId}\\s*->`),
+      new RegExp(`->\\s*${transId}(\\s|$|:)`)
+    ];
+    if (bareId !== id) {
+      refRegexes.push(new RegExp(`^${escBareId}\\s*->`));
+      refRegexes.push(new RegExp(`->\\s*${escBareId}(\\s|$|:)`));
+    }
+    if (refRegexes.some(re => re.test(trimmed))) {
       continue;
     }
     result.push(line);

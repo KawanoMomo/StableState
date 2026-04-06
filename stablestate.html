@@ -1836,6 +1836,60 @@ const CYCLIC_DASH  = '6,4';
 const CYCLIC_GLYPH = '⟳';          // U+27F3 CLOCKWISE OPEN CIRCLE ARROW
 
 // ═══════════════════════════════════════════════
+// Shared Routing Helpers (used by renderSVG and autoRoute)
+// ═══════════════════════════════════════════════
+
+/** Get bounding box for a state or pseudo-state, in pixel coordinates.
+ *  @param {string} ref - state/pseudo ID or dot-path
+ *  @param {object} data - parsed DSL object
+ *  @param {number} grid - canvas grid size in pixels
+ *  @returns {{x:number, y:number, w:number, h:number}|null}
+ */
+function getBoxShared(ref, data, grid) {
+  const el = resolveStateRef(ref, data);
+  if (!el) return null;
+  const pos = getAbsolutePos(el, data);
+  if (el.type === 'state') {
+    return { x: pos.x, y: pos.y, w: el.w * grid, h: el.h * grid };
+  }
+  switch (el.type) {
+    case 'initial':
+      return { x: pos.x - 10, y: pos.y - 10, w: 20, h: 20 };
+    case 'final':
+      return { x: pos.x - 12, y: pos.y - 12, w: 24, h: 24 };
+    case 'choice':
+      return { x: pos.x - 12, y: pos.y - 12, w: 24, h: 24 };
+    case 'history':
+    case 'deephistory':
+      return { x: pos.x - 16, y: pos.y - 16, w: 32, h: 32 };
+    case 'fork':
+    case 'join': {
+      const pw = el.w != null ? el.w * grid : 6;
+      const ph = el.h != null ? el.h * grid : 40;
+      return { x: pos.x - pw / 2, y: pos.y - ph / 2, w: pw, h: ph };
+    }
+    default:
+      return { x: pos.x - 10, y: pos.y - 10, w: 20, h: 20 };
+  }
+}
+
+/** Build self-transition loop route (right edge → top edge).
+ *  @param {{x:number, y:number, w:number, h:number}} box
+ *  @param {number} [margin=30]
+ *  @returns {Array<{x:number, y:number}>}
+ */
+function buildSelfRouteShared(box, margin) {
+  const m = margin || 30;
+  return [
+    { x: box.x + box.w, y: box.y + box.h / 2 },
+    { x: box.x + box.w + m, y: box.y + box.h / 2 },
+    { x: box.x + box.w + m, y: box.y - m },
+    { x: box.x + box.w / 2, y: box.y - m },
+    { x: box.x + box.w / 2, y: box.y }
+  ];
+}
+
+// ═══════════════════════════════════════════════
 // SVG Renderer
 // ═══════════════════════════════════════════════
 function renderSVG(parsed) {
@@ -2060,34 +2114,8 @@ function renderSVG(parsed) {
   svg += `</defs>`;
 
   // Helper: get bounding box {x, y, w, h} in pixels for a state or pseudo-state
-  function getBox(ref) {
-    const el = resolveStateRef(ref, parsed);
-    if (!el) return null;
-    const pos = getAbsolutePos(el, parsed);
-    if (el.type === 'state') {
-      return { x: pos.x, y: pos.y, w: el.w * g, h: el.h * g };
-    }
-    // Pseudo-states
-    switch (el.type) {
-      case 'initial':
-        return { x: pos.x - 10, y: pos.y - 10, w: 20, h: 20 };
-      case 'final':
-        return { x: pos.x - 12, y: pos.y - 12, w: 24, h: 24 };
-      case 'choice':
-        return { x: pos.x - 12, y: pos.y - 12, w: 24, h: 24 };
-      case 'history':
-      case 'deephistory':
-        return { x: pos.x - 16, y: pos.y - 16, w: 32, h: 32 };
-      case 'fork':
-      case 'join': {
-        const pw = el.w != null ? el.w * g : 6;
-        const ph = el.h != null ? el.h * g : 40;
-        return { x: pos.x - pw / 2, y: pos.y - ph / 2, w: pw, h: ph };
-      }
-      default:
-        return { x: pos.x - 10, y: pos.y - 10, w: 20, h: 20 };
-    }
-  }
+  // getBox: delegate to file-scope getBoxShared (hoisted for autoRoute reuse)
+  function getBox(ref) { return getBoxShared(ref, parsed, g); }
 
   // Helper: determine which side of source/target to connect
   // ADR-006: Edge-gap algorithm instead of angle-based
@@ -2263,17 +2291,8 @@ function renderSVG(parsed) {
     return points;
   }
 
-  // Helper: build self-transition loop
-  function buildSelfRoute(box) {
-    const margin = 30;
-    return [
-      { x: box.x + box.w, y: box.y + box.h / 2 },
-      { x: box.x + box.w + margin, y: box.y + box.h / 2 },
-      { x: box.x + box.w + margin, y: box.y - margin },
-      { x: box.x + box.w / 2, y: box.y - margin },
-      { x: box.x + box.w / 2, y: box.y }
-    ];
-  }
+  // buildSelfRoute: delegate to file-scope buildSelfRouteShared (hoisted for autoRoute reuse)
+  function buildSelfRoute(box) { return buildSelfRouteShared(box, 30); }
 
   // Helper: segment intersection
   function segmentIntersection(a1, a2, b1, b2) {

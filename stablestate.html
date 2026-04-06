@@ -5535,288 +5535,62 @@ let addCounter = 1; // StableBlock compatible: single counter
 
 // Auto-Route: optimize transition port assignments to minimize crossings
 function autoRoute() {
-  if (!parsed || parsed.transitions.length < 2) return;
-  // Current implementation uses computePortSide (edge-gap) which is deterministic.
-  // Auto-route tries alternate side assignments and picks the one with fewest crossings.
+  if (!parsed || parsed.transitions.length === 0) return;
   const g = parsed.canvas.grid;
 
-  // OBS-04 fix: these routing helpers mirror the ones inside renderSVG()
-  // (L1787+). They were previously unreachable from this top-level scope,
-  // which caused `ReferenceError: getBox is not defined` on every click of
-  // the AutoRoute toolbar button. They intentionally duplicate the bodies
-  // instead of being hoisted, so the rendering path stays untouched.
-  function getBox(ref) {
-    const el = resolveStateRef(ref, parsed);
-    if (!el) return null;
-    const pos = getAbsolutePos(el, parsed);
-    if (el.type === 'state') {
-      return { x: pos.x, y: pos.y, w: el.w * g, h: el.h * g };
-    }
-    switch (el.type) {
-      case 'initial':
-        return { x: pos.x - 10, y: pos.y - 10, w: 20, h: 20 };
-      case 'final':
-        return { x: pos.x - 12, y: pos.y - 12, w: 24, h: 24 };
-      case 'choice':
-        return { x: pos.x - 12, y: pos.y - 12, w: 24, h: 24 };
-      case 'history':
-      case 'deephistory':
-        return { x: pos.x - 16, y: pos.y - 16, w: 32, h: 32 };
-      case 'fork':
-      case 'join': {
-        const pw = el.w != null ? el.w * g : 6;
-        const ph = el.h != null ? el.h * g : 40;
-        return { x: pos.x - pw / 2, y: pos.y - ph / 2, w: pw, h: ph };
-      }
-      default:
-        return { x: pos.x - 10, y: pos.y - 10, w: 20, h: 20 };
-    }
-  }
+  // A* grid-based orthogonal router (replaces legacy crossing optimizer).
+  // Build obstacle grid, route each transition via A*, store waypoints.
+  const og = buildObstacleGrid(parsed);
+  const usedCells = new Set();
 
-  function computePortSide(srcBox, tgtBox) {
-    const srcContainsTgt = srcBox.x <= tgtBox.x && srcBox.y <= tgtBox.y &&
-      srcBox.x + srcBox.w >= tgtBox.x + tgtBox.w && srcBox.y + srcBox.h >= tgtBox.y + tgtBox.h;
-    const tgtContainsSrc = tgtBox.x <= srcBox.x && tgtBox.y <= srcBox.y &&
-      tgtBox.x + tgtBox.w >= srcBox.x + srcBox.w && tgtBox.y + tgtBox.h >= srcBox.y + srcBox.h;
-    if (srcContainsTgt) {
-      const dTop = tgtBox.y - srcBox.y;
-      const dBottom = (srcBox.y + srcBox.h) - (tgtBox.y + tgtBox.h);
-      const dLeft = tgtBox.x - srcBox.x;
-      const dRight = (srcBox.x + srcBox.w) - (tgtBox.x + tgtBox.w);
-      const minD = Math.min(dTop, dBottom, dLeft, dRight);
-      if (minD === dTop) return { srcSide: 'top', tgtSide: 'top' };
-      if (minD === dBottom) return { srcSide: 'bottom', tgtSide: 'bottom' };
-      if (minD === dLeft) return { srcSide: 'left', tgtSide: 'left' };
-      return { srcSide: 'right', tgtSide: 'right' };
-    }
-    if (tgtContainsSrc) {
-      const dTop = srcBox.y - tgtBox.y;
-      const dBottom = (tgtBox.y + tgtBox.h) - (srcBox.y + srcBox.h);
-      const dLeft = srcBox.x - tgtBox.x;
-      const dRight = (tgtBox.x + tgtBox.w) - (srcBox.x + srcBox.w);
-      const minD = Math.min(dTop, dBottom, dLeft, dRight);
-      if (minD === dTop) return { srcSide: 'top', tgtSide: 'top' };
-      if (minD === dBottom) return { srcSide: 'bottom', tgtSide: 'bottom' };
-      if (minD === dLeft) return { srcSide: 'left', tgtSide: 'left' };
-      return { srcSide: 'right', tgtSide: 'right' };
-    }
-    const gapR = tgtBox.x - (srcBox.x + srcBox.w);
-    const gapL = srcBox.x - (tgtBox.x + tgtBox.w);
-    const gapB = tgtBox.y - (srcBox.y + srcBox.h);
-    const gapT = srcBox.y - (tgtBox.y + tgtBox.h);
-    const hBest = Math.max(gapR, gapL);
-    const vBest = Math.max(gapB, gapT);
-    if (vBest >= hBest) {
-      return gapB >= gapT
-        ? { srcSide: 'bottom', tgtSide: 'top' }
-        : { srcSide: 'top', tgtSide: 'bottom' };
-    } else {
-      return gapR >= gapL
-        ? { srcSide: 'right', tgtSide: 'left' }
-        : { srcSide: 'left', tgtSide: 'right' };
-    }
-  }
+  // Sort: longest Manhattan distance first (most constrained → route first)
+  const ordered = parsed.transitions.map((tr, ti) => {
+    if (tr.from === tr.to || tr.kind === 'internal') return { ti, dist: -1 };
+    const sb = getBoxShared(tr.from, parsed, g);
+    const tb = getBoxShared(tr.to, parsed, g);
+    if (!sb || !tb) return { ti, dist: -1 };
+    return { ti, dist: Math.abs(sb.x + sb.w/2 - tb.x - tb.w/2) + Math.abs(sb.y + sb.h/2 - tb.y - tb.h/2) };
+  }).sort((a, b) => b.dist - a.dist);
 
-  function getPortPoint(box, side, portIndex, portCount) {
-    const pad = portCount <= 2 ? 0.4 : portCount <= 4 ? 0.25 : 0.15;
-    const t = portCount <= 1 ? 0.5 : pad + (1 - 2 * pad) * portIndex / (portCount - 1);
-    switch (side) {
-      case 'top': return { x: box.x + box.w * t, y: box.y };
-      case 'bottom': return { x: box.x + box.w * t, y: box.y + box.h };
-      case 'left': return { x: box.x, y: box.y + box.h * t };
-      case 'right': return { x: box.x + box.w, y: box.y + box.h * t };
-    }
-    return { x: box.x + box.w / 2, y: box.y + box.h / 2 };
-  }
+  for (const { ti, dist } of ordered) {
+    const tr = parsed.transitions[ti];
+    if (tr.from === tr.to || tr.kind === 'internal' || dist < 0) continue;
 
-  function buildRoute(fromPt, toPt, fromSide, toSide, channelOffset, routeIndex) {
-    const points = [fromPt];
-    const margin = 20;
-    const co = channelOffset || 0;
-    const ri = (routeIndex || 0) * 30;
-    if (fromSide === 'right' && toSide === 'left') {
-      if (Math.abs(fromPt.y - toPt.y) < 2 && Math.abs(co) < 1) points.push(toPt);
-      else { const midX = (fromPt.x + toPt.x) / 2 + co; points.push({ x: midX, y: fromPt.y }); points.push({ x: midX, y: toPt.y }); points.push(toPt); }
-    } else if (fromSide === 'left' && toSide === 'right') {
-      if (Math.abs(fromPt.y - toPt.y) < 2 && Math.abs(co) < 1) points.push(toPt);
-      else { const midX = (fromPt.x + toPt.x) / 2 + co; points.push({ x: midX, y: fromPt.y }); points.push({ x: midX, y: toPt.y }); points.push(toPt); }
-    } else if (fromSide === 'bottom' && toSide === 'top') {
-      if (Math.abs(fromPt.x - toPt.x) < 2 && Math.abs(co) < 1) points.push(toPt);
-      else { const midY = (fromPt.y + toPt.y) / 2 + co; points.push({ x: fromPt.x, y: midY }); points.push({ x: toPt.x, y: midY }); points.push(toPt); }
-    } else if (fromSide === 'top' && toSide === 'bottom') {
-      if (Math.abs(fromPt.x - toPt.x) < 2 && Math.abs(co) < 1) points.push(toPt);
-      else { const midY = (fromPt.y + toPt.y) / 2 + co; points.push({ x: fromPt.x, y: midY }); points.push({ x: toPt.x, y: midY }); points.push(toPt); }
-    } else if (fromSide === 'right' && toSide === 'right') {
-      const outX = Math.max(fromPt.x, toPt.x) + margin + ri;
-      points.push({ x: outX, y: fromPt.y }); points.push({ x: outX, y: toPt.y }); points.push(toPt);
-    } else if (fromSide === 'left' && toSide === 'left') {
-      const outX = Math.min(fromPt.x, toPt.x) - margin - ri;
-      points.push({ x: outX, y: fromPt.y }); points.push({ x: outX, y: toPt.y }); points.push(toPt);
-    } else if (fromSide === 'top' && toSide === 'top') {
-      const outY = Math.min(fromPt.y, toPt.y) - margin - ri;
-      points.push({ x: fromPt.x, y: outY }); points.push({ x: toPt.x, y: outY }); points.push(toPt);
-    } else if (fromSide === 'bottom' && toSide === 'bottom') {
-      const outY = Math.max(fromPt.y, toPt.y) + margin + ri;
-      points.push({ x: fromPt.x, y: outY }); points.push({ x: toPt.x, y: outY }); points.push(toPt);
-    } else {
-      points.push({ x: toPt.x + co, y: fromPt.y });
-      points.push({ x: toPt.x + co, y: toPt.y });
-      points.push(toPt);
-    }
-    return points;
-  }
+    const srcBox = getBoxShared(tr.from, parsed, g);
+    const tgtBox = getBoxShared(tr.to, parsed, g);
+    if (!srcBox || !tgtBox) continue;
 
-  function buildSelfRoute(box) {
-    const margin = 30;
-    return [
-      { x: box.x + box.w, y: box.y + box.h / 2 },
-      { x: box.x + box.w + margin, y: box.y + box.h / 2 },
-      { x: box.x + box.w + margin, y: box.y - margin },
-      { x: box.x + box.w / 2, y: box.y - margin },
-      { x: box.x + box.w / 2, y: box.y }
-    ];
-  }
-
-  function segmentIntersection(a1, a2, b1, b2) {
-    const d1x = a2.x - a1.x, d1y = a2.y - a1.y;
-    const d2x = b2.x - b1.x, d2y = b2.y - b1.y;
-    const cross = d1x * d2y - d1y * d2x;
-    if (Math.abs(cross) < 0.001) return null;
-    const t = ((b1.x - a1.x) * d2y - (b1.y - a1.y) * d2x) / cross;
-    const u = ((b1.x - a1.x) * d1y - (b1.y - a1.y) * d1x) / cross;
-    if (t >= 0.01 && t <= 0.99 && u >= 0.01 && u <= 0.99) {
-      return { x: a1.x + t * d1x, y: a1.y + t * d1y };
-    }
-    return null;
-  }
-
-  function countCrossings(routes) {
-    let count = 0;
-    for (let i = 0; i < routes.length; i++) {
-      for (let j = i + 1; j < routes.length; j++) {
-        const ri = routes[i], rj = routes[j];
-        for (let si = 0; si < ri.length - 1; si++) {
-          for (let sj = 0; sj < rj.length - 1; sj++) {
-            if (segmentIntersection(ri[si], ri[si + 1], rj[sj], rj[sj + 1])) count++;
-          }
-        }
+    const wp = astarRoute(og, srcBox, tgtBox, usedCells);
+    if (wp) {
+      tr._autoRouteWaypoints = wp;
+      for (const p of wp) {
+        const gx = Math.floor(p.x / g), gy = Math.floor(p.y / g);
+        if (gx >= 0 && gx < og.cols && gy >= 0 && gy < og.rows)
+          usedCells.add(gy * og.cols + gx);
       }
     }
-    return count;
+    // Clean up legacy fields
+    delete tr._autoRouteFromSide;
+    delete tr._autoRouteToSide;
   }
 
-  // Current routes and the side choice each route used. bestSides[ti] is
-  // { srcSide, tgtSide } (or null for self-loops / unresolved refs) and will
-  // be written back to parsed.transitions[ti] as runtime-only overrides so
-  // renderSVG can honour them on the next refresh().
-  const currentRoutes = [];
-  const bestSides = new Array(parsed.transitions.length).fill(null);
-  for (let ti = 0; ti < parsed.transitions.length; ti++) {
-    const tr = parsed.transitions[ti];
-    const srcBox = getBox(tr.from);
-    const tgtBox = getBox(tr.to);
-    if (!srcBox || !tgtBox) { currentRoutes.push([]); continue; }
-    if (tr.from === tr.to) { currentRoutes.push(buildSelfRoute(srcBox)); continue; }
-    const sides = computePortSide(srcBox, tgtBox);
-    bestSides[ti] = { srcSide: sides.srcSide, tgtSide: sides.tgtSide };
-    const fromPt = getPortPoint(srcBox, sides.srcSide, 0, 1);
-    const toPt = getPortPoint(tgtBox, sides.tgtSide, 0, 1);
-    currentRoutes.push(buildRoute(fromPt, toPt, sides.srcSide, sides.tgtSide));
-  }
-
-  const currentCrossings = countCrossings(currentRoutes);
-
-  // Optimization: try flipping each transition's sides and keep if fewer crossings.
-  // Unlike the previous version we do NOT early-return on currentCrossings===0,
-  // because renderSVG's actual rendering uses edge groups + reverseSet which can
-  // produce crossings that this local model doesn't see (see OBS-04 AC2).
-  let bestRoutes = currentRoutes.map(r => r.slice());
-  let bestCount = currentCrossings;
-  const allSides = ['top', 'bottom', 'left', 'right'];
-
-  for (let ti = 0; ti < parsed.transitions.length; ti++) {
-    const tr = parsed.transitions[ti];
-    const srcBox = getBox(tr.from);
-    const tgtBox = getBox(tr.to);
-    if (!srcBox || !tgtBox || tr.from === tr.to) continue;
-
-    for (const ss of allSides) {
-      for (const ts of allSides) {
-        if (ss === ts && (ss === 'left' || ss === 'right')) continue; // Same horizontal = overlap
-        const fromPt = getPortPoint(srcBox, ss, 0, 1);
-        const toPt = getPortPoint(tgtBox, ts, 0, 1);
-        const newRoute = buildRoute(fromPt, toPt, ss, ts);
-        const trial = bestRoutes.slice();
-        trial[ti] = newRoute;
-        const c = countCrossings(trial);
-        if (c < bestCount) {
-          bestCount = c;
-          bestRoutes = trial;
-          bestSides[ti] = { srcSide: ss, tgtSide: ts };
-        }
-      }
-    }
-  }
-
-  // Guaranteed perturbation: even when the local crossing model reports no
-  // improvement (common for small DSLs), AC2 requires that clicking AutoRoute
-  // produce an observable change in the rendered geometry ("the button must
-  // feel alive"). Pick the first non-self transition whose current side pair
-  // uses the standard horizontal axis and flip it to the opposite horizontal
-  // axis, or flip vertical to horizontal, so the rendered polyline MUST move.
-  // This is idempotent: running AutoRoute twice swaps back and forth.
-  if (bestCount >= currentCrossings) {
-    for (let ti = 0; ti < parsed.transitions.length; ti++) {
-      const tr = parsed.transitions[ti];
-      if (tr.from === tr.to) continue;
-      const srcBox = getBox(tr.from);
-      const tgtBox = getBox(tr.to);
-      if (!srcBox || !tgtBox) continue;
-      const cur = bestSides[ti];
-      if (!cur) continue;
-      // Pick an alternate side pair that is guaranteed different from `cur`
-      // AND is a valid (non-same-horizontal-axis) combination.
-      let altFrom, altTo;
-      if (cur.srcSide === 'right' && cur.tgtSide === 'left') { altFrom = 'bottom'; altTo = 'top'; }
-      else if (cur.srcSide === 'left' && cur.tgtSide === 'right') { altFrom = 'top'; altTo = 'bottom'; }
-      else if (cur.srcSide === 'bottom' && cur.tgtSide === 'top') { altFrom = 'right'; altTo = 'left'; }
-      else if (cur.srcSide === 'top' && cur.tgtSide === 'bottom') { altFrom = 'left'; altTo = 'right'; }
-      else if (cur.srcSide === 'right' && cur.tgtSide === 'right') { altFrom = 'bottom'; altTo = 'bottom'; }
-      else if (cur.srcSide === 'left' && cur.tgtSide === 'left') { altFrom = 'top'; altTo = 'top'; }
-      else if (cur.srcSide === 'bottom' && cur.tgtSide === 'bottom') { altFrom = 'right'; altTo = 'right'; }
-      else if (cur.srcSide === 'top' && cur.tgtSide === 'top') { altFrom = 'left'; altTo = 'left'; }
-      else { altFrom = 'bottom'; altTo = 'top'; }
-      bestSides[ti] = { srcSide: altFrom, tgtSide: altTo };
-      break;
-    }
-  }
-
-  // Persist the chosen sides as runtime-only overrides on each transition.
-  // renderSVG reads these (next to its reverseSet/computePortSide branch) and
-  // uses them to pick port positions. The overrides are NOT written to the
-  // DSL, so typing in the editor (which re-runs parseDSL → fresh transitions)
-  // wipes them automatically. Undo/Redo work against the DSL history and are
-  // unaffected.
-  for (let ti = 0; ti < parsed.transitions.length; ti++) {
-    const tr = parsed.transitions[ti];
-    if (tr.from === tr.to) continue;
-    const s = bestSides[ti];
-    if (!s) continue;
-    tr._autoRouteFromSide = s.srcSide;
-    tr._autoRouteToSide = s.tgtSide;
-  }
-
-  // Re-render so the overrides take effect visibly. We intentionally do NOT
-  // call refresh() here: refresh() reassigns `parsed = parseDSL(getDsl())`
-  // which would drop the runtime overrides we just wrote onto the existing
-  // transitions. Instead, re-render the SVG against the current parsed and
-  // rehook interactions. renderTable/renderProps/updateErrorBar are unaffected
-  // by routing sides so we can safely skip them.
+  // Re-render (NOT refresh — would drop runtime waypoints via parseDSL)
   const _svgWrap = document.getElementById('svg-wrap');
   if (_svgWrap) {
     _svgWrap.innerHTML = renderSVG(parsed);
     if (typeof setupInteractions === 'function') setupInteractions();
   }
+}
+
+// Legacy autoRoute helpers removed — A* router uses buildObstacleGrid +
+// astarRoute + simplifyPath (defined above renderSVG). The 213 lines of
+// duplicated getBox/computePortSide/getPortPoint/buildRoute/buildSelfRoute/
+// segmentIntersection/countCrossings are no longer needed.
+
+function _legacyAutoRouteRemoved() {
+  // Placeholder to maintain line-reference continuity in git blame.
+  // This function is never called; it exists only so `git log --follow`
+  // can track the deletion of the old autoRoute internals.
 }
 
 function groupSelected() {

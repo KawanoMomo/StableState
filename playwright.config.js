@@ -5,7 +5,7 @@ const { defineConfig, devices } = require('@playwright/test');
 
 module.exports = defineConfig({
   testDir: './tests',
-  testMatch: ['ux-brushup/**/*.spec.js', 'cyclic-transitions/**/*.spec.js'],
+  testMatch: ['ux-brushup/**/*.spec.js', 'cyclic-transitions/**/*.spec.js', 'autoroute-rewrite/**/*.spec.js'],
   fullyParallel: false,
   forbidOnly: !!process.env.CI,
   retries: 0,

@@ -5574,17 +5574,6 @@ function autoRoute() {
   }
 }
 
-// Legacy autoRoute helpers removed — A* router uses buildObstacleGrid +
-// astarRoute + simplifyPath (defined above renderSVG). The 213 lines of
-// duplicated getBox/computePortSide/getPortPoint/buildRoute/buildSelfRoute/
-// segmentIntersection/countCrossings are no longer needed.
-
-function _legacyAutoRouteRemoved() {
-  // Placeholder to maintain line-reference continuity in git blame.
-  // This function is never called; it exists only so `git log --follow`
-  // can track the deletion of the old autoRoute internals.
-}
-
 function groupSelected() {
   if (!parsed || sel.length < 2) return;
   const g = parsed.canvas.grid;

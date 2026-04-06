@@ -2620,19 +2620,8 @@ function renderSVG(parsed) {
       srcSide = sides.srcSide;
       tgtSide = sides.tgtSide;
     }
-    // OBS-04 AC2 fix: if autoRoute() has written runtime-only side overrides
-    // for this transition (`_autoRouteFromSide` / `_autoRouteToSide`), prefer
-    // them over the reverseSet / computePortSide defaults. The overrides live
-    // on the parsed object and vanish on the next parseDSL, so this never
-    // pollutes the DSL itself (no DSL writes, no undo-history entries).
-    const _arFrom = tr._autoRouteFromSide;
-    const _arTo = tr._autoRouteToSide;
-    if (!isSelf && _arFrom && _arTo &&
-        (_arFrom === 'top' || _arFrom === 'bottom' || _arFrom === 'left' || _arFrom === 'right') &&
-        (_arTo === 'top' || _arTo === 'bottom' || _arTo === 'left' || _arTo === 'right')) {
-      srcSide = _arFrom;
-      tgtSide = _arTo;
-    }
+    // Legacy _autoRouteFromSide/_autoRouteToSide removed — A* router now
+    // provides full waypoint arrays via _autoRouteWaypoints (read in 2nd pass).
     transitionSides.push({ srcSide, tgtSide, srcBox, tgtBox, isSelf, isReverse });
 
     // Add to unified edge groups (both source and target edges)
@@ -2664,7 +2653,10 @@ function renderSVG(parsed) {
     const { srcSide, tgtSide, srcBox, tgtBox, isSelf } = info;
     let route;
 
-    if (isSelf) {
+    // A* autoRoute override: use pre-computed waypoints directly
+    if (!isSelf && tr._autoRouteWaypoints && tr._autoRouteWaypoints.length >= 2) {
+      route = tr._autoRouteWaypoints;
+    } else if (isSelf) {
       route = buildSelfRoute(srcBox);
     } else {
       const srcKey = tr.from + ':' + srcSide;

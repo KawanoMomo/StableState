@@ -167,6 +167,7 @@ input[type=number]::-webkit-inner-spin-button { -webkit-appearance:none; }
     <button class="tb" id="btn-annotations" onclick="toggleAnnotations()">Notes</button>
     <button class="tb" id="btn-highlight" onclick="toggleHighlight()" title="Highlight connected (H)">&#9678; HL</button>
     <button class="tb" onclick="autoRoute()" title="遷移線の交差を最小化">AutoRoute</button>
+    <button class="tb" onclick="smartRoute()" title="幾何ルーティング (I/L/Z/U)">SmartRoute</button>
     <div class="sep"></div>
     <button class="tb tb-accent" onclick="exportSVG()">SVG</button>
     <button class="tb tb-accent" onclick="exportPNG()">PNG</button>
@@ -1916,7 +1917,7 @@ function buildObstacleGrid(data) {
         cells[idx(gx, gy)] = 0;
   }
 
-  function markBorder(px, py, pw, ph) {
+  function markBorder(px, py, pw, ph, passable) {
     const gx1 = Math.max(0, Math.floor(px / g) - 1);
     const gy1 = Math.max(0, Math.floor(py / g) - 1);
     const gx2 = Math.min(cols - 1, Math.ceil((px + pw) / g));
@@ -1925,16 +1926,19 @@ function buildObstacleGrid(data) {
     const iy1 = Math.floor(py / g);
     const ix2 = Math.ceil((px + pw) / g) - 1;
     const iy2 = Math.ceil((py + ph) / g) - 1;
+    // passable=true → composite state border: high cost but traversable.
+    // passable=false → group border: fully blocked.
+    const cost = passable ? 8.0 : 0;
     for (let gy = gy1; gy <= gy2; gy++)
       for (let gx = gx1; gx <= gx2; gx++)
         if (gy <= iy1 || gy >= iy2 || gx <= ix1 || gx >= ix2)
-          cells[idx(gx, gy)] = 0;
+          cells[idx(gx, gy)] = cost;
   }
 
   for (const st of data.states) {
     const box = getBoxShared(st.id, data, g);
     if (!box) continue;
-    if (st.children && st.children.length > 0) markBorder(box.x, box.y, box.w, box.h);
+    if (st.children && st.children.length > 0) markBorder(box.x, box.y, box.w, box.h, true);
     else markFilled(box.x, box.y, box.w, box.h);
   }
   for (const ps of data.pseudoStates) {
@@ -1943,45 +1947,78 @@ function buildObstacleGrid(data) {
   }
   for (const gr of (data.groups || [])) {
     const pos = getAbsolutePos(gr, data);
-    if (pos) markBorder(pos.x, pos.y, (gr.w || 0) * g, (gr.h || 0) * g);
+    if (pos) markBorder(pos.x, pos.y, (gr.w || 0) * g, (gr.h || 0) * g, false);
   }
-  for (const n of (data.notes || [])) {
-    const pos = getAbsolutePos(n, data);
-    if (pos) markFilled(pos.x, pos.y, (n.w || 0) * g, (n.h || 0) * g);
-  }
+  // Notes are visual annotations — exclude from obstacle grid.
+  // Including them causes A* to make large detours around purely decorative elements.
 
   return { cells, cols, rows, g };
 }
 
 /** A* pathfinding on the obstacle grid (4-directional orthogonal).
- *  Multi-source (srcBox edge cells) → multi-target (tgtBox edge cells).
- *  @returns pixel waypoints [{x,y},...] or null if no path.
+ *  Port-based: determines optimal exit/entry sides, routes between port cells
+ *  with box-surface anchoring.  Tries up to 4 side-pair candidates (straight,
+ *  cross-axis, U-shape ×2) and picks the lowest-cost route.
+ *  @returns pixel waypoints [{x,y},...] (≥2) or null if no path.
  */
 function astarRoute(og, srcBox, tgtBox, usedCells) {
   const { cells, cols, rows, g } = og;
   const TURN = 2, USED = 5;
 
   function idx(gx, gy) { return gy * cols + gx; }
+  function inBounds(gx, gy) { return gx >= 0 && gx < cols && gy >= 0 && gy < rows; }
 
-  // Edge cells: 1 cell outside each box edge
-  function edgeCells(box) {
-    const r = [];
-    const gx1 = Math.floor(box.x / g), gy1 = Math.floor(box.y / g);
-    const gx2 = Math.ceil((box.x + box.w) / g) - 1;
-    const gy2 = Math.ceil((box.y + box.h) / g) - 1;
-    for (let x = gx1; x <= gx2; x++) {
-      if (gy1 - 1 >= 0) r.push({ gx: x, gy: gy1 - 1 });
-      if (gy2 + 1 < rows) r.push({ gx: x, gy: gy2 + 1 });
-    }
-    for (let y = gy1; y <= gy2; y++) {
-      if (gx1 - 1 >= 0) r.push({ gx: gx1 - 1, gy: y });
-      if (gx2 + 1 < cols) r.push({ gx: gx2 + 1, gy: y });
-    }
-    return r;
+  // Box grid bounds (inclusive)
+  function boxBounds(box) {
+    return {
+      gx1: Math.floor(box.x / g),
+      gy1: Math.floor(box.y / g),
+      gx2: Math.ceil((box.x + box.w) / g) - 1,
+      gy2: Math.ceil((box.y + box.h) / g) - 1
+    };
   }
 
-  // Temporarily clear src/tgt box cells so A* can reach edge cells
+  // Port cell: on box side, 1 cell outside boundary.
+  // When a target hint is provided, the port is biased toward the target
+  // (clamped to box bounds) instead of being locked to the center.
+  // This dramatically improves routing for large composite states.
+  function portCell(box, side, hintBox) {
+    const b = boxBounds(box);
+    let mx, my;
+    if (hintBox) {
+      const hb = boxBounds(hintBox);
+      const hcx = Math.round((hb.gx1 + hb.gx2) / 2);
+      const hcy = Math.round((hb.gy1 + hb.gy2) / 2);
+      mx = Math.max(b.gx1, Math.min(b.gx2, hcx));
+      my = Math.max(b.gy1, Math.min(b.gy2, hcy));
+    } else {
+      mx = Math.round((b.gx1 + b.gx2) / 2);
+      my = Math.round((b.gy1 + b.gy2) / 2);
+    }
+    switch (side) {
+      case 'top':    return { gx: mx, gy: b.gy1 - 1 };
+      case 'bottom': return { gx: mx, gy: b.gy2 + 1 };
+      case 'left':   return { gx: b.gx1 - 1, gy: my };
+      case 'right':  return { gx: b.gx2 + 1, gy: my };
+    }
+  }
+
+  // Box surface anchor pixel (on box edge, grid-aligned along the edge)
+  function surfacePixel(box, side, pgx, pgy) {
+    switch (side) {
+      case 'top':    return { x: pgx * g + g / 2, y: box.y };
+      case 'bottom': return { x: pgx * g + g / 2, y: box.y + box.h };
+      case 'left':   return { x: box.x,            y: pgy * g + g / 2 };
+      case 'right':  return { x: box.x + box.w,    y: pgy * g + g / 2 };
+    }
+  }
+
+  // --- Save / restore obstacle cells ---
   const saved = new Map();
+  function save(i) { if (!saved.has(i)) saved.set(i, cells[i]); }
+  function restore() { for (const [i, v] of saved) cells[i] = v; saved.clear(); }
+
+  // Clear entire obstacle zone of a box (box + 1-cell margin)
   function clearBox(box) {
     const gx1 = Math.max(0, Math.floor(box.x / g) - 1);
     const gy1 = Math.max(0, Math.floor(box.y / g) - 1);
@@ -1989,109 +2026,129 @@ function astarRoute(og, srcBox, tgtBox, usedCells) {
     const gy2 = Math.min(rows - 1, Math.ceil((box.y + box.h) / g));
     for (let y = gy1; y <= gy2; y++)
       for (let x = gx1; x <= gx2; x++) {
-        const i = idx(x, y);
-        if (!saved.has(i)) saved.set(i, cells[i]);
-        cells[i] = 1.0;
+        const i = idx(x, y); save(i); cells[i] = 1.0;
       }
   }
-  function restore() { for (const [i, v] of saved) cells[i] = v; saved.clear(); }
 
-  clearBox(srcBox);
-  clearBox(tgtBox);
+  // --- Candidate side pairs ---
+  // Use closest-boundary gap (not center-to-center) to determine primary axis.
+  // For large composite states, center-to-center misranks side pairs because
+  // the center is far from the nearest boundary edge.
+  const gapR = tgtBox.x - (srcBox.x + srcBox.w);           // gap to the right
+  const gapL = srcBox.x - (tgtBox.x + tgtBox.w);           // gap to the left
+  const gapB = tgtBox.y - (srcBox.y + srcBox.h);            // gap below
+  const gapT = srcBox.y - (tgtBox.y + tgtBox.h);            // gap above
+  const hBestGap = Math.max(gapR, gapL);
+  const vBestGap = Math.max(gapB, gapT);
 
-  const src = edgeCells(srcBox), tgt = edgeCells(tgtBox);
-  const tgtSet = new Set(tgt.map(c => idx(c.gx, c.gy)));
+  const candidates = [];
+  if (vBestGap >= hBestGap) {
+    candidates.push([gapB >= gapT ? 'bottom' : 'top', gapB >= gapT ? 'top' : 'bottom']);
+    candidates.push([gapR >= gapL ? 'right' : 'left', gapR >= gapL ? 'left' : 'right']);
+    candidates.push(['left', 'left'], ['right', 'right']);
+  } else {
+    candidates.push([gapR >= gapL ? 'right' : 'left', gapR >= gapL ? 'left' : 'right']);
+    candidates.push([gapB >= gapT ? 'bottom' : 'top', gapB >= gapT ? 'top' : 'bottom']);
+    candidates.push(['top', 'top'], ['bottom', 'bottom']);
+  }
 
+  // --- Pre-allocated A* arrays (reused across candidates) ---
   const N = cols * rows;
-  const gS = new Float32Array(N).fill(Infinity);
-  const from = new Int32Array(N).fill(-1);
-  const dir = new Int8Array(N).fill(-1);
+  const gS = new Float32Array(N);
+  const fromArr = new Int32Array(N);
+  const dirA = new Int8Array(N);
   const closed = new Uint8Array(N);
 
-  function h(gx, gy) {
-    let m = Infinity;
-    for (const t of tgt) { const d = Math.abs(gx - t.gx) + Math.abs(gy - t.gy); if (d < m) m = d; }
-    return m;
-  }
+  function runAStar(start, end) {
+    if (!inBounds(start.gx, start.gy) || !inBounds(end.gx, end.gy)) return null;
+    const si = idx(start.gx, start.gy), ti = idx(end.gx, end.gy);
+    if (cells[si] === 0 || cells[ti] === 0) return null;
+    if (si === ti) return { path: [start], cost: 0 };
 
-  // Binary heap priority queue (min-heap on f-score)
-  const heap = [];
-  function heapPush(i, f) {
-    heap.push({ i, f });
-    let k = heap.length - 1;
-    while (k > 0) {
-      const p = (k - 1) >> 1;
-      if (heap[p].f <= heap[k].f) break;
-      [heap[p], heap[k]] = [heap[k], heap[p]];
-      k = p;
+    gS.fill(Infinity); fromArr.fill(-1); dirA.fill(-1); closed.fill(0);
+    function h(gx, gy) { return Math.abs(gx - end.gx) + Math.abs(gy - end.gy); }
+
+    const heap = [];
+    function heapPush(i, f) {
+      heap.push({ i, f }); let k = heap.length - 1;
+      while (k > 0) { const p = (k - 1) >> 1; if (heap[p].f <= heap[k].f) break; [heap[p], heap[k]] = [heap[k], heap[p]]; k = p; }
     }
-  }
-  function heapPop() {
-    const top = heap[0];
-    const last = heap.pop();
-    if (heap.length > 0) {
-      heap[0] = last;
-      let k = 0;
-      while (true) {
-        let s = k, l = 2 * k + 1, r = 2 * k + 2;
-        if (l < heap.length && heap[l].f < heap[s].f) s = l;
-        if (r < heap.length && heap[r].f < heap[s].f) s = r;
-        if (s === k) break;
-        [heap[s], heap[k]] = [heap[k], heap[s]];
-        k = s;
+    function heapPop() {
+      const top = heap[0]; const last = heap.pop();
+      if (heap.length > 0) {
+        heap[0] = last; let k = 0;
+        while (true) { let s = k, l = 2*k+1, r = 2*k+2; if (l < heap.length && heap[l].f < heap[s].f) s = l; if (r < heap.length && heap[r].f < heap[s].f) s = r; if (s === k) break; [heap[s], heap[k]] = [heap[k], heap[s]]; k = s; }
+      }
+      return top;
+    }
+
+    gS[si] = 0; heapPush(si, h(start.gx, start.gy));
+    const DX = [0, 1, 0, -1], DY = [-1, 0, 1, 0];
+
+    while (heap.length > 0) {
+      const { i: ci } = heapPop();
+      if (closed[ci]) continue;
+      closed[ci] = 1;
+      if (ci === ti) break;
+      const cx = ci % cols, cy = (ci - cx) / cols, cd = dirA[ci];
+      for (let d = 0; d < 4; d++) {
+        const nx = cx + DX[d], ny = cy + DY[d];
+        if (!inBounds(nx, ny)) continue;
+        const ni = idx(nx, ny);
+        if (closed[ni] || cells[ni] === 0) continue;
+        let cost = cells[ni];
+        if (cd >= 0 && cd !== d) cost += TURN;
+        if (usedCells.has(ni)) cost += USED;
+        const tg = gS[ci] + cost;
+        if (tg < gS[ni]) { fromArr[ni] = ci; dirA[ni] = d; gS[ni] = tg; heapPush(ni, tg + h(nx, ny)); }
       }
     }
-    return top;
+
+    const ti2 = ti;
+    if (gS[ti2] === Infinity) return null;
+    const path = [];
+    for (let c = ti2; c >= 0; c = fromArr[c]) { const gx2 = c % cols, gy2 = (c - gx2) / cols; path.unshift({ gx: gx2, gy: gy2 }); }
+    return { path, cost: gS[ti2] };
   }
 
-  for (const s of src) {
-    const i = idx(s.gx, s.gy);
-    if (cells[i] === 0) continue;
-    gS[i] = 0;
-    heapPush(i, h(s.gx, s.gy));
-  }
+  // --- Try each candidate, pick lowest cost ---
+  let bestResult = null;
 
-  const DX = [0, 1, 0, -1], DY = [-1, 0, 1, 0];
-  let found = -1;
+  for (const [srcSide, tgtSide] of candidates) {
+    const sp = portCell(srcBox, srcSide, tgtBox);
+    const tp = portCell(tgtBox, tgtSide, srcBox);
+    if (!inBounds(sp.gx, sp.gy) || !inBounds(tp.gx, tp.gy)) continue;
 
-  while (heap.length > 0) {
-    const { i: ci } = heapPop();
-    if (closed[ci]) continue;
-    closed[ci] = 1;
-    if (tgtSet.has(ci)) { found = ci; break; }
+    clearBox(srcBox);
+    clearBox(tgtBox);
+    const result = runAStar(sp, tp);
+    restore();
 
-    const cx = ci % cols, cy = (ci - cx) / cols;
-    const cd = dir[ci];
-
-    for (let d = 0; d < 4; d++) {
-      const nx = cx + DX[d], ny = cy + DY[d];
-      if (nx < 0 || nx >= cols || ny < 0 || ny >= rows) continue;
-      const ni = idx(nx, ny);
-      if (closed[ni] || cells[ni] === 0) continue;
-
-      let cost = cells[ni];
-      if (cd >= 0 && cd !== d) cost += TURN;
-      if (usedCells.has(ni)) cost += USED;
-
-      const tg = gS[ci] + cost;
-      if (tg < gS[ni]) {
-        from[ni] = ci;
-        dir[ni] = d;
-        gS[ni] = tg;
-        heapPush(ni, tg + h(nx, ny));
-      }
+    if (result && (!bestResult || result.cost < bestResult.cost)) {
+      bestResult = { path: result.path, cost: result.cost, srcSide, tgtSide, sp, tp };
     }
   }
 
-  restore();
-  if (found < 0) return null;
+  if (!bestResult) return null;
 
-  const path = [];
-  for (let c = found; c >= 0; c = from[c]) {
-    const gx = c % cols, gy = (c - gx) / cols;
-    path.unshift({ gx, gy });
-  }
-  return simplifyPath(path, g);
+  // --- Quality gate: reject excessive detours ---
+  // If A* path length exceeds 2.5× Manhattan grid distance, the route takes
+  // too many unnecessary turns / detours — fall back to geometric buildRoute.
+  const manhattan = Math.abs(bestResult.sp.gx - bestResult.tp.gx) +
+                    Math.abs(bestResult.sp.gy - bestResult.tp.gy);
+  if (manhattan > 0 && bestResult.path.length > Math.max(manhattan * 2.5, manhattan + 6)) return null;
+
+  // --- Compose full pixel path: srcAnchor → A* grid pixels → tgtAnchor ---
+  const srcAnchor = surfacePixel(srcBox, bestResult.srcSide, bestResult.sp.gx, bestResult.sp.gy);
+  const tgtAnchor = surfacePixel(tgtBox, bestResult.tgtSide, bestResult.tp.gx, bestResult.tp.gy);
+  const gridPixels = simplifyPath(bestResult.path, g);
+
+  const full = [srcAnchor, ...gridPixels, tgtAnchor];
+
+  // --- Pixel-level cleanup: collinear removal + backtrack elimination ---
+  const cleaned = simplifyPixelPath(full);
+
+  return cleaned.length >= 2 ? cleaned : null;
 }
 
 /** Collapse collinear grid cells into pixel waypoints.
@@ -2111,6 +2168,67 @@ function simplifyPath(gridPath, g) {
   }
   result.push(toPixel(gridPath[gridPath.length - 1]));
   return result;
+}
+
+/** Pixel-level path cleanup: dedup → collinear merge → backtrack removal.
+ *  Runs after srcAnchor + gridPixels + tgtAnchor are composed.
+ *  @param {Array<{x:number,y:number}>} pts
+ *  @returns {Array<{x:number,y:number}>}
+ */
+function simplifyPixelPath(pts) {
+  if (pts.length <= 2) return pts;
+  const EPS = 0.5;
+
+  // 1. Deduplicate consecutive near-identical points
+  let arr = [pts[0]];
+  for (let i = 1; i < pts.length; i++) {
+    if (Math.abs(pts[i].x - arr[arr.length - 1].x) > EPS ||
+        Math.abs(pts[i].y - arr[arr.length - 1].y) > EPS)
+      arr.push(pts[i]);
+  }
+
+  // 2. Remove collinear interior points (both axes)
+  //    A point is collinear if prev→cur and cur→next share the same axis direction.
+  let changed = true;
+  while (changed) {
+    changed = false;
+    const next = [arr[0]];
+    for (let i = 1; i < arr.length - 1; i++) {
+      const p = next[next.length - 1], c = arr[i], n = arr[i + 1];
+      const sameH = Math.abs(p.y - c.y) < EPS && Math.abs(c.y - n.y) < EPS;
+      const sameV = Math.abs(p.x - c.x) < EPS && Math.abs(c.x - n.x) < EPS;
+      if (sameH || sameV) { changed = true; continue; }
+      next.push(c);
+    }
+    next.push(arr[arr.length - 1]);
+    arr = next;
+  }
+
+  // 3. Remove backtracking: if segment i reverses direction of segment i-1
+  //    on the same axis, collapse the two segments.
+  changed = true;
+  while (changed && arr.length > 2) {
+    changed = false;
+    const next = [arr[0]];
+    for (let i = 1; i < arr.length - 1; i++) {
+      const p = next[next.length - 1], c = arr[i], n = arr[i + 1];
+      // Horizontal backtrack: p→c horizontal, c→n horizontal, opposite direction
+      if (Math.abs(p.y - c.y) < EPS && Math.abs(c.y - n.y) < EPS) {
+        const d1 = c.x - p.x, d2 = n.x - c.x;
+        if (d1 * d2 < 0) { changed = true; continue; } // opposite dirs → skip c
+      }
+      // Vertical backtrack
+      if (Math.abs(p.x - c.x) < EPS && Math.abs(c.x - n.x) < EPS) {
+        const d1 = c.y - p.y, d2 = n.y - c.y;
+        if (d1 * d2 < 0) { changed = true; continue; }
+      }
+      next.push(c);
+    }
+    next.push(arr[arr.length - 1]);
+    arr = next;
+  }
+
+  return arr;
 }
 
 // ═══════════════════════════════════════════════
@@ -5560,6 +5678,10 @@ function autoRoute() {
         if (gx >= 0 && gx < og.cols && gy >= 0 && gy < og.rows)
           usedCells.add(gy * og.cols + gx);
       }
+    } else {
+      // A* failed or quality gate rejected — clear stale waypoints so
+      // renderSVG falls back to geometric buildRoute.
+      delete tr._autoRouteWaypoints;
     }
     // Clean up legacy fields
     delete tr._autoRouteFromSide;
@@ -5567,6 +5689,441 @@ function autoRoute() {
   }
 
   // Re-render (NOT refresh — would drop runtime waypoints via parseDSL)
+  const _svgWrap = document.getElementById('svg-wrap');
+  if (_svgWrap) {
+    _svgWrap.innerHTML = renderSVG(parsed);
+    if (typeof setupInteractions === 'function') setupInteractions();
+  }
+}
+
+// ═══════════════════════════════════════════════
+// smartRoute: 3-Pass Geometric Port-Channel Router
+// ═══════════════════════════════════════════════
+// Uses I/L/Z/U pattern classification with max 2 turns per route.
+// Falls back to A* when geometric routing fails.
+function smartRoute() {
+  if (!parsed) return;
+  const g = parsed.canvas.grid;
+  const og = buildObstacleGrid(parsed);
+
+  // Build list of leaf states and pseudo-states (obstacles) with IDs
+  const leafBoxes = [];
+  for (const st of parsed.states) {
+    if (st.children && st.children.length > 0) continue; // skip composite
+    const box = getBoxShared(st.path || st.id, parsed, g);
+    if (box) leafBoxes.push({ ...box, _id: st.path || st.id });
+  }
+  for (const ps of parsed.pseudoStates) {
+    const box = getBoxShared(ps.path || ps.id, parsed, g);
+    if (box) leafBoxes.push({ ...box, _id: ps.path || ps.id });
+  }
+
+  // ─────────────────────────────────────────────
+  // Helper: Port point calculation
+  // ─────────────────────────────────────────────
+  function smartPortPoint(box, side, portIndex, portCount) {
+    const pad = portCount <= 2 ? 0.4 : portCount <= 4 ? 0.25 : 0.15;
+    const t = portCount <= 1 ? 0.5 : pad + (1 - 2 * pad) * portIndex / (portCount - 1);
+    switch (side) {
+      case 'top': return { x: box.x + box.w * t, y: box.y };
+      case 'bottom': return { x: box.x + box.w * t, y: box.y + box.h };
+      case 'left': return { x: box.x, y: box.y + box.h * t };
+      case 'right': return { x: box.x + box.w, y: box.y + box.h * t };
+    }
+  }
+
+  // ─────────────────────────────────────────────
+  // Helper: Compute port sides (edge-gap algorithm)
+  // ─────────────────────────────────────────────
+  function smartComputeSides(srcBox, tgtBox) {
+    const srcContainsTgt = srcBox.x <= tgtBox.x && srcBox.y <= tgtBox.y &&
+      srcBox.x + srcBox.w >= tgtBox.x + tgtBox.w && srcBox.y + srcBox.h >= tgtBox.y + tgtBox.h;
+    const tgtContainsSrc = tgtBox.x <= srcBox.x && tgtBox.y <= srcBox.y &&
+      tgtBox.x + tgtBox.w >= srcBox.x + srcBox.w && tgtBox.y + tgtBox.h >= srcBox.y + srcBox.h;
+
+    if (srcContainsTgt) {
+      const dTop = tgtBox.y - srcBox.y;
+      const dBottom = (srcBox.y + srcBox.h) - (tgtBox.y + tgtBox.h);
+      const dLeft = tgtBox.x - srcBox.x;
+      const dRight = (srcBox.x + srcBox.w) - (tgtBox.x + tgtBox.w);
+      const minD = Math.min(dTop, dBottom, dLeft, dRight);
+      if (minD === dTop) return { srcSide: 'top', tgtSide: 'top' };
+      if (minD === dBottom) return { srcSide: 'bottom', tgtSide: 'bottom' };
+      if (minD === dLeft) return { srcSide: 'left', tgtSide: 'left' };
+      return { srcSide: 'right', tgtSide: 'right' };
+    }
+    if (tgtContainsSrc) {
+      const dTop = srcBox.y - tgtBox.y;
+      const dBottom = (tgtBox.y + tgtBox.h) - (srcBox.y + srcBox.h);
+      const dLeft = srcBox.x - tgtBox.x;
+      const dRight = (tgtBox.x + tgtBox.w) - (srcBox.x + srcBox.w);
+      const minD = Math.min(dTop, dBottom, dLeft, dRight);
+      if (minD === dTop) return { srcSide: 'top', tgtSide: 'top' };
+      if (minD === dBottom) return { srcSide: 'bottom', tgtSide: 'bottom' };
+      if (minD === dLeft) return { srcSide: 'left', tgtSide: 'left' };
+      return { srcSide: 'right', tgtSide: 'right' };
+    }
+
+    // Non-overlapping: edge-gap
+    const gapR = tgtBox.x - (srcBox.x + srcBox.w);
+    const gapL = srcBox.x - (tgtBox.x + tgtBox.w);
+    const gapB = tgtBox.y - (srcBox.y + srcBox.h);
+    const gapT = srcBox.y - (tgtBox.y + tgtBox.h);
+    const hBest = Math.max(gapR, gapL);
+    const vBest = Math.max(gapB, gapT);
+    if (vBest >= hBest) {
+      return gapB >= gapT
+        ? { srcSide: 'bottom', tgtSide: 'top' }
+        : { srcSide: 'top', tgtSide: 'bottom' };
+    } else {
+      return gapR >= gapL
+        ? { srcSide: 'right', tgtSide: 'left' }
+        : { srcSide: 'left', tgtSide: 'right' };
+    }
+  }
+
+  // ─────────────────────────────────────────────
+  // Helper: Collision detection for segments
+  // ─────────────────────────────────────────────
+  function segmentHitsLeafBox(p1, p2, margin, excludeIds) {
+    margin = margin || 5;
+    for (const box of leafBoxes) {
+      // Skip source/target boxes by ID
+      if (excludeIds && box._id && excludeIds.includes(box._id)) continue;
+
+      const expanded = { x: box.x - margin, y: box.y - margin, w: box.w + 2*margin, h: box.h + 2*margin };
+
+      // Horizontal segment
+      if (Math.abs(p1.y - p2.y) < 0.01) {
+        const y = p1.y;
+        const minX = Math.min(p1.x, p2.x);
+        const maxX = Math.max(p1.x, p2.x);
+        if (y >= expanded.y && y <= expanded.y + expanded.h &&
+            maxX >= expanded.x && minX <= expanded.x + expanded.w) {
+          return true;
+        }
+      }
+
+      // Vertical segment
+      if (Math.abs(p1.x - p2.x) < 0.01) {
+        const x = p1.x;
+        const minY = Math.min(p1.y, p2.y);
+        const maxY = Math.max(p1.y, p2.y);
+        if (x >= expanded.x && x <= expanded.x + expanded.w &&
+            maxY >= expanded.y && minY <= expanded.y + expanded.h) {
+          return true;
+        }
+      }
+    }
+    return false;
+  }
+
+  // Check ALL segments of a route for collision (segment-aware exclusion)
+  // First segment: exclude only srcId; Last segment: exclude only tgtId; Middle: exclude nothing
+  function routeHitsLeafBox(waypoints, margin, srcId, tgtId) {
+    for (let i = 0; i < waypoints.length - 1; i++) {
+      let segExclude;
+      if (i === 0) segExclude = srcId ? [srcId] : null;
+      else if (i === waypoints.length - 2) segExclude = tgtId ? [tgtId] : null;
+      else segExclude = null; // middle segments: no exclusions
+      if (segmentHitsLeafBox(waypoints[i], waypoints[i+1], margin, segExclude)) return true;
+    }
+    return false;
+  }
+
+  // ─────────────────────────────────────────────
+  // PASS 1: Group transitions by (boxId, side)
+  // and distribute ports along each side
+  // ─────────────────────────────────────────────
+  const portGroups = {}; // key: "boxId:side", value: array of {tr, isSource}
+  for (const tr of parsed.transitions) {
+    if (tr.from === tr.to || tr.kind === 'internal') continue;
+    const srcBox = getBoxShared(tr.from, parsed, g);
+    const tgtBox = getBoxShared(tr.to, parsed, g);
+    if (!srcBox || !tgtBox) continue;
+
+    const sides = smartComputeSides(srcBox, tgtBox);
+    const srcKey = tr.from + ':' + sides.srcSide;
+    const tgtKey = tr.to + ':' + sides.tgtSide;
+
+    if (!portGroups[srcKey]) portGroups[srcKey] = [];
+    if (!portGroups[tgtKey]) portGroups[tgtKey] = [];
+    portGroups[srcKey].push({ tr, isSource: true, tgtCenter: {
+      x: tgtBox.x + tgtBox.w / 2,
+      y: tgtBox.y + tgtBox.h / 2
+    }});
+    portGroups[tgtKey].push({ tr, isSource: false, srcCenter: {
+      x: srcBox.x + srcBox.w / 2,
+      y: srcBox.y + srcBox.h / 2
+    }});
+  }
+
+  // Sort each group by perpendicular position and assign port indices
+  const portAssignment = {}; // key: "transition_id", value: {srcPortIdx, srcPortCount, tgtPortIdx, tgtPortCount}
+  for (const key in portGroups) {
+    const group = portGroups[key];
+    const side = key.split(':')[1]; // 'top','bottom','left','right'
+    const useX = (side === 'top' || side === 'bottom');
+    group.sort((a, b) => {
+      const ac = a.isSource ? a.tgtCenter : a.srcCenter;
+      const bc = b.isSource ? b.tgtCenter : b.srcCenter;
+      return useX ? (ac.x - bc.x) : (ac.y - bc.y);
+    });
+    for (let i = 0; i < group.length; i++) {
+      const item = group[i];
+      const tr = item.tr;
+      const trId = tr.from + '->' + tr.to + '-' + parsed.transitions.indexOf(tr);
+      if (!portAssignment[trId]) portAssignment[trId] = {};
+      if (item.isSource) {
+        portAssignment[trId].srcPortIdx = i;
+        portAssignment[trId].srcPortCount = group.length;
+      } else {
+        portAssignment[trId].tgtPortIdx = i;
+        portAssignment[trId].tgtPortCount = group.length;
+      }
+    }
+  }
+
+  // ─────────────────────────────────────────────
+  // PASS 2: Generate geometric routes (I/L/Z/U)
+  // ─────────────────────────────────────────────
+  const zTypeChannels = {}; // key: corridor, value: array of mid coordinates used
+  const uTypeOutsets = {}; // key: "side", value: max used outset
+
+  for (let ti = 0; ti < parsed.transitions.length; ti++) {
+    const tr = parsed.transitions[ti];
+    if (tr.from === tr.to || tr.kind === 'internal') continue;
+
+    const srcBox = getBoxShared(tr.from, parsed, g);
+    const tgtBox = getBoxShared(tr.to, parsed, g);
+    if (!srcBox || !tgtBox) continue;
+
+    // Self-transitions: use buildSelfRouteShared
+    if (tr.from === tr.to) {
+      const selfRoute = buildSelfRouteShared(srcBox);
+      if (selfRoute) tr._autoRouteWaypoints = selfRoute;
+      continue;
+    }
+
+    const sides = smartComputeSides(srcBox, tgtBox);
+    const trId = tr.from + '->' + tr.to + '-' + ti;
+    const portAssign = portAssignment[trId] || {};
+
+    const srcPortIdx = portAssign.srcPortIdx || 0;
+    const srcPortCount = portAssign.srcPortCount || 1;
+    const tgtPortIdx = portAssign.tgtPortIdx || 0;
+    const tgtPortCount = portAssign.tgtPortCount || 1;
+
+    const srcPt = smartPortPoint(srcBox, sides.srcSide, srcPortIdx, srcPortCount);
+    const tgtPt = smartPortPoint(tgtBox, sides.tgtSide, tgtPortIdx, tgtPortCount);
+
+    let route = null;
+    // Resolve full-path IDs for src/tgt exclusion
+    const srcLeaf = leafBoxes.find(b => Math.abs(b.x - srcBox.x) < 0.5 && Math.abs(b.y - srcBox.y) < 0.5 && Math.abs(b.w - srcBox.w) < 0.5);
+    const tgtLeaf = leafBoxes.find(b => Math.abs(b.x - tgtBox.x) < 0.5 && Math.abs(b.y - tgtBox.y) < 0.5 && Math.abs(b.w - tgtBox.w) < 0.5);
+    const srcId = srcLeaf ? srcLeaf._id : null;
+    const tgtId = tgtLeaf ? tgtLeaf._id : null;
+
+    // Check I-type (straight)
+    const alignTolerance = 2;
+    const isHorizontalAligned = Math.abs(srcPt.y - tgtPt.y) < alignTolerance;
+    const isVerticalAligned = Math.abs(srcPt.x - tgtPt.x) < alignTolerance;
+
+    if (isHorizontalAligned && (sides.srcSide === 'left' || sides.srcSide === 'right') &&
+        (sides.tgtSide === 'left' || sides.tgtSide === 'right')) {
+      if (!segmentHitsLeafBox(srcPt, tgtPt, 5, [srcId, tgtId].filter(Boolean))) {
+        route = [srcPt, tgtPt];
+      }
+    } else if (isVerticalAligned && (sides.srcSide === 'top' || sides.srcSide === 'bottom') &&
+               (sides.tgtSide === 'top' || sides.tgtSide === 'bottom')) {
+      if (!segmentHitsLeafBox(srcPt, tgtPt, 5, [srcId, tgtId].filter(Boolean))) {
+        route = [srcPt, tgtPt];
+      }
+    }
+
+    // Try L-type (1 turn)
+    if (!route) {
+      const isAdjacent = (sides.srcSide === 'right' && sides.tgtSide === 'top') ||
+                        (sides.srcSide === 'right' && sides.tgtSide === 'bottom') ||
+                        (sides.srcSide === 'left' && sides.tgtSide === 'top') ||
+                        (sides.srcSide === 'left' && sides.tgtSide === 'bottom') ||
+                        (sides.srcSide === 'top' && sides.tgtSide === 'right') ||
+                        (sides.srcSide === 'top' && sides.tgtSide === 'left') ||
+                        (sides.srcSide === 'bottom' && sides.tgtSide === 'right') ||
+                        (sides.srcSide === 'bottom' && sides.tgtSide === 'left');
+
+      if (isAdjacent) {
+        // Try first corner: (tgtPt.x, srcPt.y)
+        const corner1 = { x: tgtPt.x, y: srcPt.y };
+        if (!segmentHitsLeafBox(srcPt, corner1, 5, srcId ? [srcId] : null) && !segmentHitsLeafBox(corner1, tgtPt, 5, tgtId ? [tgtId] : null)) {
+          route = [srcPt, corner1, tgtPt];
+        } else {
+          // Try alternative corner: (srcPt.x, tgtPt.y)
+          const corner2 = { x: srcPt.x, y: tgtPt.y };
+          if (!segmentHitsLeafBox(srcPt, corner2, 5, srcId ? [srcId] : null) && !segmentHitsLeafBox(corner2, tgtPt, 5, tgtId ? [tgtId] : null)) {
+            route = [srcPt, corner2, tgtPt];
+          }
+        }
+      }
+    }
+
+    // Try Z-type (2 turns — works for opposite sides AND as L-type fallback)
+    if (!route) {
+      {
+        const isHorizontal = sides.srcSide === 'left' || sides.srcSide === 'right';
+        const baseMid = isHorizontal
+          ? (srcPt.x + tgtPt.x) / 2
+          : (srcPt.y + tgtPt.y) / 2;
+
+        const corridorKey = isHorizontal ? 'h' : 'v';
+        if (!zTypeChannels[corridorKey]) zTypeChannels[corridorKey] = [];
+
+        // Try to find a clear mid-channel within 200px scan
+        // Ensure mid is at least minSegDist from both src and tgt axis positions
+        const minSegDist = g; // 1 grid = 20px
+        const srcAxis = isHorizontal ? srcPt.x : srcPt.y;
+        const tgtAxis = isHorizontal ? tgtPt.x : tgtPt.y;
+        let mid = null;
+        for (let scan = 0; scan <= 200; scan += 10) {
+          const candidates = [baseMid + scan, baseMid - scan];
+          for (const candidate of candidates) {
+            // Skip if too close to either port axis
+            if (Math.abs(candidate - srcAxis) < minSegDist) continue;
+            if (Math.abs(candidate - tgtAxis) < minSegDist) continue;
+
+            const bend1 = isHorizontal
+              ? { x: candidate, y: srcPt.y }
+              : { x: srcPt.x, y: candidate };
+            const bend2 = isHorizontal
+              ? { x: candidate, y: tgtPt.y }
+              : { x: tgtPt.x, y: candidate };
+
+            // Check ALL 3 segments: src→bend1, bend1→bend2, bend2→tgt
+            if (!routeHitsLeafBox([srcPt, bend1, bend2, tgtPt], 5, srcId, tgtId)) {
+              mid = candidate;
+              break;
+            }
+          }
+          if (mid !== null) break;
+        }
+
+        if (mid !== null) {
+          if (isHorizontal) {
+            route = [srcPt, { x: mid, y: srcPt.y }, { x: mid, y: tgtPt.y }, tgtPt];
+          } else {
+            route = [srcPt, { x: srcPt.x, y: mid }, { x: tgtPt.x, y: mid }, tgtPt];
+          }
+        }
+      }
+    }
+
+    // Try U-type (2 turns, same side) with collision scan
+    if (!route) {
+      const isSameSide = sides.srcSide === sides.tgtSide;
+      if (isSameSide) {
+        const dir = (sides.srcSide === 'right' || sides.srcSide === 'bottom') ? 1 : -1;
+        const baseOutset = Math.max(
+          (sides.srcSide === 'right') ? (srcBox.x + srcBox.w) : (sides.srcSide === 'bottom') ? (srcBox.y + srcBox.h) : srcBox.x < tgtBox.x ? srcBox.x : tgtBox.x,
+          (sides.srcSide === 'right') ? (tgtBox.x + tgtBox.w) : (sides.srcSide === 'bottom') ? (tgtBox.y + tgtBox.h) : 0
+        );
+        // Scan for a clear U-route outset
+        for (let off = 30; off <= 200; off += 20) {
+          const outset = (sides.srcSide === 'right' || sides.srcSide === 'left')
+            ? (dir > 0 ? Math.max(srcBox.x + srcBox.w, tgtBox.x + tgtBox.w) + off
+                       : Math.min(srcBox.x, tgtBox.x) - off)
+            : (dir > 0 ? Math.max(srcBox.y + srcBox.h, tgtBox.y + tgtBox.h) + off
+                       : Math.min(srcBox.y, tgtBox.y) - off);
+
+          let candidate;
+          if (sides.srcSide === 'right' || sides.srcSide === 'left') {
+            candidate = [srcPt, { x: outset, y: srcPt.y }, { x: outset, y: tgtPt.y }, tgtPt];
+          } else {
+            candidate = [srcPt, { x: srcPt.x, y: outset }, { x: tgtPt.x, y: outset }, tgtPt];
+          }
+          if (!routeHitsLeafBox(candidate, 5, srcId, tgtId)) {
+            route = candidate;
+            break;
+          }
+        }
+      }
+    }
+
+    // Fallback to A*
+    if (!route) {
+      const wp = astarRoute(og, srcBox, tgtBox, new Set());
+      if (wp) route = wp;
+    }
+
+    // Store route
+    if (route) {
+      tr._autoRouteWaypoints = route;
+    } else {
+      delete tr._autoRouteWaypoints;
+    }
+    delete tr._autoRouteFromSide;
+    delete tr._autoRouteToSide;
+  }
+
+  // ─────────────────────────────────────────────
+  // PASS 3: Post-processing
+  // ─────────────────────────────────────────────
+  const minSeg = g * 0.8; // minimum segment length ≈ 16px for grid=20
+  for (const tr of parsed.transitions) {
+    if (!tr._autoRouteWaypoints) continue;
+    let wp = tr._autoRouteWaypoints;
+    if (wp.length < 2) continue;
+
+    // Step 1: Remove duplicate/near-duplicate points
+    let deduped = [wp[0]];
+    for (let i = 1; i < wp.length; i++) {
+      const prev = deduped[deduped.length - 1];
+      if (Math.abs(wp[i].x - prev.x) > 0.5 || Math.abs(wp[i].y - prev.y) > 0.5) {
+        deduped.push(wp[i]);
+      }
+    }
+    wp = deduped;
+
+    // Step 2: Remove collinear mid-points
+    let simplified = [wp[0]];
+    for (let i = 1; i < wp.length - 1; i++) {
+      const prev = simplified[simplified.length - 1];
+      const next = wp[i + 1];
+      const sameH = Math.abs(prev.y - wp[i].y) < 0.5 && Math.abs(wp[i].y - next.y) < 0.5;
+      const sameV = Math.abs(prev.x - wp[i].x) < 0.5 && Math.abs(wp[i].x - next.x) < 0.5;
+      if (!sameH && !sameV) simplified.push(wp[i]);
+    }
+    simplified.push(wp[wp.length - 1]);
+    wp = simplified;
+
+    // Step 3: Merge short interior segments by shifting adjacent corners
+    // For Z/L routes: if a middle segment is too short, extend the outer segments
+    if (wp.length === 4) {
+      // Z-type: [src, bend1, bend2, tgt] — middle segment is bend1→bend2
+      const midDx = Math.abs(wp[2].x - wp[1].x);
+      const midDy = Math.abs(wp[2].y - wp[1].y);
+      const midLen = Math.sqrt(midDx*midDx + midDy*midDy);
+      if (midLen < minSeg && midLen > 0.1) {
+        // Merge bends to midpoint
+        const mx = (wp[1].x + wp[2].x) / 2;
+        const my = (wp[1].y + wp[2].y) / 2;
+        // Keep orthogonality: if middle is vertical, shift x; if horizontal, shift y
+        if (midDx < midDy) {
+          // Middle is mostly vertical, short in x — merge x positions
+          wp[1] = { x: mx, y: wp[1].y };
+          wp[2] = { x: mx, y: wp[2].y };
+        } else {
+          wp[1] = { x: wp[1].x, y: my };
+          wp[2] = { x: wp[2].x, y: my };
+        }
+      }
+    }
+
+    if (wp.length >= 2) {
+      tr._autoRouteWaypoints = wp;
+    }
+  }
+
+  // Re-render
   const _svgWrap = document.getElementById('svg-wrap');
   if (_svgWrap) {
     _svgWrap.innerHTML = renderSVG(parsed);

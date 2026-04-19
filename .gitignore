@@ -16,3 +16,9 @@ docs/superpowers/
 docs/ecn-analysis/
 docs/ecn/
 docs/issues/
+docs/ux-brushup/
+docs/autoroute-redesign.md
+
+# Evaluator / visual verification artifacts
+.eval/
+.playwright-mcp/

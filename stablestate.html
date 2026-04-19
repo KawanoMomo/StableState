@@ -166,8 +166,9 @@ input[type=number]::-webkit-inner-spin-button { -webkit-appearance:none; }
     <button class="tb" id="btn-actions" onclick="toggleActions()">Actions</button>
     <button class="tb" id="btn-annotations" onclick="toggleAnnotations()">Notes</button>
     <button class="tb" id="btn-highlight" onclick="toggleHighlight()" title="Highlight connected (H)">&#9678; HL</button>
-    <button class="tb" onclick="autoRoute()" title="遷移線の交差を最小化">AutoRoute</button>
-    <button class="tb" onclick="smartRoute()" title="幾何ルーティング (I/L/Z/U)">SmartRoute</button>
+    <!-- Frozen: AutoRoute / SmartRoute hidden from UI pending rework. Functions retained in code. -->
+    <!-- <button class="tb" onclick="autoRoute()" title="遷移線の交差を最小化">AutoRoute</button> -->
+    <!-- <button class="tb" onclick="smartRoute()" title="幾何ルーティング (I/L/Z/U)">SmartRoute</button> -->
     <div class="sep"></div>
     <button class="tb tb-accent" onclick="exportSVG()">SVG</button>
     <button class="tb tb-accent" onclick="exportPNG()">PNG</button>

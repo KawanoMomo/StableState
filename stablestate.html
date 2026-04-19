@@ -166,7 +166,9 @@ input[type=number]::-webkit-inner-spin-button { -webkit-appearance:none; }
     <button class="tb" id="btn-actions" onclick="toggleActions()">Actions</button>
     <button class="tb" id="btn-annotations" onclick="toggleAnnotations()">Notes</button>
     <button class="tb" id="btn-highlight" onclick="toggleHighlight()" title="Highlight connected (H)">&#9678; HL</button>
-    <button class="tb" onclick="autoRoute()" title="遷移線の交差を最小化">AutoRoute</button>
+    <!-- Frozen: AutoRoute / SmartRoute hidden from UI pending rework. Functions retained in code. -->
+    <!-- <button class="tb" onclick="autoRoute()" title="遷移線の交差を最小化">AutoRoute</button> -->
+    <!-- <button class="tb" onclick="smartRoute()" title="幾何ルーティング (I/L/Z/U)">SmartRoute</button> -->
     <div class="sep"></div>
     <button class="tb tb-accent" onclick="exportSVG()">SVG</button>
     <button class="tb tb-accent" onclick="exportPNG()">PNG</button>
@@ -302,7 +304,7 @@ let currentTool = 'select';
 let connectFrom = null; // first element ID in connect mode
 let showActions = false;
 let zoomLevel = 100;
-let sel = []; // [{type, id}, ...] — StableBlock compatible
+let sel = []; // [{type, id}, ...] — id is path for states/pseudo, bare for groups/notes
 function isSel(id) { return sel.some(s => s.id === id); }
 function isSelected(id) { return isSel(id); } // renderSVG compat wrapper
 
@@ -326,9 +328,11 @@ function resolveSelType(id) {
 // Build dot-path reference for a state/pseudo (e.g. "active.accel")
 function stateDotPath(id) {
   if (!parsed) return id;
+  // Try direct path lookup first (id might already be a path)
   const el = parsed.stateMap[id] || parsed.pseudoMap[id];
+  if (el && el.path) return el.path;
   if (!el || !el.parent) return id;
-  // Walk up parent chain
+  // Walk up parent chain (fallback for pseudo-states without path)
   const parts = [id];
   let pid = el.parent;
   while (pid) {
@@ -485,6 +489,7 @@ function parseDSL(text) {
     notes: [],
     noteConnections: [],
     errors: [],
+    warnings: [],
     stateMap: {},
     pseudoMap: {},
     groupMap: {},
@@ -492,8 +497,25 @@ function parseDSL(text) {
   };
 
   const lines = text.split('\n');
-  const nestingStack = []; // stack of {type:'state'|'region', id}
+  const nestingStack = []; // stack of {type:'state'|'region', id, openLine}
   let currentRegion = null; // current region ID (for assigning states to regions)
+  // Track the most recently popped brace frame so that when we later hit a
+  // stray `}` (stack empty), we can point the user back to the nearest
+  // matching `{` context. This is what powers the OBS-16 hint: without it
+  // the user only sees `L<stray>: Unexpected closing brace` and has no
+  // breadcrumb toward the actual missing opening brace upstream.
+  let lastPoppedFrame = null;
+  // OBS-18 (Sprint 6): when a stray `}` is reached, `lastPoppedFrame` is
+  // usually an innocent sibling that balanced itself out — the real culprit
+  // is typically an ancestor state declaration whose `{` was typo'd away,
+  // causing the parser to treat that line as a leaf. We track every such
+  // leaf state declaration together with its source indentation so we can
+  // do a cheap indentation-smoking-gun walk when the stray `}` hits: a
+  // leaf state whose immediately-following non-empty line is at strictly
+  // deeper indentation is the smoking gun (the indentation author expected
+  // that line to live inside a composite body). This is the indent-based
+  // heuristic adopted in plan.md Sprint 6.
+  const leafStateDecls = []; // [{id, path, line, indent}]
 
   for (let i = 0; i < lines.length; i++) {
     const lineNum = i + 1;
@@ -506,17 +528,81 @@ function parseDSL(text) {
     // ─── Closing brace ───
     if (/^\}/.test(trimmed)) {
       if (nestingStack.length === 0) {
+        // Stray `}` with no matching `{` on the stack. Keep the existing
+        // error (plan.md Sprint 3 OBS-16: the fix is ADDITIVE, not a
+        // rewrite) and surface a hint pointing back to the real root
+        // cause.
+        //
+        // OBS-18 (Sprint 6): the earlier Sprint 3 implementation pointed
+        // at `lastPoppedFrame`, which in multi-level nests turns out to
+        // be an innocent sibling that balanced itself out before the
+        // stray `}` was reached (e.g. automotive-ecu.sstate: removing
+        // L19 `run`'s `{` made the hint cite L49 `failsafe`). We now
+        // prefer an indent-smoking-gun heuristic over the tracked leaf
+        // state declarations: find the LATEST leaf-state declaration
+        // whose immediately-following non-empty, non-comment line is at
+        // STRICTLY DEEPER indentation. That deeper-indented successor
+        // is the smoking gun that the declaration was meant to be a
+        // composite body. We fall back to the Sprint 3 behaviour when
+        // the heuristic finds nothing (e.g. single-level DSL where only
+        // `lastPoppedFrame` info is available).
         result.errors.push({ line: lineNum, msg: 'Unexpected closing brace }' });
+        let culprit = null;
+        for (let k = leafStateDecls.length - 1; k >= 0; k--) {
+          const cand = leafStateDecls[k];
+          if (cand.line >= lineNum) continue;
+          // Scan forward from the declaration for the next non-empty,
+          // non-comment line.
+          for (let j = cand.line; j < lines.length; j++) {
+            const nextRaw = lines[j];
+            const nextTrim = nextRaw.trim();
+            if (nextTrim === '' || nextTrim.startsWith('#')) continue;
+            // A `}` on the next line is not "content", skip it too — it
+            // would make the leaf look like it's followed by a closer
+            // even though the closer is for something else.
+            if (nextTrim.startsWith('}')) break;
+            const nextIndent = nextRaw.length - nextRaw.replace(/^[ \t]+/, '').length;
+            if (nextIndent > cand.indent) culprit = cand;
+            break;
+          }
+          if (culprit) break;
+        }
+        if (culprit) {
+          const culpritId = culprit.path || culprit.id;
+          result.errors.push({
+            line: culprit.line,
+            msg: "Hint: no matching '{' found for '}' on line " + lineNum +
+                 "; state '" + culpritId + "' (declared here at L" +
+                 culprit.line +
+                 ") is likely missing its opening '{'."
+          });
+        } else if (lastPoppedFrame) {
+          const nearId = lastPoppedFrame.path || lastPoppedFrame.id;
+          result.errors.push({
+            line: lastPoppedFrame.openLine,
+            msg: "Hint: no matching '{' found for '}' on line " + lineNum +
+                 "; an ancestor of '" + nearId + "' (opened here at L" +
+                 lastPoppedFrame.openLine +
+                 ") is likely missing its opening '{'."
+          });
+        } else {
+          result.errors.push({
+            line: lineNum,
+            msg: "Hint: no matching '{' found for this '}'. An earlier " +
+                 "composite state declaration may be missing its opening '{'."
+          });
+        }
         continue;
       }
       const popped = nestingStack.pop();
+      lastPoppedFrame = popped;
       if (popped.type === 'region') {
         currentRegion = null;
       } else {
         // Parse trailing props on the closing brace line: } entry=Foo exit=Bar
         const afterBrace = trimmed.slice(1).trim();
-        if (afterBrace && result.stateMap[popped.id]) {
-          parseProps(afterBrace, result.stateMap[popped.id]);
+        if (afterBrace && result.stateMap[popped.path || popped.id]) {
+          parseProps(afterBrace, result.stateMap[popped.path || popped.id], lineNum, result.errors);
         }
       }
       continue;
@@ -562,20 +648,30 @@ function parseDSL(text) {
     const pseudoMatch = trimmed.match(/^(initial|final|choice|history|deephistory|fork|join)\s+(\S+)\s+at\s+(-?[\d.]+)\s*,\s*(-?[\d.]+)(?:\s+size\s+(-?[\d.]+)\s*x\s*(-?[\d.]+))?/);
     if (pseudoMatch) {
       const id = pseudoMatch[2];
-      // Duplicate ID check across all maps
-      if (checkDuplicate(id, lineNum, result)) continue;
+      const psParentEntry = nestingStack.length > 0 ? nestingStack.findLast(e => e.type === 'state') : null;
+      const psParentId = psParentEntry ? psParentEntry.id : null;
+      const psParentPath = psParentEntry ? psParentEntry.path : null;
+      const psPath = psParentPath ? psParentPath + '.' + id : id;
+      // Duplicate ID check by path
+      if (result.pseudoMap[psPath]) {
+        result.errors.push({ line: lineNum, msg: 'Duplicate pseudo-state path: ' + psPath });
+        continue;
+      }
       const ps = {
         type: pseudoMatch[1],
         id: id,
+        path: psPath,
         x: parseFloat(pseudoMatch[3]),
         y: parseFloat(pseudoMatch[4]),
         w: pseudoMatch[5] ? parseFloat(pseudoMatch[5]) : null,
         h: pseudoMatch[6] ? parseFloat(pseudoMatch[6]) : null,
-        parent: nestingStack.length > 0 ? nestingStack.findLast(e => e.type === 'state')?.id || null : null,
+        parent: psParentId,
+        parentPath: psParentPath,
         line: lineNum
       };
       result.pseudoStates.push(ps);
-      result.pseudoMap[id] = ps;
+      result.pseudoMap[psPath] = ps;
+      if (!result.pseudoMap[id]) result.pseudoMap[id] = ps;
       continue;
     }
 
@@ -595,7 +691,9 @@ function parseDSL(text) {
       result.regionMap[regionId] = region;
       currentRegion = regionId;
       if (trimmed.endsWith('{')) {
-        nestingStack.push({ type: 'region', id: regionId });
+        // Track the line where this `{` was opened so we can report the
+        // real root cause on an Unclosed brace (OBS-16).
+        nestingStack.push({ type: 'region', id: regionId, openLine: lineNum });
       }
       continue;
     }
@@ -604,15 +702,26 @@ function parseDSL(text) {
     const stateMatch = trimmed.match(/^state\s+(\S+)\s+"([^"]*)"\s+at\s+(-?[\d.]+)\s*,\s*(-?[\d.]+)\s+size\s+(-?[\d.]+)\s*x\s*(-?[\d.]+)(.*)$/);
     if (stateMatch) {
       const id = stateMatch[1];
-      if (checkDuplicate(id, lineNum, result)) continue;
       const rest = stateMatch[7].trim();
       // Check if composite (ends with {)
       const isComposite = rest.endsWith('{');
       const propsStr = isComposite ? rest.slice(0, -1).trim() : rest;
 
+      const parentEntry = nestingStack.length > 0 ? nestingStack.findLast(e => e.type === 'state') : null;
+      const parentId = parentEntry ? parentEntry.id : null;
+      const parentPath = parentEntry ? parentEntry.path : null;
+      const path = parentPath ? parentPath + '.' + id : id;
+
+      // Check duplicate by path (allows same bare ID under different parents)
+      if (result.stateMap[path]) {
+        result.errors.push({ line: lineNum, msg: 'Duplicate state path: ' + path });
+        continue;
+      }
+
       const st = {
         type: 'state',
         id: id,
+        path: path,
         label: stateMatch[2],
         x: parseFloat(stateMatch[3]),
         y: parseFloat(stateMatch[4]),
@@ -626,7 +735,8 @@ function parseDSL(text) {
         entry: null,
         do: null,
         exit: null,
-        parent: nestingStack.length > 0 ? nestingStack.findLast(e => e.type === 'state')?.id || null : null,
+        parent: parentId,
+        parentPath: parentPath,
         region: currentRegion,
         children: [],
         isInitial: false,
@@ -634,19 +744,32 @@ function parseDSL(text) {
       };
 
       // Parse props
-      if (propsStr) parseProps(propsStr, st);
+      if (propsStr) parseProps(propsStr, st, lineNum, result.errors);
 
       result.states.push(st);
-      result.stateMap[id] = st;
+      result.stateMap[path] = st;
+      // Also register bare ID for backward compatibility (overwritten if duplicate)
+      if (!result.stateMap[id]) result.stateMap[id] = st;
 
       // Add to parent's children
-      if (st.parent && result.stateMap[st.parent]) {
-        result.stateMap[st.parent].children.push(id);
+      if (parentPath && result.stateMap[parentPath]) {
+        result.stateMap[parentPath].children.push(path);
       }
 
       // Push onto nesting stack if composite
       if (isComposite) {
-        nestingStack.push({ type: 'state', id: id });
+        // Track the line where this `{` was opened so we can report the
+        // real root cause on an Unclosed brace (OBS-16).
+        nestingStack.push({ type: 'state', id: id, path: path, openLine: lineNum });
+      } else {
+        // OBS-18 (Sprint 6): record the declaration as a candidate
+        // culprit for the indent-smoking-gun heuristic, in case a
+        // stray `}` later reveals that this line was meant to open a
+        // composite body. We capture the source-line indentation here
+        // (the `raw` string before trimming) so the later heuristic
+        // can compare it against the following line's indentation.
+        const leadingIndent = raw.length - raw.replace(/^[ \t]+/, '').length;
+        leafStateDecls.push({ id: id, path: path, line: lineNum, indent: leadingIndent });
       }
       continue;
     }
@@ -671,7 +794,7 @@ function parseDSL(text) {
         style: null,
         line: lineNum
       };
-      if (rest) parseProps(rest, g);
+      if (rest) parseProps(rest, g, lineNum, result.errors);
       result.groups.push(g);
       result.groupMap[id] = g;
       continue;
@@ -695,7 +818,7 @@ function parseDSL(text) {
         textColor: null,
         line: lineNum
       };
-      if (rest) parseProps(rest, n);
+      if (rest) parseProps(rest, n, lineNum, result.errors);
       result.notes.push(n);
       result.noteMap[id] = n;
       continue;
@@ -720,6 +843,7 @@ function parseDSL(text) {
 
       // Parse optional : Event [Guard] / Action @kind width=N style=S color=C default=X
       let event = null, guard = null, action = null, kind = null, width = null, style = null, color = null, defaultTarget = null;
+      let isCyclic = false;
       if (rest.startsWith(':')) {
         const detail = rest.slice(1).trim();
         let remaining = detail;
@@ -734,11 +858,29 @@ function parseDSL(text) {
         }
         // Strip all key=value attrs from remaining
         remaining = remaining.replace(/\b(width|style|color|default)=\S+/g, '').trim();
-        // Parse @kind from the end
-        const kindMatch = remaining.match(/@(local|external|internal)\s*$/);
-        if (kindMatch) {
-          kind = kindMatch[1];
-          remaining = remaining.slice(0, remaining.lastIndexOf('@' + kind)).trim();
+        // Parse @cyclic and @kind suffixes (any order) from the end.
+        // @cyclic is orthogonal to @kind — both may appear, in either order.
+        // Loop strips whichever suffix currently terminates `remaining` until
+        // neither matches, which handles "@kind @cyclic" and "@cyclic @kind".
+        // NOTE: We use a local shape here instead of stripTransitionSuffixes()
+        // because we need to capture kind/isCyclic into locals. The strip-only
+        // variant of this loop is used by removeTransition/replaceTransition.
+        let suffixChanged = true;
+        while (suffixChanged) {
+          suffixChanged = false;
+          const cyclicMatch = remaining.match(/@cyclic\s*$/);
+          if (cyclicMatch) {
+            isCyclic = true;
+            remaining = remaining.slice(0, remaining.lastIndexOf('@cyclic')).trim();
+            suffixChanged = true;
+            continue;
+          }
+          const kindMatch = remaining.match(/@(local|external|internal)\s*$/);
+          if (kindMatch) {
+            kind = kindMatch[1];
+            remaining = remaining.slice(0, remaining.lastIndexOf('@' + kind)).trim();
+            suffixChanged = true;
+          }
         }
         // Parse / Action
         const slashIdx = remaining.indexOf('/');
@@ -763,6 +905,7 @@ function parseDSL(text) {
         guard: guard,
         action: action,
         kind: kind || result.config.transition,
+        cyclic: isCyclic,
         width: width,
         style: style,
         color: color,
@@ -774,25 +917,56 @@ function parseDSL(text) {
     }
 
     // ─── Unrecognized line ───
-    result.errors.push({ line: lineNum, msg: 'Unrecognized syntax: ' + trimmed });
+    // Append a short template hint so first-time users know the required
+    // shape of a state declaration (OBS-02). We include the hint on every
+    // Unrecognized syntax error — it is advisory text and does not change
+    // which lines are flagged. Valid DSL never reaches this branch, so
+    // this cannot produce false positives on well-formed files.
+    result.errors.push({
+      line: lineNum,
+      msg: 'Unrecognized syntax: ' + trimmed +
+        '  (expected: state <id> "<label>" at <x>,<y> size <w>x<h>)'
+    });
   }
 
-  // Check for unclosed braces
+  // Check for unclosed braces. Emit one error per unclosed frame, anchored
+  // at the line where its `{` was opened — this lets the user jump directly
+  // to the real source of the problem instead of staring at EOF. (OBS-16)
   if (nestingStack.length > 0) {
-    result.errors.push({ line: lines.length, msg: 'Unclosed composite state: ' + nestingStack.join(', ') });
+    for (const frame of nestingStack) {
+      const frameId = frame.path || frame.id || '(anonymous)';
+      result.errors.push({
+        line: frame.openLine != null ? frame.openLine : lines.length,
+        msg: "Unclosed '{' opened here for " + frame.type + " '" + frameId +
+             "' — expected a matching '}' before end of file."
+      });
+    }
   }
 
   return result;
 }
 
-/** Parse key=value props and apply them to target object */
-function parseProps(propsStr, target) {
-  // Match key=value pairs where value can be #HEX, word, or quoted
-  const propRe = /(\w+)=(\S+)/g;
+/** Parse key=value props and apply them to target object.
+ *  Supports bare values (non-whitespace) and double-quoted values with \n / \" escapes.
+ *  When lineNum and errors are provided, pushes E4 errors for unclosed quotes. */
+function parseProps(propsStr, target, lineNum, errors) {
+  // Match either a quoted value "..." (with \" escapes) or a bare non-whitespace token.
+  // The quoted alternative uses [^"\\]|\\. so that escaped chars inside don't terminate it.
+  const propRe = /(\w+)=("(?:[^"\\]|\\.)*"|\S+)/g;
   let m;
   while ((m = propRe.exec(propsStr)) !== null) {
     const key = m[1];
-    const val = m[2];
+    let val = m[2];
+    // Unquote if fully quoted — strip outer quotes, unescape \" → ", preserve other escapes
+    if (val.length >= 2 && val[0] === '"' && val[val.length - 1] === '"') {
+      // Only \" is unescaped here. \n, \\, \t stay as 2-char literals on
+      // purpose — the textarea/PlantUML layers (Tasks 9-11) own newline handling.
+      val = val.slice(1, -1).replace(/\\"/g, '"');
+    } else if (val[0] === '"') {
+      // Malformed: bare branch caught a half-quoted token (unclosed quote).
+      // Skip assignment — the E4 pass below will emit the diagnostic.
+      continue;
+    }
     switch (key) {
       case 'entry': target.entry = val; break;
       case 'do': target.do = val; break;
@@ -802,6 +976,17 @@ function parseProps(propsStr, target) {
       case 'border': target.borderColor = val; break;
       case 'round': target.round = parseFloat(val); break;
       case 'style': target.style = val; break;
+    }
+  }
+  // E4: detect unclosed quoted values. When the input is e.g. `do="unclosed` with no closing
+  // quote, the quoted alternative of propRe fails but the bare \S+ alternative still matches
+  // (capturing `do=` + `"unclosed`), bypassing the unquote branch. We scan the raw input
+  // separately for this pattern so we can emit a precise diagnostic.
+  if (errors && lineNum != null) {
+    const unclosedRe = /(\w+)="[^"]*$/;
+    const um = propsStr.match(unclosedRe);
+    if (um) {
+      errors.push({ line: lineNum, msg: "unclosed quoted value for '" + um[1] + "'" });
     }
   }
 }
@@ -832,7 +1017,7 @@ function resolveStateRef(dotPath, parsed) {
     let match = true, cur = c;
     for (let i = parts.length - 2; i >= 0; i--) {
       if (!cur.parent || cur.parent !== parts[i]) { match = false; break; }
-      cur = parsed.stateMap[cur.parent];
+      cur = parsed.stateMap[cur.parentPath || cur.parent];
     }
     if (match) return c;
   }
@@ -898,6 +1083,9 @@ function validate(result) {
       if (t.guard) {
         result.errors.push({ line: t.line, msg: 'initial pseudo-state transition must not have a guard (found: [' + t.guard + '])' });
       }
+      if (t.cyclic) {
+        result.errors.push({ line: t.line, msg: 'initial pseudo-state transition must not have @cyclic' });
+      }
     }
   }
 
@@ -910,6 +1098,9 @@ function validate(result) {
       if (t.event) {
         result.errors.push({ line: t.line, msg: 'choice pseudo-state transition must not have an event (found: ' + t.event + ')' });
       }
+      if (t.cyclic) {
+        result.errors.push({ line: t.line, msg: 'choice pseudo-state transition must not have @cyclic' });
+      }
       if (!t.guard) {
         guardlessCount++;
       }
@@ -917,6 +1108,24 @@ function validate(result) {
     if (guardlessCount > 1) {
       result.errors.push({ line: ps.line, msg: 'choice pseudo-state ' + ps.id + ' has ' + guardlessCount + ' guard-less transitions (max 1 allowed as else/default)' });
     }
+  }
+
+  // ─── W1: @cyclic transitions should have a do= activity on their source state ───
+  // Cyclic transitions model periodic guard re-evaluation, which conceptually
+  // requires a do-activity as the "thing that keeps checking". Without one the
+  // author's intent is unclear (who drives the re-check?), so flag a warning.
+  // Pseudo-state sources (initial/choice/etc.) are excluded — E1/E2/E3 own those.
+  for (const t of result.transitions) {
+    if (!t.cyclic) continue;
+    if (result.pseudoMap[t.from]) continue; // pseudo-state source — handled by E1/E2/E3
+    const src = resolveStateRef(t.from, result);
+    if (!src) continue; // unresolved ref — parser/validator already reports
+    if (src.type !== 'state') continue; // pseudo-state resolved via dot-path — skip
+    if (src.do) continue; // has do activity — no warning
+    result.warnings.push({
+      line: t.line,
+      msg: "@cyclic transition leaves state '" + t.from + "' which has no 'do=' activity; consider adding one to clarify who evaluates the guard"
+    });
   }
 
   // ─── Config constraints ───
@@ -943,7 +1152,7 @@ function validate(result) {
   // ─── Nesting bounds: child state coords+size exceeding parent bounds → warning ───
   for (const s of result.states) {
     if (!s.parent) continue;
-    const parent = result.stateMap[s.parent];
+    const parent = result.stateMap[s.parentPath || s.parent];
     if (!parent) continue;
     // Child coords are relative to parent
     if (s.x + s.w > parent.w || s.y + s.h > parent.h || s.x < 0 || s.y < 0) {
@@ -957,43 +1166,110 @@ function validate(result) {
 // ═══════════════════════════════════════════════
 
 // Update position (at X,Y) for a given element type and id
-function updatePos(type, id, nx, ny, dsl) {
+function updatePos(type, id, nx, ny, dsl, lineNum) {
+  if (lineNum != null) {
+    // Line-number based update (for duplicate IDs)
+    const lines = dsl.split('\n');
+    const idx = lineNum - 1;
+    if (idx >= 0 && idx < lines.length) {
+      const re = new RegExp(`^(\\s*${type}\\s+${id}\\s+(?:"[^"]*"\\s+)?at\\s+)[\\d.]+,[\\d.]+(.*$)`);
+      lines[idx] = lines[idx].replace(re, `$1${nx},${ny}$2`);
+    }
+    return lines.join('\n');
+  }
   const re = new RegExp(`^(\\s*${type}\\s+${id}\\s+(?:"[^"]*"\\s+)?at\\s+)[\\d.]+,[\\d.]+(.*$)`, 'm');
   return dsl.replace(re, `$1${nx},${ny}$2`);
 }
 
 // Update size (size WxH) for a given element type and id
-function updateSize(type, id, nw, nh, dsl) {
+function updateSize(type, id, nw, nh, dsl, lineNum) {
+  if (lineNum != null) {
+    const lines = dsl.split('\n');
+    const idx = lineNum - 1;
+    if (idx >= 0 && idx < lines.length) {
+      const re = new RegExp(`^(\\s*${type}\\s+${id}\\s+.*\\bsize\\s+)[\\d.]+x[\\d.]+(.*$)`);
+      lines[idx] = lines[idx].replace(re, `$1${nw}x${nh}$2`);
+    }
+    return lines.join('\n');
+  }
   const re = new RegExp(`^(\\s*${type}\\s+${id}\\s+.*\\bsize\\s+)[\\d.]+x[\\d.]+(.*$)`, 'm');
   return dsl.replace(re, `$1${nw}x${nh}$2`);
 }
 
 // Add or replace a property (key=value) on an element line
-function updateProp(type, id, prop, val, dsl) {
+// Format a prop value for DSL emission: quote if it contains whitespace or
+// the 2-char `\n` escape literal, otherwise emit bare. Embedded `"` are
+// escaped as `\"` for the quoted form. Backslashes are NOT re-escaped here —
+// the 2-char-literal convention (`\n`, `\\`, `\t` stay as raw 2-char
+// sequences) is the contract with parseProps (see Task 7).
+function formatPropValue(val) {
+  if (val == null) return '';
+  const s = String(val);
+  if (s === '') return '';
+  // Need quotes if whitespace (including raw \n/\t) OR the 2-char \n escape
+  // OR contains a double quote itself.
+  if (/[\s"]|\\n/.test(s)) {
+    return '"' + s.replace(/"/g, '\\"') + '"';
+  }
+  return s;
+}
+
+function updateProp(type, id, prop, val, dsl, lineNum) {
+  const emit = formatPropValue(val);
+  // Match either a quoted value (with \" escapes) or a bare non-whitespace token,
+  // mirroring parseProps so we can replace an existing quoted prop in place.
+  const propValPat = `(?:"(?:[^"\\\\]|\\\\.)*"|\\S+)`;
+  if (lineNum != null) {
+    const lines = dsl.split('\n');
+    const idx = lineNum - 1;
+    if (idx >= 0 && idx < lines.length) {
+      const reExist = new RegExp(`^(\\s*${type}\\s+${id}\\s+.*)\\b${prop}=${propValPat}(.*$)`);
+      if (reExist.test(lines[idx])) {
+        lines[idx] = lines[idx].replace(reExist, `$1${prop}=${emit}$2`);
+      } else {
+        const trimEnd = lines[idx].trimEnd();
+        if (trimEnd.endsWith('{')) {
+          lines[idx] = trimEnd.slice(0, -1).trimEnd() + ` ${prop}=${emit} {`;
+        } else {
+          lines[idx] = trimEnd + ` ${prop}=${emit}`;
+        }
+      }
+    }
+    return lines.join('\n');
+  }
   // First try to replace existing prop
-  const reExist = new RegExp(`^(\\s*${type}\\s+${id}\\s+.*)\\b${prop}=\\S+(.*$)`, 'm');
+  const reExist = new RegExp(`^(\\s*${type}\\s+${id}\\s+.*)\\b${prop}=${propValPat}(.*$)`, 'm');
   if (reExist.test(dsl)) {
-    return dsl.replace(reExist, `$1${prop}=${val}$2`);
+    return dsl.replace(reExist, `$1${prop}=${emit}$2`);
   }
   // Prop doesn't exist — append before trailing { or at end of line
   const reLine = new RegExp(`^(\\s*${type}\\s+${id}\\s+.+)$`, 'm');
   return dsl.replace(reLine, function(wholeLine) {
     const trimEnd = wholeLine.trimEnd();
     if (trimEnd.endsWith('{')) {
-      return trimEnd.slice(0, -1).trimEnd() + ` ${prop}=${val} {`;
+      return trimEnd.slice(0, -1).trimEnd() + ` ${prop}=${emit} {`;
     }
-    return trimEnd + ` ${prop}=${val}`;
+    return trimEnd + ` ${prop}=${emit}`;
   });
 }
 
 // Change the quoted label for an element
-function updateLabel(type, id, newLabel, dsl) {
+function updateLabel(type, id, newLabel, dsl, lineNum) {
+  if (lineNum != null) {
+    const lines = dsl.split('\n');
+    const idx = lineNum - 1;
+    if (idx >= 0 && idx < lines.length) {
+      const re = new RegExp(`^(\\s*${type}\\s+${id}\\s+)"[^"]*"(.*)$`);
+      lines[idx] = lines[idx].replace(re, `$1"${newLabel}"$2`);
+    }
+    return lines.join('\n');
+  }
   const re = new RegExp(`^(\\s*${type}\\s+${id}\\s+)"[^"]*"(.*)$`, 'm');
   return dsl.replace(re, `$1"${newLabel}"$2`);
 }
 
 // Append a new transition line to the DSL
-function addTransition(from, to, event, guard, action, kind, dsl) {
+function addTransition(from, to, event, guard, action, kind, dsl, cyclic) {
   // Determine default transition kind from @config
   let defaultKind = 'local';
   const configMatch = dsl.match(/^@config\s+transition=(\S+)/m);
@@ -1004,16 +1280,35 @@ function addTransition(from, to, event, guard, action, kind, dsl) {
   const hasGuard = guard != null && guard !== '';
   const hasAction = action != null && action !== '';
   const hasKind = kind != null && kind !== '' && kind !== defaultKind;
+  const hasCyclic = cyclic === true;
 
-  if (hasEvent || hasGuard || hasAction || hasKind) {
+  if (hasEvent || hasGuard || hasAction || hasKind || hasCyclic) {
     line += ' :';
     if (hasEvent) line += ` ${event}`;
     if (hasGuard) line += ` [${guard}]`;
     if (hasAction) line += ` / ${action}`;
     if (hasKind) line += ` @${kind}`;
+    if (hasCyclic) line += ` @cyclic`;
   }
 
   return dsl + '\n' + line;
+}
+
+// Strip trailing @cyclic and @(local|external|internal) suffixes from a transition
+// detail string, in any order. Used by removeTransition and replaceTransition for
+// match comparisons (capture-less strip). The parseDSL body uses a shape variant
+// that captures kind/isCyclic and is NOT consolidated here.
+function stripTransitionSuffixes(s) {
+  let changed = true;
+  while (changed) {
+    changed = false;
+    const before = s;
+    s = s.replace(/@cyclic\s*$/, '').trim();
+    if (s !== before) { changed = true; continue; }
+    s = s.replace(/@(local|external|internal)\s*$/, '').trim();
+    if (s !== before) changed = true;
+  }
+  return s;
 }
 
 // Remove a matching transition line (match by from, to, event, guard)
@@ -1029,8 +1324,8 @@ function removeTransition(from, to, event, guard, dsl) {
       let lineEvent = null, lineGuard = null;
       if (rest.startsWith(':')) {
         let detail = rest.slice(1).trim();
-        // Remove @kind
-        detail = detail.replace(/@(local|external|internal)\s*$/, '').trim();
+        // Remove @cyclic and @kind suffixes (either order)
+        detail = stripTransitionSuffixes(detail);
         // Remove action
         const slashIdx = detail.indexOf('/');
         if (slashIdx !== -1) detail = detail.slice(0, slashIdx).trim();
@@ -1053,38 +1348,49 @@ function removeTransition(from, to, event, guard, dsl) {
 }
 
 // Replace a matching transition line in-place (preserves DSL order)
-function replaceTransition(oldFrom, oldTo, oldEvent, oldGuard, newFrom, newTo, newEvent, newGuard, newAction, newKind, dsl) {
+function replaceTransition(oldFrom, oldTo, oldEvent, oldGuard, newFrom, newTo, newEvent, newGuard, newAction, newKind, dsl, newCyclic) {
   // Build the new transition line (same logic as addTransition)
   let defaultKind = 'local';
   const configMatch = dsl.match(/^@config\s+transition=(\S+)/m);
   if (configMatch) defaultKind = configMatch[1];
 
-  let newLine = `${newFrom} -> ${newTo}`;
-  const hasEvent = newEvent != null && newEvent !== '';
-  const hasGuard = newGuard != null && newGuard !== '';
-  const hasAction = newAction != null && newAction !== '';
-  const hasKind = newKind != null && newKind !== '' && newKind !== defaultKind;
-
-  if (hasEvent || hasGuard || hasAction || hasKind) {
-    newLine += ' :';
-    if (hasEvent) newLine += ` ${newEvent}`;
-    if (hasGuard) newLine += ` [${newGuard}]`;
-    if (hasAction) newLine += ` / ${newAction}`;
-    if (hasKind) newLine += ` @${newKind}`;
+  // Helper: assemble a transition line given from/to tokens and an optional
+  // indent prefix. Shared between the in-place replace branch (which reuses
+  // the matched line's original indent and literal from/to) and the append
+  // fallback branch.
+  function buildLine(prefix, fromTok, toTok) {
+    let line = `${prefix}${fromTok} -> ${toTok}`;
+    const hasEv = newEvent != null && newEvent !== '';
+    const hasG = newGuard != null && newGuard !== '';
+    const hasA = newAction != null && newAction !== '';
+    const hasK = newKind != null && newKind !== '' && newKind !== defaultKind;
+    const hasC = newCyclic === true;
+    if (hasEv || hasG || hasA || hasK || hasC) {
+      line += ' :';
+      if (hasEv) line += ` ${newEvent}`;
+      if (hasG) line += ` [${newGuard}]`;
+      if (hasA) line += ` / ${newAction}`;
+      if (hasK) line += ` @${newKind}`;
+      if (hasC) line += ` @cyclic`;
+    }
+    return line;
   }
 
   // Find and replace the matching line (same matching logic as removeTransition)
   const lines = dsl.split('\n');
   let replaced = false;
   for (let i = 0; i < lines.length; i++) {
-    const trimmed = lines[i].trim();
+    const rawLine = lines[i];
+    const trimmed = rawLine.trim();
     const m = trimmed.match(/^(\S+)\s*->\s*(\S+)(.*)$/);
     if (m && m[1] === oldFrom && m[2] === oldTo) {
       const rest = m[3].trim();
       let lineEvent = null, lineGuard = null;
       if (rest.startsWith(':')) {
         let detail = rest.slice(1).trim();
-        detail = detail.replace(/@(local|external|internal)\s*$/, '').trim();
+        // Strip @cyclic and @kind suffixes (either order) before extracting
+        // event/guard for the match comparison.
+        detail = stripTransitionSuffixes(detail);
         const slashIdx = detail.indexOf('/');
         if (slashIdx !== -1) detail = detail.slice(0, slashIdx).trim();
         const gm = detail.match(/\[([^\]]*)\]/);
@@ -1097,7 +1403,30 @@ function replaceTransition(oldFrom, oldTo, oldEvent, oldGuard, newFrom, newTo, n
       const eMatch = (oldEvent == null || oldEvent === '') ? (lineEvent == null || lineEvent === '') : lineEvent === oldEvent;
       const gMatch = (oldGuard == null || oldGuard === '') ? (lineGuard == null || lineGuard === '') : lineGuard === oldGuard;
       if (eMatch && gMatch) {
-        lines[i] = newLine;
+        // OBS-13 fix: preserve the original line's indent AND its literal
+        // from/to tokens whenever the edit does not change the resolved
+        // source/target state. Otherwise the table-edit path (which always
+        // passes absolute dotted paths as newFrom/newTo) would rewrite
+        // "    idle -> active : ..." into
+        // "run.normal.idle -> run.normal.active : ..." and break the
+        // surrounding composite block's indentation/id convention.
+        const prefix = rawLine.match(/^(\s*)/)[1];
+        const origFrom = m[1];
+        const origTo = m[2];
+        // If stateDotPath is available (running inside stablestate.html),
+        // compare resolved paths so a literal like "idle" is still treated
+        // as equal to the dotted "run.normal.idle" the caller passed in.
+        // In a pure-Node context (unit tests calling the function outside
+        // the app), fall back to literal equality.
+        let fromTok = newFrom, toTok = newTo;
+        if (typeof stateDotPath === 'function') {
+          if (stateDotPath(origFrom) === stateDotPath(newFrom)) fromTok = origFrom;
+          if (stateDotPath(origTo) === stateDotPath(newTo)) toTok = origTo;
+        } else {
+          if (origFrom === newFrom) fromTok = origFrom;
+          if (origTo === newTo) toTok = origTo;
+        }
+        lines[i] = buildLine(prefix, fromTok, toTok);
         replaced = true;
         break;
       }
@@ -1105,8 +1434,9 @@ function replaceTransition(oldFrom, oldTo, oldEvent, oldGuard, newFrom, newTo, n
   }
 
   if (replaced) return lines.join('\n');
-  // Fallback: append (same as addTransition)
-  return dsl + '\n' + newLine;
+  // Fallback: append (same as addTransition). No original line to mirror, so
+  // emit the new transition at column 0 with the caller-provided from/to.
+  return dsl + '\n' + buildLine('', newFrom, newTo);
 }
 
 // Parse if/else action syntax into branch array
@@ -1211,7 +1541,7 @@ function applyChoiceBranches(stateId, evName, branches, defaultTarget, parsed, d
   let choiceId = null;
   for (const t of parsed.transitions) {
     const fromEl = resolveStateRef(t.from, parsed);
-    if (fromEl && fromEl.id === stateId && (t.event || null) === ev) {
+    if (fromEl && (fromEl.path === stateId || fromEl.id === stateId) && (t.event || null) === ev) {
       if (parsed.pseudoMap[t.to] && parsed.pseudoMap[t.to].type === 'choice') {
         choiceId = t.to;
         break;
@@ -1252,7 +1582,7 @@ function applyChoiceBranches(stateId, evName, branches, defaultTarget, parsed, d
     // Point source transition to the choice
     const existingTrans = parsed.transitions.find(t => {
       const fromEl = resolveStateRef(t.from, parsed);
-      return fromEl && fromEl.id === stateId && (t.event || null) === ev;
+      return fromEl && (fromEl.path === stateId || fromEl.id === stateId) && (t.event || null) === ev;
     });
     if (existingTrans) {
       dsl = replaceTransition(existingTrans.from, existingTrans.to, existingTrans.event, existingTrans.guard,
@@ -1277,19 +1607,29 @@ function applyChoiceBranches(stateId, evName, branches, defaultTarget, parsed, d
   // Recursively apply branches to a choice node
   function applyBranchesToChoice(cId, branchList, existingOutgoing) {
     const newBranches = [];
+    const nestedRecursions = []; // [{subId, children, subOutgoing}]
     let hasElse = false;
-    for (const b of branchList) {
+    for (let bi = 0; bi < branchList.length; bi++) {
+      const b = branchList[bi];
       if (!b.guard) hasElse = true;
       if (b.children && b.children.length > 0) {
-        // Nested: create sub-choice
-        const subId = nextAutoId();
-        const srcState = parsed.stateMap[stateId];
-        const cx = srcState ? srcState.x + srcState.w + 4 : 12;
-        const cy = srcState ? srcState.y + Math.floor(srcState.h / 2) + 2 : 12;
-        dsl = dsl.trimEnd() + '\nchoice ' + subId + ' at ' + cx + ',' + cy + '\n';
+        // Nested: reuse existing sub-choice if possible
+        let subId = null;
+        const existingAtIdx = existingOutgoing && existingOutgoing[bi];
+        if (existingAtIdx && parsed.pseudoMap[existingAtIdx.to] && parsed.pseudoMap[existingAtIdx.to].type === 'choice') {
+          subId = existingAtIdx.to;
+        } else {
+          // Create new sub-choice
+          subId = nextAutoId();
+          const srcState = parsed.stateMap[stateId];
+          const cx = srcState ? srcState.x + srcState.w + 4 : 12;
+          const cy = srcState ? srcState.y + Math.floor(srcState.h / 2) + 2 : 12;
+          dsl = dsl.trimEnd() + '\nchoice ' + subId + ' at ' + cx + ',' + cy + '\n';
+        }
         newBranches.push({ target: subId, guard: b.guard, action: null });
-        // Recurse into sub-choice
-        applyBranchesToChoice(subId, b.children, []);
+        // Queue recursion with existing sub-choice's outgoing transitions
+        const subOutgoing = parsed.transitions.filter(t => t.from === subId);
+        nestedRecursions.push({ subId, children: b.children, subOutgoing });
       } else {
         const tgt = b.target || defaultTarget;
         if (tgt) {
@@ -1323,6 +1663,10 @@ function applyChoiceBranches(stateId, evName, branches, defaultTarget, parsed, d
       for (const nb of newBranches) {
         dsl = addTransition(cId, nb.target, null, nb.guard, nb.action, null, dsl);
       }
+    }
+    // Recursively process nested sub-choices
+    for (const nr of nestedRecursions) {
+      applyBranchesToChoice(nr.subId, nr.children, nr.subOutgoing);
     }
   }
 
@@ -1476,13 +1820,416 @@ function esc(s) {
 // ═══════════════════════════════════════════════
 function getAbsolutePos(element, parsed) {
   let ox = 0, oy = 0;
-  let pid = element.parent;
+  let pid = element.parentPath || element.parent;
   while (pid) {
     const p = parsed.stateMap[pid];
-    if (p) { ox += p.x; oy += p.y; pid = p.parent; }
+    if (p) { ox += p.x; oy += p.y; pid = p.parentPath || p.parent; }
     else break;
   }
   return { x: (element.x + ox) * parsed.canvas.grid, y: (element.y + oy) * parsed.canvas.grid };
+}
+
+// ═══════════════════════════════════════════════
+// Cyclic transition visual defaults
+// (used by renderSVG, renderTable, exportPlantUML)
+// ═══════════════════════════════════════════════
+const CYCLIC_COLOR = '#F59E0B';    // amber
+const CYCLIC_DASH  = '6,4';
+const CYCLIC_GLYPH = '⟳';          // U+27F3 CLOCKWISE OPEN CIRCLE ARROW
+
+// ═══════════════════════════════════════════════
+// Shared Routing Helpers (used by renderSVG and autoRoute)
+// ═══════════════════════════════════════════════
+
+/** Get bounding box for a state or pseudo-state, in pixel coordinates.
+ *  @param {string} ref - state/pseudo ID or dot-path
+ *  @param {object} data - parsed DSL object
+ *  @param {number} grid - canvas grid size in pixels
+ *  @returns {{x:number, y:number, w:number, h:number}|null}
+ */
+function getBoxShared(ref, data, grid) {
+  const el = resolveStateRef(ref, data);
+  if (!el) return null;
+  const pos = getAbsolutePos(el, data);
+  if (el.type === 'state') {
+    return { x: pos.x, y: pos.y, w: el.w * grid, h: el.h * grid };
+  }
+  switch (el.type) {
+    case 'initial':
+      return { x: pos.x - 10, y: pos.y - 10, w: 20, h: 20 };
+    case 'final':
+      return { x: pos.x - 12, y: pos.y - 12, w: 24, h: 24 };
+    case 'choice':
+      return { x: pos.x - 12, y: pos.y - 12, w: 24, h: 24 };
+    case 'history':
+    case 'deephistory':
+      return { x: pos.x - 16, y: pos.y - 16, w: 32, h: 32 };
+    case 'fork':
+    case 'join': {
+      const pw = el.w != null ? el.w * grid : 6;
+      const ph = el.h != null ? el.h * grid : 40;
+      return { x: pos.x - pw / 2, y: pos.y - ph / 2, w: pw, h: ph };
+    }
+    default:
+      return { x: pos.x - 10, y: pos.y - 10, w: 20, h: 20 };
+  }
+}
+
+/** Build self-transition loop route (right edge → top edge).
+ *  @param {{x:number, y:number, w:number, h:number}} box
+ *  @param {number} [margin=30]
+ *  @returns {Array<{x:number, y:number}>}
+ */
+function buildSelfRouteShared(box, margin) {
+  const m = margin || 30;
+  return [
+    { x: box.x + box.w, y: box.y + box.h / 2 },
+    { x: box.x + box.w + m, y: box.y + box.h / 2 },
+    { x: box.x + box.w + m, y: box.y - m },
+    { x: box.x + box.w / 2, y: box.y - m },
+    { x: box.x + box.w / 2, y: box.y }
+  ];
+}
+
+// ═══════════════════════════════════════════════
+// A* Grid-Based Orthogonal Router
+// ═══════════════════════════════════════════════
+
+/** Build obstacle grid from parsed canvas data.
+ *  Each cell: 0 = impassable, >0 = traversal cost.
+ *  Leaf states/pseudo-states: filled obstacle + 1-cell margin.
+ *  Composite states: border-only obstacle (interior free).
+ */
+function buildObstacleGrid(data) {
+  const g = data.canvas.grid;
+  const cols = Math.ceil(data.canvas.width / g);
+  const rows = Math.ceil(data.canvas.height / g);
+  const cells = new Float32Array(cols * rows).fill(1.0);
+
+  function idx(gx, gy) { return gy * cols + gx; }
+
+  function markFilled(px, py, pw, ph) {
+    const gx1 = Math.max(0, Math.floor(px / g) - 1);
+    const gy1 = Math.max(0, Math.floor(py / g) - 1);
+    const gx2 = Math.min(cols - 1, Math.ceil((px + pw) / g));
+    const gy2 = Math.min(rows - 1, Math.ceil((py + ph) / g));
+    for (let gy = gy1; gy <= gy2; gy++)
+      for (let gx = gx1; gx <= gx2; gx++)
+        cells[idx(gx, gy)] = 0;
+  }
+
+  function markBorder(px, py, pw, ph, passable) {
+    const gx1 = Math.max(0, Math.floor(px / g) - 1);
+    const gy1 = Math.max(0, Math.floor(py / g) - 1);
+    const gx2 = Math.min(cols - 1, Math.ceil((px + pw) / g));
+    const gy2 = Math.min(rows - 1, Math.ceil((py + ph) / g));
+    const ix1 = Math.floor(px / g);
+    const iy1 = Math.floor(py / g);
+    const ix2 = Math.ceil((px + pw) / g) - 1;
+    const iy2 = Math.ceil((py + ph) / g) - 1;
+    // passable=true → composite state border: high cost but traversable.
+    // passable=false → group border: fully blocked.
+    const cost = passable ? 8.0 : 0;
+    for (let gy = gy1; gy <= gy2; gy++)
+      for (let gx = gx1; gx <= gx2; gx++)
+        if (gy <= iy1 || gy >= iy2 || gx <= ix1 || gx >= ix2)
+          cells[idx(gx, gy)] = cost;
+  }
+
+  for (const st of data.states) {
+    const box = getBoxShared(st.id, data, g);
+    if (!box) continue;
+    if (st.children && st.children.length > 0) markBorder(box.x, box.y, box.w, box.h, true);
+    else markFilled(box.x, box.y, box.w, box.h);
+  }
+  for (const ps of data.pseudoStates) {
+    const box = getBoxShared(ps.id, data, g);
+    if (box) markFilled(box.x, box.y, box.w, box.h);
+  }
+  for (const gr of (data.groups || [])) {
+    const pos = getAbsolutePos(gr, data);
+    if (pos) markBorder(pos.x, pos.y, (gr.w || 0) * g, (gr.h || 0) * g, false);
+  }
+  // Notes are visual annotations — exclude from obstacle grid.
+  // Including them causes A* to make large detours around purely decorative elements.
+
+  return { cells, cols, rows, g };
+}
+
+/** A* pathfinding on the obstacle grid (4-directional orthogonal).
+ *  Port-based: determines optimal exit/entry sides, routes between port cells
+ *  with box-surface anchoring.  Tries up to 4 side-pair candidates (straight,
+ *  cross-axis, U-shape ×2) and picks the lowest-cost route.
+ *  @returns pixel waypoints [{x,y},...] (≥2) or null if no path.
+ */
+function astarRoute(og, srcBox, tgtBox, usedCells) {
+  const { cells, cols, rows, g } = og;
+  const TURN = 2, USED = 5;
+
+  function idx(gx, gy) { return gy * cols + gx; }
+  function inBounds(gx, gy) { return gx >= 0 && gx < cols && gy >= 0 && gy < rows; }
+
+  // Box grid bounds (inclusive)
+  function boxBounds(box) {
+    return {
+      gx1: Math.floor(box.x / g),
+      gy1: Math.floor(box.y / g),
+      gx2: Math.ceil((box.x + box.w) / g) - 1,
+      gy2: Math.ceil((box.y + box.h) / g) - 1
+    };
+  }
+
+  // Port cell: on box side, 1 cell outside boundary.
+  // When a target hint is provided, the port is biased toward the target
+  // (clamped to box bounds) instead of being locked to the center.
+  // This dramatically improves routing for large composite states.
+  function portCell(box, side, hintBox) {
+    const b = boxBounds(box);
+    let mx, my;
+    if (hintBox) {
+      const hb = boxBounds(hintBox);
+      const hcx = Math.round((hb.gx1 + hb.gx2) / 2);
+      const hcy = Math.round((hb.gy1 + hb.gy2) / 2);
+      mx = Math.max(b.gx1, Math.min(b.gx2, hcx));
+      my = Math.max(b.gy1, Math.min(b.gy2, hcy));
+    } else {
+      mx = Math.round((b.gx1 + b.gx2) / 2);
+      my = Math.round((b.gy1 + b.gy2) / 2);
+    }
+    switch (side) {
+      case 'top':    return { gx: mx, gy: b.gy1 - 1 };
+      case 'bottom': return { gx: mx, gy: b.gy2 + 1 };
+      case 'left':   return { gx: b.gx1 - 1, gy: my };
+      case 'right':  return { gx: b.gx2 + 1, gy: my };
+    }
+  }
+
+  // Box surface anchor pixel (on box edge, grid-aligned along the edge)
+  function surfacePixel(box, side, pgx, pgy) {
+    switch (side) {
+      case 'top':    return { x: pgx * g + g / 2, y: box.y };
+      case 'bottom': return { x: pgx * g + g / 2, y: box.y + box.h };
+      case 'left':   return { x: box.x,            y: pgy * g + g / 2 };
+      case 'right':  return { x: box.x + box.w,    y: pgy * g + g / 2 };
+    }
+  }
+
+  // --- Save / restore obstacle cells ---
+  const saved = new Map();
+  function save(i) { if (!saved.has(i)) saved.set(i, cells[i]); }
+  function restore() { for (const [i, v] of saved) cells[i] = v; saved.clear(); }
+
+  // Clear entire obstacle zone of a box (box + 1-cell margin)
+  function clearBox(box) {
+    const gx1 = Math.max(0, Math.floor(box.x / g) - 1);
+    const gy1 = Math.max(0, Math.floor(box.y / g) - 1);
+    const gx2 = Math.min(cols - 1, Math.ceil((box.x + box.w) / g));
+    const gy2 = Math.min(rows - 1, Math.ceil((box.y + box.h) / g));
+    for (let y = gy1; y <= gy2; y++)
+      for (let x = gx1; x <= gx2; x++) {
+        const i = idx(x, y); save(i); cells[i] = 1.0;
+      }
+  }
+
+  // --- Candidate side pairs ---
+  // Use closest-boundary gap (not center-to-center) to determine primary axis.
+  // For large composite states, center-to-center misranks side pairs because
+  // the center is far from the nearest boundary edge.
+  const gapR = tgtBox.x - (srcBox.x + srcBox.w);           // gap to the right
+  const gapL = srcBox.x - (tgtBox.x + tgtBox.w);           // gap to the left
+  const gapB = tgtBox.y - (srcBox.y + srcBox.h);            // gap below
+  const gapT = srcBox.y - (tgtBox.y + tgtBox.h);            // gap above
+  const hBestGap = Math.max(gapR, gapL);
+  const vBestGap = Math.max(gapB, gapT);
+
+  const candidates = [];
+  if (vBestGap >= hBestGap) {
+    candidates.push([gapB >= gapT ? 'bottom' : 'top', gapB >= gapT ? 'top' : 'bottom']);
+    candidates.push([gapR >= gapL ? 'right' : 'left', gapR >= gapL ? 'left' : 'right']);
+    candidates.push(['left', 'left'], ['right', 'right']);
+  } else {
+    candidates.push([gapR >= gapL ? 'right' : 'left', gapR >= gapL ? 'left' : 'right']);
+    candidates.push([gapB >= gapT ? 'bottom' : 'top', gapB >= gapT ? 'top' : 'bottom']);
+    candidates.push(['top', 'top'], ['bottom', 'bottom']);
+  }
+
+  // --- Pre-allocated A* arrays (reused across candidates) ---
+  const N = cols * rows;
+  const gS = new Float32Array(N);
+  const fromArr = new Int32Array(N);
+  const dirA = new Int8Array(N);
+  const closed = new Uint8Array(N);
+
+  function runAStar(start, end) {
+    if (!inBounds(start.gx, start.gy) || !inBounds(end.gx, end.gy)) return null;
+    const si = idx(start.gx, start.gy), ti = idx(end.gx, end.gy);
+    if (cells[si] === 0 || cells[ti] === 0) return null;
+    if (si === ti) return { path: [start], cost: 0 };
+
+    gS.fill(Infinity); fromArr.fill(-1); dirA.fill(-1); closed.fill(0);
+    function h(gx, gy) { return Math.abs(gx - end.gx) + Math.abs(gy - end.gy); }
+
+    const heap = [];
+    function heapPush(i, f) {
+      heap.push({ i, f }); let k = heap.length - 1;
+      while (k > 0) { const p = (k - 1) >> 1; if (heap[p].f <= heap[k].f) break; [heap[p], heap[k]] = [heap[k], heap[p]]; k = p; }
+    }
+    function heapPop() {
+      const top = heap[0]; const last = heap.pop();
+      if (heap.length > 0) {
+        heap[0] = last; let k = 0;
+        while (true) { let s = k, l = 2*k+1, r = 2*k+2; if (l < heap.length && heap[l].f < heap[s].f) s = l; if (r < heap.length && heap[r].f < heap[s].f) s = r; if (s === k) break; [heap[s], heap[k]] = [heap[k], heap[s]]; k = s; }
+      }
+      return top;
+    }
+
+    gS[si] = 0; heapPush(si, h(start.gx, start.gy));
+    const DX = [0, 1, 0, -1], DY = [-1, 0, 1, 0];
+
+    while (heap.length > 0) {
+      const { i: ci } = heapPop();
+      if (closed[ci]) continue;
+      closed[ci] = 1;
+      if (ci === ti) break;
+      const cx = ci % cols, cy = (ci - cx) / cols, cd = dirA[ci];
+      for (let d = 0; d < 4; d++) {
+        const nx = cx + DX[d], ny = cy + DY[d];
+        if (!inBounds(nx, ny)) continue;
+        const ni = idx(nx, ny);
+        if (closed[ni] || cells[ni] === 0) continue;
+        let cost = cells[ni];
+        if (cd >= 0 && cd !== d) cost += TURN;
+        if (usedCells.has(ni)) cost += USED;
+        const tg = gS[ci] + cost;
+        if (tg < gS[ni]) { fromArr[ni] = ci; dirA[ni] = d; gS[ni] = tg; heapPush(ni, tg + h(nx, ny)); }
+      }
+    }
+
+    const ti2 = ti;
+    if (gS[ti2] === Infinity) return null;
+    const path = [];
+    for (let c = ti2; c >= 0; c = fromArr[c]) { const gx2 = c % cols, gy2 = (c - gx2) / cols; path.unshift({ gx: gx2, gy: gy2 }); }
+    return { path, cost: gS[ti2] };
+  }
+
+  // --- Try each candidate, pick lowest cost ---
+  let bestResult = null;
+
+  for (const [srcSide, tgtSide] of candidates) {
+    const sp = portCell(srcBox, srcSide, tgtBox);
+    const tp = portCell(tgtBox, tgtSide, srcBox);
+    if (!inBounds(sp.gx, sp.gy) || !inBounds(tp.gx, tp.gy)) continue;
+
+    clearBox(srcBox);
+    clearBox(tgtBox);
+    const result = runAStar(sp, tp);
+    restore();
+
+    if (result && (!bestResult || result.cost < bestResult.cost)) {
+      bestResult = { path: result.path, cost: result.cost, srcSide, tgtSide, sp, tp };
+    }
+  }
+
+  if (!bestResult) return null;
+
+  // --- Quality gate: reject excessive detours ---
+  // If A* path length exceeds 2.5× Manhattan grid distance, the route takes
+  // too many unnecessary turns / detours — fall back to geometric buildRoute.
+  const manhattan = Math.abs(bestResult.sp.gx - bestResult.tp.gx) +
+                    Math.abs(bestResult.sp.gy - bestResult.tp.gy);
+  if (manhattan > 0 && bestResult.path.length > Math.max(manhattan * 2.5, manhattan + 6)) return null;
+
+  // --- Compose full pixel path: srcAnchor → A* grid pixels → tgtAnchor ---
+  const srcAnchor = surfacePixel(srcBox, bestResult.srcSide, bestResult.sp.gx, bestResult.sp.gy);
+  const tgtAnchor = surfacePixel(tgtBox, bestResult.tgtSide, bestResult.tp.gx, bestResult.tp.gy);
+  const gridPixels = simplifyPath(bestResult.path, g);
+
+  const full = [srcAnchor, ...gridPixels, tgtAnchor];
+
+  // --- Pixel-level cleanup: collinear removal + backtrack elimination ---
+  const cleaned = simplifyPixelPath(full);
+
+  return cleaned.length >= 2 ? cleaned : null;
+}
+
+/** Collapse collinear grid cells into pixel waypoints.
+ *  @param {Array<{gx:number,gy:number}>} gridPath
+ *  @param {number} g - grid size in pixels
+ *  @returns {Array<{x:number,y:number}>}
+ */
+function simplifyPath(gridPath, g) {
+  if (gridPath.length === 0) return [];
+  const toPixel = (c) => ({ x: c.gx * g + g / 2, y: c.gy * g + g / 2 });
+  if (gridPath.length <= 2) return gridPath.map(toPixel);
+  const result = [toPixel(gridPath[0])];
+  for (let i = 1; i < gridPath.length - 1; i++) {
+    const prev = gridPath[i - 1], cur = gridPath[i], next = gridPath[i + 1];
+    if ((cur.gx - prev.gx) !== (next.gx - cur.gx) || (cur.gy - prev.gy) !== (next.gy - cur.gy))
+      result.push(toPixel(cur));
+  }
+  result.push(toPixel(gridPath[gridPath.length - 1]));
+  return result;
+}
+
+/** Pixel-level path cleanup: dedup → collinear merge → backtrack removal.
+ *  Runs after srcAnchor + gridPixels + tgtAnchor are composed.
+ *  @param {Array<{x:number,y:number}>} pts
+ *  @returns {Array<{x:number,y:number}>}
+ */
+function simplifyPixelPath(pts) {
+  if (pts.length <= 2) return pts;
+  const EPS = 0.5;
+
+  // 1. Deduplicate consecutive near-identical points
+  let arr = [pts[0]];
+  for (let i = 1; i < pts.length; i++) {
+    if (Math.abs(pts[i].x - arr[arr.length - 1].x) > EPS ||
+        Math.abs(pts[i].y - arr[arr.length - 1].y) > EPS)
+      arr.push(pts[i]);
+  }
+
+  // 2. Remove collinear interior points (both axes)
+  //    A point is collinear if prev→cur and cur→next share the same axis direction.
+  let changed = true;
+  while (changed) {
+    changed = false;
+    const next = [arr[0]];
+    for (let i = 1; i < arr.length - 1; i++) {
+      const p = next[next.length - 1], c = arr[i], n = arr[i + 1];
+      const sameH = Math.abs(p.y - c.y) < EPS && Math.abs(c.y - n.y) < EPS;
+      const sameV = Math.abs(p.x - c.x) < EPS && Math.abs(c.x - n.x) < EPS;
+      if (sameH || sameV) { changed = true; continue; }
+      next.push(c);
+    }
+    next.push(arr[arr.length - 1]);
+    arr = next;
+  }
+
+  // 3. Remove backtracking: if segment i reverses direction of segment i-1
+  //    on the same axis, collapse the two segments.
+  changed = true;
+  while (changed && arr.length > 2) {
+    changed = false;
+    const next = [arr[0]];
+    for (let i = 1; i < arr.length - 1; i++) {
+      const p = next[next.length - 1], c = arr[i], n = arr[i + 1];
+      // Horizontal backtrack: p→c horizontal, c→n horizontal, opposite direction
+      if (Math.abs(p.y - c.y) < EPS && Math.abs(c.y - n.y) < EPS) {
+        const d1 = c.x - p.x, d2 = n.x - c.x;
+        if (d1 * d2 < 0) { changed = true; continue; } // opposite dirs → skip c
+      }
+      // Vertical backtrack
+      if (Math.abs(p.x - c.x) < EPS && Math.abs(c.x - n.x) < EPS) {
+        const d1 = c.y - p.y, d2 = n.y - c.y;
+        if (d1 * d2 < 0) { changed = true; continue; }
+      }
+      next.push(c);
+    }
+    next.push(arr[arr.length - 1]);
+    arr = next;
+  }
+
+  return arr;
 }
 
 // ═══════════════════════════════════════════════
@@ -1536,7 +2283,7 @@ function renderSVG(parsed) {
     const border = st.borderColor || '#6366F1';
     const textClr = st.textColor || '#e0e0e0';
     const round = st.round != null ? st.round : 10;
-    const elSel = isSelected(st.id);
+    const elSel = isSelected(st.path || st.id);
     const strokeClr = elSel ? 'white' : border;
     const strokeW = elSel ? 2.5 : 1.5;
     const dashAttr = st.style === 'dashed' ? ' stroke-dasharray="6 3"' : '';
@@ -1546,7 +2293,7 @@ function renderSVG(parsed) {
     const dimSt = dimStVal ? ` opacity="${dimStVal}"` : '';
     const stShadow = elSel ? 'filter="drop-shadow(0 4px 12px rgba(99,102,241,0.5))"' : shadow;
 
-    svg += `<g data-type="state" data-id="${st.id}" style="cursor:${annotationMode?'default':'grab'}"${dimSt}>`;
+    svg += `<g data-type="state" data-id="${st.path || st.id}" style="cursor:${annotationMode?'default':'grab'}"${dimSt}>`;
     svg += `<rect x="${pos.x}" y="${pos.y}" width="${pw}" height="${ph}" rx="${round}" ry="${round}" fill="${esc(fill)}" stroke="${esc(strokeClr)}" stroke-width="${strokeW}"${dashAttr} ${stShadow}/>`;
     svg += `<text x="${pos.x + 10}" y="${pos.y + 18}" font-family="${sans}" font-size="12" font-weight="600" fill="${esc(textClr)}" style="pointer-events:none">${esc(st.label)}</text>`;
 
@@ -1558,7 +2305,12 @@ function renderSVG(parsed) {
         ay += 14;
       }
       if (st.do) {
-        svg += `<text x="${pos.x + 10}" y="${ay}" font-family="${mono}" font-size="10" fill="#888888" style="pointer-events:none">do / ${esc(st.do)}</text>`;
+        // Task 10: multiline do shows first logical line + … (U+2026). Box size unchanged.
+        // st.do contains \n as 2-char literal (Task 7 parser contract); split on '\\n'.
+        const doFirstLine = st.do.split('\\n')[0];
+        const doHasMore = st.do.indexOf('\\n') >= 0;
+        const doDisplay = doFirstLine + (doHasMore ? ' …' : '');
+        svg += `<text x="${pos.x + 10}" y="${ay}" font-family="${mono}" font-size="10" fill="#888888" style="pointer-events:none">do / ${esc(doDisplay)}</text>`;
         ay += 14;
       }
       if (st.exit) {
@@ -1591,7 +2343,7 @@ function renderSVG(parsed) {
     const border = st.borderColor || '#818CF8';
     const textClr = st.textColor || '#e0e0e0';
     const round = st.round != null ? st.round : 10;
-    const elSel = isSelected(st.id);
+    const elSel = isSelected(st.path || st.id);
     const strokeClr = elSel ? 'white' : border;
     const strokeW = elSel ? 2.5 : 1.5;
     const dashAttr = st.style === 'dashed' ? ' stroke-dasharray="6 3"' : '';
@@ -1602,7 +2354,7 @@ function renderSVG(parsed) {
     const dimSt = dimStVal ? ` opacity="${dimStVal}"` : '';
     const stShadow = elSel ? 'filter="drop-shadow(0 4px 12px rgba(99,102,241,0.5))"' : shadow;
 
-    svg += `<g data-type="state" data-id="${st.id}" style="cursor:${annotationMode?'default':'grab'}"${dimSt}>`;
+    svg += `<g data-type="state" data-id="${st.path || st.id}" style="cursor:${annotationMode?'default':'grab'}"${dimSt}>`;
     svg += `<rect x="${pos.x}" y="${pos.y}" width="${pw}" height="${ph}" rx="${round}" ry="${round}" fill="${esc(fill)}" stroke="${esc(strokeClr)}" stroke-width="${strokeW}"${dashAttr} ${stShadow}/>`;
 
     if (hasActions) {
@@ -1618,7 +2370,12 @@ function renderSVG(parsed) {
         ay += 14;
       }
       if (st.do) {
-        svg += `<text x="${pos.x + 8}" y="${ay}" font-family="${mono}" font-size="10" fill="#888888" style="pointer-events:none">do / ${esc(st.do)}</text>`;
+        // Task 10: multiline do shows first logical line + … (U+2026). Box size unchanged.
+        // st.do contains \n as 2-char literal (Task 7 parser contract); split on '\\n'.
+        const doFirstLine = st.do.split('\\n')[0];
+        const doHasMore = st.do.indexOf('\\n') >= 0;
+        const doDisplay = doFirstLine + (doHasMore ? ' …' : '');
+        svg += `<text x="${pos.x + 8}" y="${ay}" font-family="${mono}" font-size="10" fill="#888888" style="pointer-events:none">do / ${esc(doDisplay)}</text>`;
         ay += 14;
       }
       if (st.exit) {
@@ -1638,9 +2395,9 @@ function renderSVG(parsed) {
     const dimPsHl = hlIds && !hlIds.has(ps.id) ? 0.15 : null;
     const dimPsVal = dimPsSearch || dimPsHl;
     const dimPs = dimPsVal ? ` opacity="${dimPsVal}"` : '';
-    const psSel = isSelected(ps.id);
+    const psSel = isSelected(ps.path || ps.id);
     const psShadow = psSel ? 'filter="drop-shadow(0 4px 12px rgba(99,102,241,0.5))"' : shadow;
-    svg += `<g data-type="${ps.type}" data-id="${ps.id}" style="cursor:grab"${dimPs}>`;
+    svg += `<g data-type="${ps.type}" data-id="${ps.path || ps.id}" style="cursor:grab"${dimPs}>`;
 
     // Selection highlight ring
     if (psSel) {
@@ -1695,37 +2452,13 @@ function renderSVG(parsed) {
     const mid = 'ah_' + c.replace(/[^a-zA-Z0-9]/g, '');
     svg += `<marker id="${mid}" markerWidth="10" markerHeight="8" refX="10" refY="4" orient="auto"><path d="M0,0 L10,4 L0,8 Z" fill="${c}"/></marker>`;
   }
+  // Cyclic arrow marker (amber, for transitions with @cyclic flag)
+  svg += `<marker id="arr-cyclic" markerWidth="10" markerHeight="8" refX="10" refY="4" orient="auto"><path d="M0,0 L10,4 L0,8 Z" fill="${CYCLIC_COLOR}"/></marker>`;
   svg += `</defs>`;
 
   // Helper: get bounding box {x, y, w, h} in pixels for a state or pseudo-state
-  function getBox(ref) {
-    const el = resolveStateRef(ref, parsed);
-    if (!el) return null;
-    const pos = getAbsolutePos(el, parsed);
-    if (el.type === 'state') {
-      return { x: pos.x, y: pos.y, w: el.w * g, h: el.h * g };
-    }
-    // Pseudo-states
-    switch (el.type) {
-      case 'initial':
-        return { x: pos.x - 10, y: pos.y - 10, w: 20, h: 20 };
-      case 'final':
-        return { x: pos.x - 12, y: pos.y - 12, w: 24, h: 24 };
-      case 'choice':
-        return { x: pos.x - 12, y: pos.y - 12, w: 24, h: 24 };
-      case 'history':
-      case 'deephistory':
-        return { x: pos.x - 16, y: pos.y - 16, w: 32, h: 32 };
-      case 'fork':
-      case 'join': {
-        const pw = el.w != null ? el.w * g : 6;
-        const ph = el.h != null ? el.h * g : 40;
-        return { x: pos.x - pw / 2, y: pos.y - ph / 2, w: pw, h: ph };
-      }
-      default:
-        return { x: pos.x - 10, y: pos.y - 10, w: 20, h: 20 };
-    }
-  }
+  // getBox: delegate to file-scope getBoxShared (hoisted for autoRoute reuse)
+  function getBox(ref) { return getBoxShared(ref, parsed, g); }
 
   // Helper: determine which side of source/target to connect
   // ADR-006: Edge-gap algorithm instead of angle-based
@@ -1901,17 +2634,8 @@ function renderSVG(parsed) {
     return points;
   }
 
-  // Helper: build self-transition loop
-  function buildSelfRoute(box) {
-    const margin = 30;
-    return [
-      { x: box.x + box.w, y: box.y + box.h / 2 },
-      { x: box.x + box.w + margin, y: box.y + box.h / 2 },
-      { x: box.x + box.w + margin, y: box.y - margin },
-      { x: box.x + box.w / 2, y: box.y - margin },
-      { x: box.x + box.w / 2, y: box.y }
-    ];
-  }
+  // buildSelfRoute: delegate to file-scope buildSelfRouteShared (hoisted for autoRoute reuse)
+  function buildSelfRoute(box) { return buildSelfRouteShared(box, 30); }
 
   // Helper: segment intersection
   function segmentIntersection(a1, a2, b1, b2) {
@@ -2015,6 +2739,8 @@ function renderSVG(parsed) {
       srcSide = sides.srcSide;
       tgtSide = sides.tgtSide;
     }
+    // Legacy _autoRouteFromSide/_autoRouteToSide removed — A* router now
+    // provides full waypoint arrays via _autoRouteWaypoints (read in 2nd pass).
     transitionSides.push({ srcSide, tgtSide, srcBox, tgtBox, isSelf, isReverse });
 
     // Add to unified edge groups (both source and target edges)
@@ -2046,7 +2772,10 @@ function renderSVG(parsed) {
     const { srcSide, tgtSide, srcBox, tgtBox, isSelf } = info;
     let route;
 
-    if (isSelf) {
+    // A* autoRoute override: use pre-computed waypoints directly
+    if (!isSelf && tr._autoRouteWaypoints && tr._autoRouteWaypoints.length >= 2) {
+      route = tr._autoRouteWaypoints;
+    } else if (isSelf) {
       route = buildSelfRoute(srcBox);
     } else {
       const srcKey = tr.from + ':' + srcSide;
@@ -2094,9 +2823,19 @@ function renderSVG(parsed) {
 
     // Build SVG path
     const sw = tr.width || 1.5;
-    const sc = tr.color || '#89DDFF';
-    const dashAttr = tr.style === 'dashed' ? ' stroke-dasharray="6 3"' : '';
-    const _amid = 'ah_' + sc.replace(/[^a-zA-Z0-9]/g, '');
+    // Cyclic default stroke color is amber; user's explicit color= wins
+    let sc;
+    if (tr.color) sc = tr.color;
+    else if (tr.cyclic) sc = CYCLIC_COLOR;
+    else sc = '#89DDFF';
+    // Cyclic default line is dashed; user's explicit style= wins
+    let dashAttr;
+    if (tr.style === 'dashed') dashAttr = ' stroke-dasharray="6 3"';
+    else if (tr.style === 'solid') dashAttr = '';  // explicit: beats cyclic fallthrough below
+    else if (tr.cyclic) dashAttr = ` stroke-dasharray="${CYCLIC_DASH}"`;
+    else dashAttr = '';
+    // Cyclic uses a dedicated amber marker unless user provided a custom color
+    const _amid = (tr.cyclic && !tr.color) ? 'arr-cyclic' : ('ah_' + sc.replace(/[^a-zA-Z0-9]/g, ''));
     if (crossings.length === 0) {
       // Simple polyline
       const pts = route.map(p => `${p.x},${p.y}`).join(' ');
@@ -2139,7 +2878,7 @@ function renderSVG(parsed) {
 
     // Labels — positioned at each route's own midpoint (routes are separated by port distribution)
     const isChoiceElse = !tr.event && !tr.guard && parsed.pseudoMap[tr.from] && parsed.pseudoMap[tr.from].type === 'choice';
-    const hasLabel = tr.event || tr.guard || tr.action || isChoiceElse;
+    const hasLabel = tr.event || tr.guard || tr.action || isChoiceElse || tr.cyclic;
     if (hasLabel) {
       const mid = routeMidpoint(route);
       // Determine if the segment at midpoint is horizontal or vertical
@@ -2157,6 +2896,10 @@ function renderSVG(parsed) {
       // For horizontal segments: label above/below the line
       // For vertical segments: label to the left/right of the line
       const labelLines = [];
+      // Cyclic marker prefix — always shown for @cyclic transitions, cannot be opted out
+      if (tr.cyclic) {
+        labelLines.push({ text: CYCLIC_GLYPH, color: CYCLIC_COLOR, size: 11 });
+      }
       if (tr.event) labelLines.push({ text: tr.event, color: '#FFCB6B', size: 10 });
       const guardAction = [];
       if (tr.guard) {
@@ -2278,6 +3021,175 @@ function renderSVG(parsed) {
 }
 
 // ═══════════════════════════════════════════════
+// Multiline Autocomplete Helper
+// ═══════════════════════════════════════════════
+// Attach state-name autocomplete and Tab-indent behavior to a textarea.
+// Used by pp-table-action (action cell editor) and will be reused by
+// pp-do (Task 9: do-activity editor).
+//
+// opts:
+//   stateCandidates:   () => string[]   function returning current state IDs
+//                                       for "-> " state-name completion
+//   keywordCandidates: string[]         optional keyword completions
+//                                       (e.g. `if []`, `else`, `-> `).
+//                                       When omitted/empty, keyword autocomplete
+//                                       is disabled but Tab-indent still works.
+function attachMultilineAutocomplete(ta, opts) {
+  const getStates = (opts && opts.stateCandidates) || (function() { return []; });
+  const keywords = (opts && opts.keywordCandidates) || [];
+  let acList = null, acItems = [], acIdx = -1, acPrefix = '', acStart = 0;
+
+  function getAcContext() {
+    const pos = ta.selectionStart;
+    const textBefore = ta.value.substring(0, pos);
+    const lineStart = textBefore.lastIndexOf('\n') + 1;
+    const line = textBefore.substring(lineStart);
+    // Check for "-> prefix" (state name completion)
+    const arrowMatch = line.match(/->\s*(\S*)$/);
+    if (arrowMatch) return { type: 'state', prefix: arrowMatch[1], start: pos - arrowMatch[1].length };
+    // Check for keyword at line start (after optional indent)
+    const kwMatch = line.match(/^(\s*)(\S*)$/);
+    if (kwMatch && kwMatch[2].length > 0) return { type: 'keyword', prefix: kwMatch[2], start: pos - kwMatch[2].length };
+    return null;
+  }
+
+  function buildCandidates(type, prefix) {
+    if (type === 'state') {
+      return getStates();
+    }
+    if (type === 'keyword') {
+      return keywords;
+    }
+    return [];
+  }
+
+  function getCaretCoords() {
+    // Mirror element technique: copy textarea content into a hidden div,
+    // place a marker span at cursor position, measure its offset
+    const mirror = document.createElement('div');
+    const cs = getComputedStyle(ta);
+    ['fontFamily','fontSize','fontWeight','lineHeight','letterSpacing','wordSpacing',
+     'textIndent','whiteSpace','wordWrap','overflowWrap','padding','borderWidth','boxSizing'
+    ].forEach(p => mirror.style[p] = cs[p]);
+    mirror.style.position = 'absolute';
+    mirror.style.left = '-9999px';
+    mirror.style.top = '0';
+    mirror.style.width = cs.width;
+    mirror.style.overflow = 'hidden';
+    const pos = ta.selectionStart;
+    const textBefore = ta.value.substring(0, pos);
+    const textAfter = ta.value.substring(pos);
+    mirror.textContent = textBefore;
+    const marker = document.createElement('span');
+    marker.textContent = textAfter || '.';
+    mirror.appendChild(marker);
+    document.body.appendChild(mirror);
+    const markerRect = marker.getBoundingClientRect();
+    const mirrorRect = mirror.getBoundingClientRect();
+    const x = markerRect.left - mirrorRect.left;
+    const y = markerRect.top - mirrorRect.top - ta.scrollTop;
+    document.body.removeChild(mirror);
+    return { x: x, y: y };
+  }
+
+  function showAc(candidates) {
+    hideAc();
+    if (candidates.length === 0) return;
+    acList = document.createElement('div');
+    acList.className = 'ac-list';
+    acList.style.position = 'absolute';
+    // Position at caret
+    const caret = getCaretCoords();
+    const taRect = ta.getBoundingClientRect();
+    const panelRect = ta.parentNode.getBoundingClientRect();
+    acList.style.left = (taRect.left - panelRect.left + caret.x) + 'px';
+    acList.style.top = (taRect.top - panelRect.top + caret.y + parseInt(getComputedStyle(ta).lineHeight) || 18) + 'px';
+    acList.style.width = 'auto';
+    acList.style.minWidth = '120px';
+    acItems = candidates.slice(0, 5);
+    acIdx = 0;
+    for (let i = 0; i < acItems.length; i++) {
+      const div = document.createElement('div');
+      div.className = 'ac-item' + (i === 0 ? ' active' : '');
+      div.textContent = acItems[i];
+      div.addEventListener('mousedown', function(ev) { ev.preventDefault(); acceptAc(i); });
+      acList.appendChild(div);
+    }
+    ta.parentNode.style.position = 'relative';
+    ta.parentNode.appendChild(acList);
+  }
+
+  function hideAc() {
+    if (acList && acList.parentNode) acList.parentNode.removeChild(acList);
+    acList = null; acItems = []; acIdx = -1;
+  }
+
+  function acceptAc(idx) {
+    const val = acItems[idx];
+    const before = ta.value.substring(0, acStart);
+    const after = ta.value.substring(ta.selectionStart);
+    ta.value = before + val + after;
+    // Place cursor inside [] if keyword has brackets
+    const bracketPos = val.indexOf('[]');
+    if (bracketPos >= 0) {
+      ta.selectionStart = ta.selectionEnd = acStart + bracketPos + 1;
+    } else {
+      ta.selectionStart = ta.selectionEnd = acStart + val.length;
+    }
+    hideAc();
+  }
+
+  function updateAc() {
+    const ctx = getAcContext();
+    if (!ctx || ctx.prefix.length === 0) { hideAc(); return; }
+    acPrefix = ctx.prefix.toLowerCase();
+    acStart = ctx.start;
+    const all = buildCandidates(ctx.type, ctx.prefix);
+    const filtered = all.filter(c => c.toLowerCase().startsWith(acPrefix));
+    if (filtered.length > 0) showAc(filtered);
+    else hideAc();
+  }
+
+  ta.addEventListener('input', updateAc);
+
+  ta.addEventListener('keydown', function(e) {
+    if (acList) {
+      if (e.key === 'Tab' || e.key === 'Enter') {
+        e.preventDefault();
+        if (acIdx >= 0) acceptAc(acIdx);
+        return;
+      }
+      if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        acIdx = Math.min(acIdx + 1, acItems.length - 1);
+        acList.querySelectorAll('.ac-item').forEach((el, i) => el.classList.toggle('active', i === acIdx));
+        return;
+      }
+      if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        acIdx = Math.max(acIdx - 1, 0);
+        acList.querySelectorAll('.ac-item').forEach((el, i) => el.classList.toggle('active', i === acIdx));
+        return;
+      }
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        hideAc();
+        return;
+      }
+    } else {
+      // Tab inserts 2 spaces when no autocomplete showing
+      if (e.key === 'Tab') {
+        e.preventDefault();
+        const start = this.selectionStart;
+        this.value = this.value.substring(0, start) + '  ' + this.value.substring(this.selectionEnd);
+        this.selectionStart = this.selectionEnd = start + 2;
+        return;
+      }
+    }
+  });
+}
+
+// ═══════════════════════════════════════════════
 // Table Renderer
 // ═══════════════════════════════════════════════
 function renderTable(parsed) {
@@ -2305,16 +3217,16 @@ function renderTable(parsed) {
     if (fromEl && fromEl.type === 'initial') {
       // Resolve the target
       const tgt = resolveStateRef(t.to, parsed);
-      if (tgt) initialTargets.add(tgt.id);
+      if (tgt) initialTargets.add(tgt.path || tgt.id);
     }
   }
 
   // Depth-first walk: composite states also get a self-column at child depth
   function walkState(st, depth) {
     if (st.children.length === 0) {
-      leafColumns.push({ id: st.id, state: st, depth: depth, isInitial: initialTargets.has(st.id) });
+      leafColumns.push({ id: st.path || st.id, state: st, depth: depth, isInitial: initialTargets.has(st.path || st.id) });
     } else {
-      leafColumns.push({ id: st.id, state: st, depth: depth + 1, isInitial: false, isSelf: true });
+      leafColumns.push({ id: st.path || st.id, state: st, depth: depth + 1, isInitial: false, isSelf: true });
       for (const childId of st.children) {
         const child = parsed.stateMap[childId];
         if (child) walkState(child, depth + 1);
@@ -2352,7 +3264,7 @@ function renderTable(parsed) {
     if (lc.isSelf) chain.push(lc.state); // self column includes itself as ancestor
     let cur = lc.state;
     while (cur.parent) {
-      const p = parsed.stateMap[cur.parent];
+      const p = parsed.stateMap[cur.parentPath || cur.parent];
       if (p) { chain.unshift(p); cur = p; }
       else break;
     }
@@ -2471,10 +3383,13 @@ function renderTable(parsed) {
     for (const lc of leafColumns) {
       const matching = transitions.filter(function(t) {
         const fromEl = resolveStateRef(t.from, parsed);
-        return fromEl && fromEl.id === lc.id;
+        return fromEl && (fromEl.path === lc.id || fromEl.id === lc.id);
       });
       const val = matching.length > 0 && matching[0].guard ? matching[0].guard : '-';
-      bodyHtml += `<td class="table-editable" data-field="guard" data-state="${lc.id}" data-event="${esc(evName)}" style="cursor:pointer;color:#C3E88D">${esc(val).replace(/\\n/g, '<br>')}</td>`;
+      const isCyclic = matching.length > 0 && matching[0].cyclic === true;
+      const cyclicPrefix = isCyclic ? (CYCLIC_GLYPH + ' ') : '';
+      const cellColor = isCyclic ? CYCLIC_COLOR : '#C3E88D';
+      bodyHtml += `<td class="table-editable" data-field="guard" data-state="${lc.id}" data-event="${esc(evName)}" style="cursor:pointer;color:${cellColor}">${cyclicPrefix}${esc(val).replace(/\\n/g, '<br>')}</td>`;
     }
     bodyHtml += '</tr>';
 
@@ -2483,14 +3398,17 @@ function renderTable(parsed) {
     for (const lc of leafColumns) {
       const matching = transitions.filter(function(t) {
         const fromEl = resolveStateRef(t.from, parsed);
-        return fromEl && fromEl.id === lc.id;
+        return fromEl && (fromEl.path === lc.id || fromEl.id === lc.id);
       });
       let val = matching.length > 0 && matching[0].action ? matching[0].action : '-';
       if (matching.length > 0) {
         const ifElse = actionToIfElse(matching[0].to, parsed);
         if (ifElse) val = ifElse;
       }
-      bodyHtml += `<td class="table-editable" data-field="action" data-state="${lc.id}" data-event="${esc(evName)}" style="cursor:pointer;color:#C3E88D;white-space:pre-wrap">${esc(val).replace(/\\n/g, '\n')}</td>`;
+      const isCyclic = matching.length > 0 && matching[0].cyclic === true;
+      const cyclicPrefix = isCyclic ? (CYCLIC_GLYPH + ' ') : '';
+      const cellColor = isCyclic ? CYCLIC_COLOR : '#C3E88D';
+      bodyHtml += `<td class="table-editable" data-field="action" data-state="${lc.id}" data-event="${esc(evName)}" style="cursor:pointer;color:${cellColor};white-space:pre-wrap">${cyclicPrefix}${esc(val).replace(/\\n/g, '\n')}</td>`;
     }
     bodyHtml += '</tr>';
 
@@ -2499,7 +3417,7 @@ function renderTable(parsed) {
     for (const lc of leafColumns) {
       const matching = transitions.filter(function(t) {
         const fromEl = resolveStateRef(t.from, parsed);
-        return fromEl && fromEl.id === lc.id;
+        return fromEl && (fromEl.path === lc.id || fromEl.id === lc.id);
       });
       let val = '-';
       if (matching.length > 0) {
@@ -2522,7 +3440,10 @@ function renderTable(parsed) {
           }
         }
       }
-      bodyHtml += `<td class="table-editable" data-field="target" data-state="${lc.id}" data-event="${esc(evName)}" style="cursor:pointer">${esc(val)}</td>`;
+      const isCyclic = matching.length > 0 && matching[0].cyclic === true;
+      const cyclicPrefix = isCyclic ? (CYCLIC_GLYPH + ' ') : '';
+      const cyclicStyle = isCyclic ? `;color:${CYCLIC_COLOR}` : '';
+      bodyHtml += `<td class="table-editable" data-field="target" data-state="${lc.id}" data-event="${esc(evName)}" style="cursor:pointer${cyclicStyle}">${cyclicPrefix}${esc(val)}</td>`;
     }
     bodyHtml += '</tr>';
   }
@@ -2562,6 +3483,8 @@ function renderTable(parsed) {
       const isStateField = (field === 'entry' || field === 'do' || field === 'exit');
       const isAction = isStateField || field === 'action';
       const st = parsed.stateMap[stateId];
+      const stBareId = st ? st.id : stateId;
+      const stLine = st ? st.line : null;
       const stLabel = st ? st.label : stateId;
 
       let html = `<div class="prop-section"><div class="prop-label">${esc(stLabel)}</div>`;
@@ -2578,8 +3501,13 @@ function renderTable(parsed) {
           const newVal = document.getElementById('pp-table-edit').value.replace(/\n/g, '\\n').trim();
           pushHistory();
           let dsl = getDsl();
-          if (newVal) { dsl = updateProp('state', stateId, field, newVal, dsl); }
-          else { dsl = dsl.replace(new RegExp(`(^\\s*state\\s+${stateId}\\s+.*)\\b${field}=\\S+`, 'm'), '$1'); }
+          if (newVal) { dsl = updateProp('state', stBareId, field, newVal, dsl, stLine); }
+          else if (stLine != null) {
+            const dslLines = dsl.split('\n');
+            const li = stLine - 1;
+            if (li >= 0 && li < dslLines.length) dslLines[li] = dslLines[li].replace(new RegExp(`\\b${field}=\\S+`), '');
+            dsl = dslLines.join('\n');
+          } else { dsl = dsl.replace(new RegExp(`(^\\s*state\\s+${stBareId}\\s+.*)\\b${field}=\\S+`, 'm'), '$1'); }
           setDsl(dsl);
           refresh();
         });
@@ -2589,7 +3517,7 @@ function renderTable(parsed) {
       // Transition fields — unified target/guard/action form
       const mt = parsed.transitions.filter(function(t) {
         const fromEl = resolveStateRef(t.from, parsed);
-        return fromEl && fromEl.id === stateId && (t.event || '(none)') === evName;
+        return fromEl && (fromEl.path === stateId || fromEl.id === stateId) && (t.event || '(none)') === evName;
       });
       const existing = mt.length > 0 ? mt[0] : null;
       const curGuard = existing ? existing.guard || '' : '';
@@ -2621,6 +3549,11 @@ function renderTable(parsed) {
       if (!isChoiceMode) html += `<button class="tb" id="pp-branch-btn" style="font-size:9px;padding:2px 6px;color:#C3E88D;border-color:#C3E88D">+ 分岐</button>`;
       html += `</div>`;
       html += `<textarea class="prop-input" id="pp-table-action" style="height:${isChoiceMode ? 100 : 60}px;resize:vertical;font-size:11px;line-height:1.4;text-align:left;font-family:Consolas,monospace" placeholder="アクション">${esc(curAction).replace(/\\n/g, '\n')}</textarea>`;
+      const curCyclic = existing && existing.cyclic === true;
+      html += `<label class="prop-row" style="display:flex;align-items:center;gap:6px;font-size:11px;color:#94a3b8;margin-top:6px;cursor:pointer">`;
+      html += `<input type="checkbox" id="pp-table-cyclic"${curCyclic ? ' checked' : ''} style="cursor:pointer">`;
+      html += `<span>${CYCLIC_GLYPH} @cyclic (周期評価)</span>`;
+      html += `</label>`;
       html += `<button class="tb tb-accent" id="pp-table-apply" style="width:100%;margin-top:6px">適用</button>`;
       if (existing) html += `<button class="tb" id="pp-table-delete" style="width:100%;margin-top:4px;border-color:#EF4444;color:#FCA5A5">遷移を削除</button>`;
       html += `</div>`;
@@ -2642,166 +3575,23 @@ function renderTable(parsed) {
         });
       }
 
-      // Autocomplete for state names after "-> "
+      // Autocomplete for state names after "-> " and keyword completion
+      // (extracted into attachMultilineAutocomplete helper; Task 9 will reuse
+      //  it for the pp-do textarea, passing only stateCandidates.)
       const actionTa = document.getElementById('pp-table-action');
-      let acList = null, acItems = [], acIdx = -1, acPrefix = '', acStart = 0;
-
-      function getAcContext() {
-        const pos = actionTa.selectionStart;
-        const textBefore = actionTa.value.substring(0, pos);
-        const lineStart = textBefore.lastIndexOf('\n') + 1;
-        const line = textBefore.substring(lineStart);
-        // Check for "-> prefix" (state name completion)
-        const arrowMatch = line.match(/->\s*(\S*)$/);
-        if (arrowMatch) return { type: 'state', prefix: arrowMatch[1], start: pos - arrowMatch[1].length };
-        // Check for keyword at line start (after optional indent)
-        const kwMatch = line.match(/^(\s*)(\S*)$/);
-        if (kwMatch && kwMatch[2].length > 0) return { type: 'keyword', prefix: kwMatch[2], start: pos - kwMatch[2].length };
-        return null;
-      }
-
       const AC_KEYWORDS = ['if []', 'elif []', 'else if []', 'else', '-> '];
-
-      function buildCandidates(type, prefix) {
-        if (type === 'state') {
-          if (!parsed) return [];
-          return parsed.states.map(s => stateDotPath(s.id));
-        }
-        if (type === 'keyword') {
-          return AC_KEYWORDS;
-        }
-        return [];
-      }
-
-      function getCaretCoords() {
-        // Mirror element technique: copy textarea content into a hidden div,
-        // place a marker span at cursor position, measure its offset
-        const mirror = document.createElement('div');
-        const cs = getComputedStyle(actionTa);
-        ['fontFamily','fontSize','fontWeight','lineHeight','letterSpacing','wordSpacing',
-         'textIndent','whiteSpace','wordWrap','overflowWrap','padding','borderWidth','boxSizing'
-        ].forEach(p => mirror.style[p] = cs[p]);
-        mirror.style.position = 'absolute';
-        mirror.style.left = '-9999px';
-        mirror.style.top = '0';
-        mirror.style.width = cs.width;
-        mirror.style.overflow = 'hidden';
-        const pos = actionTa.selectionStart;
-        const textBefore = actionTa.value.substring(0, pos);
-        const textAfter = actionTa.value.substring(pos);
-        mirror.textContent = textBefore;
-        const marker = document.createElement('span');
-        marker.textContent = textAfter || '.';
-        mirror.appendChild(marker);
-        document.body.appendChild(mirror);
-        const markerRect = marker.getBoundingClientRect();
-        const mirrorRect = mirror.getBoundingClientRect();
-        const x = markerRect.left - mirrorRect.left;
-        const y = markerRect.top - mirrorRect.top - actionTa.scrollTop;
-        document.body.removeChild(mirror);
-        return { x: x, y: y };
-      }
-
-      function showAc(candidates) {
-        hideAc();
-        if (candidates.length === 0) return;
-        acList = document.createElement('div');
-        acList.className = 'ac-list';
-        acList.style.position = 'absolute';
-        // Position at caret
-        const caret = getCaretCoords();
-        const taRect = actionTa.getBoundingClientRect();
-        const panelRect = actionTa.parentNode.getBoundingClientRect();
-        acList.style.left = (taRect.left - panelRect.left + caret.x) + 'px';
-        acList.style.top = (taRect.top - panelRect.top + caret.y + parseInt(getComputedStyle(actionTa).lineHeight) || 18) + 'px';
-        acList.style.width = 'auto';
-        acList.style.minWidth = '120px';
-        acItems = candidates.slice(0, 5);
-        acIdx = 0;
-        for (let i = 0; i < acItems.length; i++) {
-          const div = document.createElement('div');
-          div.className = 'ac-item' + (i === 0 ? ' active' : '');
-          div.textContent = acItems[i];
-          div.addEventListener('mousedown', function(ev) { ev.preventDefault(); acceptAc(i); });
-          acList.appendChild(div);
-        }
-        actionTa.parentNode.style.position = 'relative';
-        actionTa.parentNode.appendChild(acList);
-      }
-
-      function hideAc() {
-        if (acList && acList.parentNode) acList.parentNode.removeChild(acList);
-        acList = null; acItems = []; acIdx = -1;
-      }
-
-      function acceptAc(idx) {
-        const val = acItems[idx];
-        const before = actionTa.value.substring(0, acStart);
-        const after = actionTa.value.substring(actionTa.selectionStart);
-        actionTa.value = before + val + after;
-        // Place cursor inside [] if keyword has brackets
-        const bracketPos = val.indexOf('[]');
-        if (bracketPos >= 0) {
-          actionTa.selectionStart = actionTa.selectionEnd = acStart + bracketPos + 1;
-        } else {
-          actionTa.selectionStart = actionTa.selectionEnd = acStart + val.length;
-        }
-        hideAc();
-      }
-
-      function updateAc() {
-        const ctx = getAcContext();
-        if (!ctx || ctx.prefix.length === 0) { hideAc(); return; }
-        acPrefix = ctx.prefix.toLowerCase();
-        acStart = ctx.start;
-        const all = buildCandidates(ctx.type, ctx.prefix);
-        const filtered = all.filter(c => c.toLowerCase().startsWith(acPrefix));
-        if (filtered.length > 0) showAc(filtered);
-        else hideAc();
-      }
-
-      actionTa.addEventListener('input', updateAc);
-
-      actionTa.addEventListener('keydown', function(e) {
-        if (acList) {
-          if (e.key === 'Tab' || e.key === 'Enter') {
-            e.preventDefault();
-            if (acIdx >= 0) acceptAc(acIdx);
-            return;
-          }
-          if (e.key === 'ArrowDown') {
-            e.preventDefault();
-            acIdx = Math.min(acIdx + 1, acItems.length - 1);
-            acList.querySelectorAll('.ac-item').forEach((el, i) => el.classList.toggle('active', i === acIdx));
-            return;
-          }
-          if (e.key === 'ArrowUp') {
-            e.preventDefault();
-            acIdx = Math.max(acIdx - 1, 0);
-            acList.querySelectorAll('.ac-item').forEach((el, i) => el.classList.toggle('active', i === acIdx));
-            return;
-          }
-          if (e.key === 'Escape') {
-            e.preventDefault();
-            hideAc();
-            return;
-          }
-        } else {
-          // Tab inserts 2 spaces when no autocomplete showing
-          if (e.key === 'Tab') {
-            e.preventDefault();
-            const start = this.selectionStart;
-            this.value = this.value.substring(0, start) + '  ' + this.value.substring(this.selectionEnd);
-            this.selectionStart = this.selectionEnd = start + 2;
-            return;
-          }
-        }
+      attachMultilineAutocomplete(actionTa, {
+        stateCandidates: function() {
+          return parsed ? parsed.states.map(s => s.path || s.id) : [];
+        },
+        keywordCandidates: AC_KEYWORDS
       });
 
       document.getElementById('pp-table-apply').addEventListener('click', function() {
         const target = document.getElementById('pp-table-target').value;
         const guard = document.getElementById('pp-table-guard').value.trim();
         const actionRaw = document.getElementById('pp-table-action').value;
+        const cyclicVal = document.getElementById('pp-table-cyclic').checked === true;
         const ev = evName === '(none)' ? null : evName;
         pushHistory();
         let dsl = getDsl();
@@ -2819,9 +3609,9 @@ function renderTable(parsed) {
           else { targetId = stateDotPath(target); }
           if (existing) {
             dsl = replaceTransition(existing.from, existing.to, existing.event, existing.guard,
-              stateDotPath(stateId), targetId, ev, guard || null, action || null, kind, dsl);
+              stateDotPath(stateId), targetId, ev, guard || null, action || null, kind, dsl, cyclicVal);
           } else {
-            dsl = addTransition(stateDotPath(stateId), targetId, ev, guard || null, action || null, kind, dsl);
+            dsl = addTransition(stateDotPath(stateId), targetId, ev, guard || null, action || null, kind, dsl, cyclicVal);
           }
         }
 
@@ -2902,7 +3692,7 @@ function renderProps() {
       html += `</div>`;
       html += `<div class="prop-section"><div class="prop-label">Actions</div>`;
       html += `<div class="prop-row"><input class="prop-input" id="pp-entry" value="${esc(st.entry || '')}" placeholder="entry"></div>`;
-      html += `<div class="prop-row"><input class="prop-input" id="pp-do" value="${esc(st.do || '')}" placeholder="do"></div>`;
+      html += `<div class="prop-row"><textarea class="prop-input" id="pp-do" placeholder="do" style="min-height:40px;resize:vertical;font-family:Consolas,monospace;font-size:11px;line-height:1.4;white-space:pre">${esc((st.do || '').replace(/\\n/g, '\n'))}</textarea></div>`;
       html += `<div class="prop-row"><input class="prop-input" id="pp-exit" value="${esc(st.exit || '')}" placeholder="exit"></div>`;
       html += `</div>`;
       // Color palette
@@ -3159,11 +3949,15 @@ function renderProps() {
   function getElTypeAndId() {
     if (selArr.length !== 1) return null;
     const id = selArr[0];
-    if (parsed.stateMap[id]) return { type: 'state', id };
-    if (parsed.pseudoMap[id]) return { type: parsed.pseudoMap[id].type, id };
-    if (parsed.groupMap[id]) return { type: 'group', id };
-    if (parsed.noteMap[id]) return { type: 'note', id };
-    return null;
+    const el = parsed.stateMap[id] || parsed.pseudoMap[id] || parsed.groupMap[id] || parsed.noteMap[id];
+    if (!el) return null;
+    let type;
+    if (parsed.stateMap[id]) type = 'state';
+    else if (parsed.pseudoMap[id]) type = parsed.pseudoMap[id].type;
+    else if (parsed.groupMap[id]) type = 'group';
+    else if (parsed.noteMap[id]) type = 'note';
+    else return null;
+    return { type, id: el.id, line: el.line };
   }
 
   // Label change
@@ -3172,7 +3966,7 @@ function renderProps() {
     if (!info) return;
     pushHistory();
     let dsl = getDsl();
-    dsl = updateLabel(info.type, info.id, this.value, dsl);
+    dsl = updateLabel(info.type, info.id, this.value, dsl, info.line);
     setDsl(dsl);
     refreshView();
   });
@@ -3184,7 +3978,7 @@ function renderProps() {
     if (!info) return;
     pushHistory();
     let dsl = getDsl();
-    dsl = updateLabel(info.type, info.id, this.value.replace(/\n/g, '\\n'), dsl);
+    dsl = updateLabel(info.type, info.id, this.value.replace(/\n/g, '\\n'), dsl, info.line);
     setDsl(dsl);
     refreshView();
   });
@@ -3199,7 +3993,7 @@ function renderProps() {
     let dsl = getDsl();
     const nx = parseFloat(document.getElementById('pp-x').value) || 0;
     const ny = parseFloat(document.getElementById('pp-y').value) || 0;
-    dsl = updatePos(info.type, info.id, nx, ny, dsl);
+    dsl = updatePos(info.type, info.id, nx, ny, dsl, info.line);
     setDsl(dsl);
     refreshView();
   }
@@ -3216,7 +4010,7 @@ function renderProps() {
     let dsl = getDsl();
     const nw = parseFloat(document.getElementById('pp-w').value) || 1;
     const nh = parseFloat(document.getElementById('pp-h').value) || 1;
-    dsl = updateSize(info.type, info.id, nw, nh, dsl);
+    dsl = updateSize(info.type, info.id, nw, nh, dsl, info.line);
     setDsl(dsl);
     refreshView();
   }
@@ -3224,24 +4018,56 @@ function renderProps() {
   if (pph) pph.addEventListener('change', handleSizeChange);
 
   // Actions (entry, do, exit)
-  ['entry', 'do', 'exit'].forEach(function(field) {
+  // pp-do is a textarea (Task 9) — supports multi-line content with \n escape
+  // for DSL storage. pp-entry and pp-exit remain single-line <input>.
+  function saveActionField(field, rawValue) {
+    const info = getElTypeAndId();
+    if (!info) return;
+    pushHistory();
+    let dsl = getDsl();
+    // For pp-do textarea: escape real newlines to \n 2-char literal before
+    // writing back to the DSL. updateProp/formatPropValue then decides whether
+    // to quote the value.
+    const val = (field === 'do')
+      ? rawValue.replace(/\n/g, '\\n').trim()
+      : rawValue.trim();
+    if (val) {
+      dsl = updateProp(info.type, info.id, field, val, dsl, info.line);
+    } else {
+      // Remove the property. Match either a quoted value (with \" escapes) or
+      // a bare non-whitespace token, so we can also strip previously-quoted
+      // values (e.g. do="multi line").
+      const re = new RegExp(
+        `(^\\s*${info.type}\\s+${info.id}\\s+.*)\\b${field}=(?:"(?:[^"\\\\]|\\\\.)*"|\\S+)`,
+        'm'
+      );
+      dsl = dsl.replace(re, '$1');
+    }
+    setDsl(dsl);
+    refreshView();
+  }
+  ['entry', 'exit'].forEach(function(field) {
     propChange('pp-' + field, function() {
-      const info = getElTypeAndId();
-      if (!info) return;
-      pushHistory();
-      let dsl = getDsl();
-      const val = this.value.trim();
-      if (val) {
-        dsl = updateProp(info.type, info.id, field, val, dsl);
-      } else {
-        // Remove the property by replacing with empty — use regex to strip
-        const re = new RegExp(`(^\\s*${info.type}\\s+${info.id}\\s+.*)\\b${field}=\\S+`, 'm');
-        dsl = dsl.replace(re, '$1');
-      }
-      setDsl(dsl);
-      refreshView();
+      saveActionField(field, this.value);
     });
   });
+  // pp-do: listen on 'change' (fires on blur/commit) to save back, consistent
+  // with pp-entry / pp-exit. attachMultilineAutocomplete also provides live
+  // autocomplete wiring for state names after the `-> ` prefix.
+  const doTa = document.getElementById('pp-do');
+  if (doTa) {
+    doTa.addEventListener('change', function() {
+      saveActionField('do', this.value);
+    });
+    if (doTa.tagName === 'TEXTAREA') {
+      attachMultilineAutocomplete(doTa, {
+        stateCandidates: function() {
+          return parsed ? parsed.states.map(s => s.path || s.id) : [];
+        }
+        // No keywordCandidates — pp-do is for state-name completion only.
+      });
+    }
+  }
 
   // Color dots
   panel.querySelectorAll('.color-dot[data-prop]').forEach(function(dot) {
@@ -3250,7 +4076,7 @@ function renderProps() {
       if (!info) return;
       pushHistory();
       let dsl = getDsl();
-      dsl = updateProp(info.type, info.id, this.dataset.prop, this.dataset.val, dsl);
+      dsl = updateProp(info.type, info.id, this.dataset.prop, this.dataset.val, dsl, info.line);
       setDsl(dsl);
       refresh();
     });
@@ -3264,7 +4090,7 @@ function renderProps() {
     let dsl = getDsl();
     const val = this.value.trim();
     if (val) {
-      dsl = updateProp(info.type, info.id, 'border', val, dsl);
+      dsl = updateProp(info.type, info.id, 'border', val, dsl, info.line);
     } else {
       const re = new RegExp(`(^\\s*${info.type}\\s+${info.id}\\s+.*)\\bborder=\\S+`, 'm');
       dsl = dsl.replace(re, '$1');
@@ -3281,7 +4107,7 @@ function renderProps() {
     let dsl = getDsl();
     const val = this.value.trim();
     if (val) {
-      dsl = updateProp(info.type, info.id, 'text', val, dsl);
+      dsl = updateProp(info.type, info.id, 'text', val, dsl, info.line);
     } else {
       const re = new RegExp(`(^\\s*${info.type}\\s+${info.id}\\s+.*)\\btext=\\S+`, 'm');
       dsl = dsl.replace(re, '$1');
@@ -3298,7 +4124,7 @@ function renderProps() {
     let dsl = getDsl();
     const val = this.value;
     if (val) {
-      dsl = updateProp(info.type, info.id, 'style', val, dsl);
+      dsl = updateProp(info.type, info.id, 'style', val, dsl, info.line);
     } else {
       const re = new RegExp(`(^\\s*${info.type}\\s+${info.id}\\s+.*)\\bstyle=\\S+`, 'm');
       dsl = dsl.replace(re, '$1');
@@ -3315,7 +4141,7 @@ function renderProps() {
     let dsl = getDsl();
     const val = this.value.trim();
     if (val) {
-      dsl = updateProp(info.type, info.id, 'round', val, dsl);
+      dsl = updateProp(info.type, info.id, 'round', val, dsl, info.line);
     } else {
       const re = new RegExp(`(^\\s*${info.type}\\s+${info.id}\\s+.*)\\bround=\\S+`, 'm');
       dsl = dsl.replace(re, '$1');
@@ -3400,6 +4226,17 @@ function getExportSVGString() {
   const clone = svgEl.cloneNode(true);
   const banner = clone.querySelector('#annotation-banner');
   if (banner) banner.remove();
+  // OBS-08: Strip selection resize handles. renderSVG() emits 2 rects per
+  // handle per selected element (8 handles = 16 rects): one hit rect with
+  // `data-resize="<edge>"` and one visible decoration rect with
+  // `fill="#6366F1" stroke="#fff"` (indigo for states/pseudo-states) or
+  // `fill="#F59E0B" stroke="#fff"` (amber for notes). Both are strictly
+  // editor UI chrome and must not be baked into exported SVG/PNG artifacts.
+  // Note: the Task 2 `<marker id="arr-cyclic">` (also amber #F59E0B) is a
+  // <marker> with a <path> child, not a rect, and has no `data-resize`
+  // attribute, so neither selector matches it — cyclic arrows survive export.
+  clone.querySelectorAll('[data-resize]').forEach(el => el.remove());
+  clone.querySelectorAll('rect[fill="#6366F1"][stroke="#fff"], rect[fill="#F59E0B"][stroke="#fff"]').forEach(el => el.remove());
   return new XMLSerializer().serializeToString(clone);
 }
 
@@ -3460,41 +4297,190 @@ async function copyPNG() {
 function exportPlantUML(p) {
   const data = p || parsed;
   if (!data) return;
-  const initialIds = new Set(data.pseudoStates.filter(ps => ps.type === 'initial').map(ps => ps.id));
-  const finalIds = new Set(data.pseudoStates.filter(ps => ps.type === 'final').map(ps => ps.id));
+
+  // OBS-11: Emit PlantUML with composite states nested in `{}`, history
+  // pseudo-states declared with `<<history>>`, final pseudo-states declared
+  // with `<<end>>`, and each transition placed in its lowest common ancestor
+  // composite scope (not flattened to root). Fixes the four breakages in
+  // .eval/ux-review-2026-04-05/artifacts/persona2-exported-puml.puml:
+  //   1) `[*] --> cooling` at root (cooling is inside Running)
+  //   2) `h_run` referenced but never declared
+  //   3) `final shutdown` flattened to plain `[*]` (initial/final混在)
+  //   4) `cooling --> heating` emitted outside `state Running { }`
+
+  // ─── Helpers: resolve a transition endpoint ref to its element, and walk
+  //     ancestors to find the scope (parent composite state id) it lives in.
+  //     Scope is `null` for root. Endpoint ref may be a bare id, a dotted
+  //     path, or a pseudo-state id.
+  function resolveRef(ref) {
+    if (data.stateMap[ref]) return data.stateMap[ref];
+    if (data.pseudoMap[ref]) return data.pseudoMap[ref];
+    return resolveStateRef(ref, data);
+  }
+  function ancestorsOf(el) {
+    // Returns [parentId, grandparentId, ..., null] for placement scopes.
+    const chain = [];
+    let cur = el;
+    while (cur) {
+      const pid = cur.parent || null;
+      chain.push(pid);
+      if (!pid) break;
+      cur = data.stateMap[cur.parentPath || pid] || null;
+    }
+    if (chain[chain.length - 1] !== null) chain.push(null);
+    return chain;
+  }
+  function scopeOfEndpoint(ref) {
+    // The scope of a pseudo-state is its own parent (it lives IN that scope).
+    // The scope of a regular state, when used as an endpoint, is also its
+    // parent: `normal --> diagnostic` sits inside `run` because both are
+    // children of `run`.
+    const el = resolveRef(ref);
+    if (!el) return null;
+    return el.parent || null;
+  }
+  function lca(aRef, bRef) {
+    // Lowest Common Ancestor scope for a transition (a, b). We walk from
+    // each endpoint's scope upward and intersect. Result is the id of the
+    // deepest composite that contains both endpoints as descendants, or
+    // `null` for root.
+    const aEl = resolveRef(aRef);
+    const bEl = resolveRef(bRef);
+    if (!aEl || !bEl) return null;
+    const aAnc = ancestorsOf(aEl); // [parent, grand, ..., null]
+    const bAnc = ancestorsOf(bEl);
+    // Candidate scopes for a: aAnc itself. For a *self-transition* we want
+    // the scope to be a's parent (not a's own id), which is aAnc[0].
+    const bSet = new Set(bAnc);
+    for (const s of aAnc) {
+      if (bSet.has(s)) return s;
+    }
+    return null;
+  }
+
+  // ─── Group transitions by their placement scope ───
+  const transByScope = new Map(); // scopeId (or null) -> [tr, ...]
+  for (const tr of data.transitions) {
+    const scope = lca(tr.from, tr.to);
+    if (!transByScope.has(scope)) transByScope.set(scope, []);
+    transByScope.get(scope).push(tr);
+  }
+
+  // ─── Group pseudo-states (history/final/choice) by their parent scope ───
+  // history and final need explicit declarations in PlantUML.
+  // initial collapses to `[*]` and does NOT need a declaration.
+  const pseudosByScope = new Map(); // scopeId -> { history:[], final:[], choice:[] }
+  function pseudoBucket(scope) {
+    if (!pseudosByScope.has(scope)) pseudosByScope.set(scope, { history: [], final: [], choice: [] });
+    return pseudosByScope.get(scope);
+  }
+  for (const ps of data.pseudoStates) {
+    const scope = ps.parent || null;
+    if (ps.type === 'history' || ps.type === 'deephistory') pseudoBucket(scope).history.push(ps);
+    else if (ps.type === 'final') pseudoBucket(scope).final.push(ps);
+    else if (ps.type === 'choice') pseudoBucket(scope).choice.push(ps);
+    // initial/fork/join intentionally skipped — initial becomes [*], and
+    // fork/join are not referenced by the current export format.
+  }
+
+  // ─── initial pseudo-state ids (so transitions `from` a specific initial
+  //     render as `[*] --> X`). final pseudo-state ids are kept by id, not
+  //     collapsed, so they survive as `state <id> <<end>>` targets.
+  const initialIds = new Set(
+    data.pseudoStates.filter(ps => ps.type === 'initial').map(ps => ps.id)
+  );
+
+  function renderLabel(tr) {
+    const parts = [];
+    if (tr.cyclic) parts.push(CYCLIC_GLYPH);
+    if (tr.event) parts.push(tr.event);
+    if (tr.guard) parts.push('[' + tr.guard + ']');
+    if (tr.action) parts.push('/ ' + tr.action);
+    if (parts.length === 0) return '';
+    return ' : ' + parts.join(' ');
+  }
+  function arrowStr(tr) {
+    // Cyclic transitions render with amber dashed arrow to mirror the SVG
+    // styling (Task 2). Non-cyclic stays as the default PlantUML `-->`.
+    return tr.cyclic ? ('-[' + CYCLIC_COLOR + ',dashed]->') : '-->';
+  }
+  function renderEndpoint(ref) {
+    // `from` side of initial becomes `[*]`. final stays as its id (it was
+    // declared as `state <id> <<end>>`). Everything else stays as-is so
+    // PlantUML can match the id to its state/pseudo declaration.
+    if (initialIds.has(ref)) return '[*]';
+    // Normalize dotted path endpoints to bare leaf id. PlantUML composite
+    // nesting keeps ids unique per scope, and the editor DSL often uses
+    // bare ids; using the leaf id produces cleaner output.
+    const el = resolveRef(ref);
+    if (el) return el.id;
+    // Fallback: raw ref (may be a dotted path we couldn't resolve)
+    const parts = ref.split('.');
+    return parts[parts.length - 1];
+  }
+
   const lines = ['@startuml'];
 
+  // ─── Recursive state renderer: emits `state "Label" as id { ... }` and,
+  //     inside the block, emits the state's child states AND the pseudo-
+  //     state declarations AND the transitions whose LCA is this state.
   function renderState(st, indent) {
     const pad = '  '.repeat(indent);
-    if (st.children.length > 0) {
+    const hasChildren = st.children.length > 0;
+    const bucket = pseudosByScope.get(st.id);
+    const innerTrans = transByScope.get(st.id) || [];
+    const hasInterior = hasChildren || !!bucket || innerTrans.length > 0;
+
+    if (hasInterior) {
       lines.push(pad + 'state "' + st.label + '" as ' + st.id + ' {');
+      const innerPad = '  '.repeat(indent + 1);
+      // Pseudo-state declarations first (history/final/choice) so references
+      // below them resolve. initial is implicit via `[*]`.
+      if (bucket) {
+        for (const ps of bucket.history) lines.push(innerPad + 'state ' + ps.id + ' <<history>>');
+        for (const ps of bucket.final)   lines.push(innerPad + 'state ' + ps.id + ' <<end>>');
+        for (const ps of bucket.choice)  lines.push(innerPad + 'state ' + ps.id + ' <<choice>>');
+      }
+      // Child states (recursive).
       for (const childId of st.children) {
         const child = data.stateMap[childId];
         if (child) renderState(child, indent + 1);
+      }
+      // Interior transitions: all transitions whose LCA is this composite.
+      for (const tr of innerTrans) {
+        lines.push(innerPad + renderEndpoint(tr.from) + ' ' + arrowStr(tr) + ' ' + renderEndpoint(tr.to) + renderLabel(tr));
       }
       lines.push(pad + '}');
     } else {
       lines.push(pad + 'state "' + st.label + '" as ' + st.id);
     }
+    // Task 11: emit entry/do/exit as state description lines for BOTH composite
+    // and leaf states. PlantUML treats `\n` within a description as a line break,
+    // so multiline `do` (stored as 2-char literal per Task 7 parser contract)
+    // renders naturally without further escape conversion.
+    if (st.entry) lines.push(pad + st.id + ' : entry / ' + st.entry);
+    if (st.do)    lines.push(pad + st.id + ' : do / ' + st.do);
+    if (st.exit)  lines.push(pad + st.id + ' : exit / ' + st.exit);
   }
 
+  // ─── Root-level declarations ───
+  // Pseudo-states whose parent is null (root scope) are declared first so
+  // subsequent references (in root states or root transitions) can resolve.
+  const rootBucket = pseudosByScope.get(null);
+  if (rootBucket) {
+    for (const ps of rootBucket.history) lines.push('state ' + ps.id + ' <<history>>');
+    for (const ps of rootBucket.final)   lines.push('state ' + ps.id + ' <<end>>');
+    for (const ps of rootBucket.choice)  lines.push('state ' + ps.id + ' <<choice>>');
+  }
+  // Root-level states (recursive).
   for (const st of data.states.filter(s => s.parent === null)) renderState(st, 0);
-  for (const ps of data.pseudoStates.filter(p2 => p2.type === 'choice')) lines.push('state ' + ps.id + ' <<choice>>');
   lines.push('');
-
-  for (const tr of data.transitions) {
-    const from = initialIds.has(tr.from) ? '[*]' : tr.from;
-    const to = finalIds.has(tr.to) ? '[*]' : tr.to;
-    let label = '';
-    if (tr.event || tr.guard || tr.action) {
-      const parts = [];
-      if (tr.event) parts.push(tr.event);
-      if (tr.guard) parts.push('[' + tr.guard + ']');
-      if (tr.action) parts.push('/ ' + tr.action);
-      label = ' : ' + parts.join(' ');
-    }
-    lines.push(from + ' --> ' + to + label);
+  // Root-level transitions (those whose LCA is root).
+  const rootTrans = transByScope.get(null) || [];
+  for (const tr of rootTrans) {
+    lines.push(renderEndpoint(tr.from) + ' ' + arrowStr(tr) + ' ' + renderEndpoint(tr.to) + renderLabel(tr));
   }
+
   lines.push('@enduml');
   const text = lines.join('\n');
 
@@ -3531,7 +4517,7 @@ function buildExcelData(p) {
   data.states.filter(s => s.parent === null).forEach(function(s) { walk(s); });
 
   // Find max depth
-  function getDepth(st) { let d = 0, cur = st; while (cur.parent) { cur = data.stateMap[cur.parent]; d++; } return d; }
+  function getDepth(st) { let d = 0, cur = st; while (cur.parent) { cur = data.stateMap[cur.parentPath || cur.parent]; d++; } return d; }
   let maxDepth = 0;
   leafCols.forEach(function(lc) { const d = getDepth(lc); if (d > maxDepth) maxDepth = d; });
   const headerRows = maxDepth + 1;
@@ -3555,7 +4541,7 @@ function buildExcelData(p) {
       const lc = leafCols[ci];
       const chain = [];
       let cur = lc;
-      while (cur.parent) { const pp = data.stateMap[cur.parent]; if (pp) { chain.unshift(pp); cur = pp; } else break; }
+      while (cur.parent) { const pp = data.stateMap[cur.parentPath || cur.parent]; if (pp) { chain.unshift(pp); cur = pp; } else break; }
       // chain = ancestors, lc = leaf. chain.length = depth
       const depth = chain.length;
       const leafRow = depth; // row where leaf label appears
@@ -3567,7 +4553,7 @@ function buildExcelData(p) {
           const prevLc = leafCols[ci - 1];
           const prevChain = [];
           let pcur = prevLc;
-          while (pcur.parent) { const pp = data.stateMap[pcur.parent]; if (pp) { prevChain.unshift(pp); pcur = pp; } else break; }
+          while (pcur.parent) { const pp = data.stateMap[pcur.parentPath || pcur.parent]; if (pp) { prevChain.unshift(pp); pcur = pp; } else break; }
           if (r < prevChain.length && prevChain[r].id === anc.id) {
             row.push(''); // same group, empty
             sty.push({ bg: CLR.headerBg });
@@ -3626,7 +4612,7 @@ function buildExcelData(p) {
       for (const lc of leafCols) {
         const matching = transitions.filter(function(t) {
           const fromEl = resolveStateRef(t.from, data);
-          return fromEl && fromEl.id === lc.id;
+          return fromEl && (fromEl.path === lc.id || fromEl.id === lc.id);
         });
         let val = '-';
         if (matching.length > 0) {
@@ -3734,14 +4720,24 @@ function updateHighlight() {
 // Refresh Pipeline
 // ═══════════════════════════════════════════════
 function cleanupInternalTransitions() {
-  // Remove @internal transitions that have no action (they serve no purpose)
+  // OBS-19 (Sprint 5): narrow the predicate so we ONLY drop transitions
+  // whose body after ':' is literally empty apart from the '@internal'
+  // marker — i.e. `X -> Y : @internal` with no trigger, no guard, no
+  // action. Anything meaningful in the body (trigger event like
+  // `EvWatchdogKick`, guard `[...]`, or `/ action`) protects the line
+  // so that self-transitions that carry a meaningful trigger (watchdog
+  // tick, heartbeat, poll, carrier detect, ...) are NOT silently
+  // erased on load.
   let dsl = getDsl();
   let changed = false;
   const lines = dsl.split('\n');
   const result = [];
   for (const line of lines) {
     const t = line.trim();
-    if (t.match(/^(\S+)\s*->\s*(\S+)\s*:.*@internal/) && !t.match(/\/\s*\S+/)) {
+    // Matches e.g. `a -> b : @internal`, `a -> a :@internal`,
+    // `a -> b :   @internal   ` — the content between ':' and
+    // '@internal' is empty, and nothing trails '@internal'.
+    if (/^\S+\s*->\s*\S+\s*:\s*@internal\s*$/.test(t)) {
       changed = true;
       continue; // skip this line
     }
@@ -4013,6 +5009,8 @@ function setupInteractions() {
       const rtype = handle.dataset.rtype;
       const el = parsed.stateMap[rid] || parsed.groupMap[rid] || parsed.noteMap[rid];
       if (!el) return;
+      const resizeBareId = el.id;
+      const resizeLine = el.line;
       pushHistory();
       const origX = el.x, origY = el.y, origW = el.w, origH = el.h;
       const sc = getSvgScale();
@@ -4036,8 +5034,8 @@ function setupInteractions() {
         if (newH === 1 && edge.includes('n')) newY = origY + origH - 1;
 
         let dsl = getDsl();
-        dsl = updatePos(rtype, rid, newX, newY, dsl);
-        dsl = updateSize(rtype, rid, newW, newH, dsl);
+        dsl = updatePos(rtype, resizeBareId, newX, newY, dsl, resizeLine);
+        dsl = updateSize(rtype, resizeBareId, newW, newH, dsl, resizeLine);
         setDsl(dsl);
         parsed = parseDSL(getDsl());
         document.getElementById('svg-wrap').innerHTML = renderSVG(parsed);
@@ -4059,6 +5057,10 @@ function setupInteractions() {
       if (e.button !== 0) return;
       e.preventDefault();
       e.stopPropagation();
+      // Remove focus from DSL editor so Delete key works for app
+      if (document.activeElement && document.activeElement.tagName === 'TEXTAREA') {
+        document.activeElement.blur();
+      }
       const id = gEl.dataset.id;
       const type = gEl.dataset.type;
 
@@ -4126,7 +5128,7 @@ function setupInteractions() {
         else if (parsed.groupMap[si.id]) elType = 'group';
         else if (parsed.noteMap[si.id]) elType = 'note';
         else elType = 'state';
-        dragItems.push({ id: si.id, type: elType, origX: el.x, origY: el.y, parent: el.parent || null, w: el.w, h: el.h });
+        dragItems.push({ id: si.id, bareId: el.id, type: elType, origX: el.x, origY: el.y, parent: el.parent || null, parentPath: el.parentPath || null, w: el.w, h: el.h, line: el.line });
       }
       // Groups drag contained states
       for (const si of sel) {
@@ -4135,8 +5137,8 @@ function setupInteractions() {
         for (const st of parsed.states) {
           const cx = st.x + (st.w || 0) / 2, cy = st.y + (st.h || 0) / 2;
           if (cx >= grp.x && cx <= grp.x + grp.w && cy >= grp.y && cy <= grp.y + grp.h) {
-            if (!dragItems.some(it => it.id === st.id)) {
-              dragItems.push({ id: st.id, type: 'state', origX: st.x, origY: st.y, parent: st.parent, w: st.w, h: st.h });
+            if (!dragItems.some(it => it.id === (st.path || st.id))) {
+              dragItems.push({ id: st.path || st.id, bareId: st.id, type: 'state', origX: st.x, origY: st.y, parent: st.parent, parentPath: st.parentPath || null, w: st.w, h: st.h, line: st.line });
             }
           }
         }
@@ -4166,19 +5168,20 @@ function setupInteractions() {
           const elType = item.type === 'state' ? 'state' :
                          item.type === 'group' ? 'group' :
                          item.type === 'note' ? 'note' : item.type;
+          const dslId = item.bareId || item.id;
           if (item.parent) {
-            const parentSt = parsed.stateMap[item.parent];
+            const parentSt = parsed.stateMap[item.parentPath || item.parent];
             if (parentSt) {
               const newX = Math.max(0, Math.min(parentSt.w - (item.w || 1), item.origX + dxGrid));
               const newY = Math.max(0, Math.min(parentSt.h - (item.h || 1), item.origY + dyGrid));
-              dsl = updatePos(elType, item.id, newX, newY, dsl);
+              dsl = updatePos(elType, dslId, newX, newY, dsl, item.line);
             } else {
-              dsl = updatePos(elType, item.id, item.origX + dxGrid, item.origY + dyGrid, dsl);
+              dsl = updatePos(elType, dslId, item.origX + dxGrid, item.origY + dyGrid, dsl, item.line);
             }
           } else {
             const newX = Math.max(0, item.origX + dxGrid);
             const newY = Math.max(0, item.origY + dyGrid);
-            dsl = updatePos(elType, item.id, newX, newY, dsl);
+            dsl = updatePos(elType, dslId, newX, newY, dsl, item.line);
           }
         }
         setDsl(dsl);
@@ -4252,16 +5255,26 @@ function connectSelected() {
 // ═══════════════════════════════════════════════
 // Delete Selected
 // ═══════════════════════════════════════════════
-function removeDSLElement(id, dsl) {
+function removeDSLElement(id, dsl, lineNum) {
+  const bareId = id.includes('.') ? id.split('.').pop() : id;
+  const escBareId = bareId.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   const lines = dsl.split('\n');
   const result = [];
   let skipNesting = 0;
-  for (const line of lines) {
+  let foundDefLine = false;
+  const defRe = new RegExp(`^(state|group|note|initial|final|choice|history|deephistory|fork|join)\\s+${escBareId}\\b`);
+  for (let li = 0; li < lines.length; li++) {
+    const line = lines[li];
     const trimmed = line.trim();
-    // Check if this line defines the element
-    if (trimmed.match(new RegExp(`^(state|group|note|initial|final|choice|history|deephistory|fork|join)\\s+${id}\\b`))) {
+    const isDefLine = defRe.test(trimmed);
+    if (isDefLine && !foundDefLine) {
+      if (lineNum != null && (li + 1) !== lineNum) {
+        result.push(line);
+        continue;
+      }
+      foundDefLine = true;
       if (trimmed.endsWith('{')) skipNesting = 1;
-      continue; // skip this line
+      continue;
     }
     if (skipNesting > 0) {
       if (trimmed === '}' || trimmed.startsWith('}')) {
@@ -4271,12 +5284,22 @@ function removeDSLElement(id, dsl) {
       if (trimmed.endsWith('{')) skipNesting++;
       continue;
     }
-    // Remove transitions referencing this ID (as source or target)
-    if (trimmed.match(new RegExp(`^${id}\\s*->`)) || trimmed.match(new RegExp(`->\\s*${id}(\\s|$)`))) {
-      continue;
+    // OBS-15 fix: remove transitions referencing this ID as source or target.
+    // Callers pass either the full dotted path (e.g. `run.normal.active.cruise`
+    // from a click selection) or the bare ID. Inside composite blocks, the
+    // DSL typically uses the bare ID, so we must test BOTH forms — otherwise
+    // nested-state deletion leaves orphan transitions that then fail the
+    // `Undefined state reference` check.
+    const transId = id.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const refRegexes = [
+      new RegExp(`^${transId}\\s*->`),
+      new RegExp(`->\\s*${transId}(\\s|$|:)`)
+    ];
+    if (bareId !== id) {
+      refRegexes.push(new RegExp(`^${escBareId}\\s*->`));
+      refRegexes.push(new RegExp(`->\\s*${escBareId}(\\s|$|:)`));
     }
-    // Also handle dot-path references like parent.id or id.child
-    if (trimmed.match(new RegExp(`^\\S*\\.${id}\\s*->|^${id}\\.\\S+\\s*->|->\\s*\\S*\\.${id}(\\s|$)|->\\s*${id}\\.\\S+`))) {
+    if (refRegexes.some(re => re.test(trimmed))) {
       continue;
     }
     result.push(line);
@@ -4300,9 +5323,14 @@ function removeDSLElement(id, dsl) {
 function deleteSelected() {
   if (!sel.length) return;
   pushHistory();
+  // Sort by line number descending to avoid line shift issues
+  const items = sel.map(si => {
+    const el = parsed.stateMap[si.id] || parsed.pseudoMap[si.id] || parsed.groupMap[si.id] || parsed.noteMap[si.id];
+    return { id: si.id, line: el ? el.line : null };
+  }).sort((a, b) => (b.line || 0) - (a.line || 0));
   let dsl = getDsl();
-  for (const si of sel) {
-    dsl = removeDSLElement(si.id, dsl);
+  for (const item of items) {
+    dsl = removeDSLElement(item.id, dsl, item.line);
   }
   sel = [];
   setDsl(dsl);
@@ -4539,15 +5567,19 @@ function copySelection() {
   const dsl = getDsl();
   const lines = dsl.split('\n');
   for (const si of sel) {
-    const id = si.id;
+    const el = parsed.stateMap[si.id] || parsed.pseudoMap[si.id] || parsed.groupMap[si.id] || parsed.noteMap[si.id];
+    const startLine = el ? el.line : null;
+    const bareId = el ? el.id : si.id;
     // Find the DSL lines that define this element
     let collecting = false;
     let nestDepth = 0;
     const collected = [];
-    for (const line of lines) {
+    for (let li = 0; li < lines.length; li++) {
+      const line = lines[li];
       const trimmed = line.trim();
       if (!collecting) {
-        if (trimmed.match(new RegExp(`^(state|group|note|initial|final|choice|history|deephistory|fork|join)\\s+${id}\\b`))) {
+        const isDefLine = trimmed.match(new RegExp(`^(state|group|note|initial|final|choice|history|deephistory|fork|join)\\s+${bareId}\\b`));
+        if (isDefLine && (startLine == null || (li + 1) === startLine)) {
           collecting = true;
           collected.push(line);
           if (trimmed.endsWith('{')) nestDepth = 1;
@@ -4573,9 +5605,13 @@ function cutSelection() {
   copySelection();
   pushHistory();
   let dsl = getDsl();
-  sel.forEach(si => {
-    dsl = removeDSLElement(si.id, dsl);
-  });
+  const cutItems = sel.map(si => {
+    const el = parsed.stateMap[si.id] || parsed.pseudoMap[si.id] || parsed.groupMap[si.id] || parsed.noteMap[si.id];
+    return { id: si.id, line: el ? el.line : null };
+  }).sort((a, b) => (b.line || 0) - (a.line || 0));
+  for (const item of cutItems) {
+    dsl = removeDSLElement(item.id, dsl, item.line);
+  }
   sel = [];
   setDsl(dsl);
   refresh();
@@ -4610,76 +5646,489 @@ let addCounter = 1; // StableBlock compatible: single counter
 
 // Auto-Route: optimize transition port assignments to minimize crossings
 function autoRoute() {
-  if (!parsed || parsed.transitions.length < 2) return;
-  // Current implementation uses computePortSide (edge-gap) which is deterministic.
-  // Auto-route tries alternate side assignments and picks the one with fewest crossings.
+  if (!parsed || parsed.transitions.length === 0) return;
   const g = parsed.canvas.grid;
 
-  function countCrossings(routes) {
-    let count = 0;
-    for (let i = 0; i < routes.length; i++) {
-      for (let j = i + 1; j < routes.length; j++) {
-        const ri = routes[i], rj = routes[j];
-        for (let si = 0; si < ri.length - 1; si++) {
-          for (let sj = 0; sj < rj.length - 1; sj++) {
-            if (segmentIntersection(ri[si], ri[si + 1], rj[sj], rj[sj + 1])) count++;
+  // A* grid-based orthogonal router (replaces legacy crossing optimizer).
+  // Build obstacle grid, route each transition via A*, store waypoints.
+  const og = buildObstacleGrid(parsed);
+  const usedCells = new Set();
+
+  // Sort: longest Manhattan distance first (most constrained → route first)
+  const ordered = parsed.transitions.map((tr, ti) => {
+    if (tr.from === tr.to || tr.kind === 'internal') return { ti, dist: -1 };
+    const sb = getBoxShared(tr.from, parsed, g);
+    const tb = getBoxShared(tr.to, parsed, g);
+    if (!sb || !tb) return { ti, dist: -1 };
+    return { ti, dist: Math.abs(sb.x + sb.w/2 - tb.x - tb.w/2) + Math.abs(sb.y + sb.h/2 - tb.y - tb.h/2) };
+  }).sort((a, b) => b.dist - a.dist);
+
+  for (const { ti, dist } of ordered) {
+    const tr = parsed.transitions[ti];
+    if (tr.from === tr.to || tr.kind === 'internal' || dist < 0) continue;
+
+    const srcBox = getBoxShared(tr.from, parsed, g);
+    const tgtBox = getBoxShared(tr.to, parsed, g);
+    if (!srcBox || !tgtBox) continue;
+
+    const wp = astarRoute(og, srcBox, tgtBox, usedCells);
+    if (wp) {
+      tr._autoRouteWaypoints = wp;
+      for (const p of wp) {
+        const gx = Math.floor(p.x / g), gy = Math.floor(p.y / g);
+        if (gx >= 0 && gx < og.cols && gy >= 0 && gy < og.rows)
+          usedCells.add(gy * og.cols + gx);
+      }
+    } else {
+      // A* failed or quality gate rejected — clear stale waypoints so
+      // renderSVG falls back to geometric buildRoute.
+      delete tr._autoRouteWaypoints;
+    }
+    // Clean up legacy fields
+    delete tr._autoRouteFromSide;
+    delete tr._autoRouteToSide;
+  }
+
+  // Re-render (NOT refresh — would drop runtime waypoints via parseDSL)
+  const _svgWrap = document.getElementById('svg-wrap');
+  if (_svgWrap) {
+    _svgWrap.innerHTML = renderSVG(parsed);
+    if (typeof setupInteractions === 'function') setupInteractions();
+  }
+}
+
+// ═══════════════════════════════════════════════
+// smartRoute: 3-Pass Geometric Port-Channel Router
+// ═══════════════════════════════════════════════
+// Uses I/L/Z/U pattern classification with max 2 turns per route.
+// Falls back to A* when geometric routing fails.
+function smartRoute() {
+  if (!parsed) return;
+  const g = parsed.canvas.grid;
+  const og = buildObstacleGrid(parsed);
+
+  // Build list of leaf states and pseudo-states (obstacles) with IDs
+  const leafBoxes = [];
+  for (const st of parsed.states) {
+    if (st.children && st.children.length > 0) continue; // skip composite
+    const box = getBoxShared(st.path || st.id, parsed, g);
+    if (box) leafBoxes.push({ ...box, _id: st.path || st.id });
+  }
+  for (const ps of parsed.pseudoStates) {
+    const box = getBoxShared(ps.path || ps.id, parsed, g);
+    if (box) leafBoxes.push({ ...box, _id: ps.path || ps.id });
+  }
+
+  // ─────────────────────────────────────────────
+  // Helper: Port point calculation
+  // ─────────────────────────────────────────────
+  function smartPortPoint(box, side, portIndex, portCount) {
+    const pad = portCount <= 2 ? 0.4 : portCount <= 4 ? 0.25 : 0.15;
+    const t = portCount <= 1 ? 0.5 : pad + (1 - 2 * pad) * portIndex / (portCount - 1);
+    switch (side) {
+      case 'top': return { x: box.x + box.w * t, y: box.y };
+      case 'bottom': return { x: box.x + box.w * t, y: box.y + box.h };
+      case 'left': return { x: box.x, y: box.y + box.h * t };
+      case 'right': return { x: box.x + box.w, y: box.y + box.h * t };
+    }
+  }
+
+  // ─────────────────────────────────────────────
+  // Helper: Compute port sides (edge-gap algorithm)
+  // ─────────────────────────────────────────────
+  function smartComputeSides(srcBox, tgtBox) {
+    const srcContainsTgt = srcBox.x <= tgtBox.x && srcBox.y <= tgtBox.y &&
+      srcBox.x + srcBox.w >= tgtBox.x + tgtBox.w && srcBox.y + srcBox.h >= tgtBox.y + tgtBox.h;
+    const tgtContainsSrc = tgtBox.x <= srcBox.x && tgtBox.y <= srcBox.y &&
+      tgtBox.x + tgtBox.w >= srcBox.x + srcBox.w && tgtBox.y + tgtBox.h >= srcBox.y + srcBox.h;
+
+    if (srcContainsTgt) {
+      const dTop = tgtBox.y - srcBox.y;
+      const dBottom = (srcBox.y + srcBox.h) - (tgtBox.y + tgtBox.h);
+      const dLeft = tgtBox.x - srcBox.x;
+      const dRight = (srcBox.x + srcBox.w) - (tgtBox.x + tgtBox.w);
+      const minD = Math.min(dTop, dBottom, dLeft, dRight);
+      if (minD === dTop) return { srcSide: 'top', tgtSide: 'top' };
+      if (minD === dBottom) return { srcSide: 'bottom', tgtSide: 'bottom' };
+      if (minD === dLeft) return { srcSide: 'left', tgtSide: 'left' };
+      return { srcSide: 'right', tgtSide: 'right' };
+    }
+    if (tgtContainsSrc) {
+      const dTop = srcBox.y - tgtBox.y;
+      const dBottom = (tgtBox.y + tgtBox.h) - (srcBox.y + srcBox.h);
+      const dLeft = srcBox.x - tgtBox.x;
+      const dRight = (tgtBox.x + tgtBox.w) - (srcBox.x + srcBox.w);
+      const minD = Math.min(dTop, dBottom, dLeft, dRight);
+      if (minD === dTop) return { srcSide: 'top', tgtSide: 'top' };
+      if (minD === dBottom) return { srcSide: 'bottom', tgtSide: 'bottom' };
+      if (minD === dLeft) return { srcSide: 'left', tgtSide: 'left' };
+      return { srcSide: 'right', tgtSide: 'right' };
+    }
+
+    // Non-overlapping: edge-gap
+    const gapR = tgtBox.x - (srcBox.x + srcBox.w);
+    const gapL = srcBox.x - (tgtBox.x + tgtBox.w);
+    const gapB = tgtBox.y - (srcBox.y + srcBox.h);
+    const gapT = srcBox.y - (tgtBox.y + tgtBox.h);
+    const hBest = Math.max(gapR, gapL);
+    const vBest = Math.max(gapB, gapT);
+    if (vBest >= hBest) {
+      return gapB >= gapT
+        ? { srcSide: 'bottom', tgtSide: 'top' }
+        : { srcSide: 'top', tgtSide: 'bottom' };
+    } else {
+      return gapR >= gapL
+        ? { srcSide: 'right', tgtSide: 'left' }
+        : { srcSide: 'left', tgtSide: 'right' };
+    }
+  }
+
+  // ─────────────────────────────────────────────
+  // Helper: Collision detection for segments
+  // ─────────────────────────────────────────────
+  function segmentHitsLeafBox(p1, p2, margin, excludeIds) {
+    margin = margin || 5;
+    for (const box of leafBoxes) {
+      // Skip source/target boxes by ID
+      if (excludeIds && box._id && excludeIds.includes(box._id)) continue;
+
+      const expanded = { x: box.x - margin, y: box.y - margin, w: box.w + 2*margin, h: box.h + 2*margin };
+
+      // Horizontal segment
+      if (Math.abs(p1.y - p2.y) < 0.01) {
+        const y = p1.y;
+        const minX = Math.min(p1.x, p2.x);
+        const maxX = Math.max(p1.x, p2.x);
+        if (y >= expanded.y && y <= expanded.y + expanded.h &&
+            maxX >= expanded.x && minX <= expanded.x + expanded.w) {
+          return true;
+        }
+      }
+
+      // Vertical segment
+      if (Math.abs(p1.x - p2.x) < 0.01) {
+        const x = p1.x;
+        const minY = Math.min(p1.y, p2.y);
+        const maxY = Math.max(p1.y, p2.y);
+        if (x >= expanded.x && x <= expanded.x + expanded.w &&
+            maxY >= expanded.y && minY <= expanded.y + expanded.h) {
+          return true;
+        }
+      }
+    }
+    return false;
+  }
+
+  // Check ALL segments of a route for collision (segment-aware exclusion)
+  // First segment: exclude only srcId; Last segment: exclude only tgtId; Middle: exclude nothing
+  function routeHitsLeafBox(waypoints, margin, srcId, tgtId) {
+    for (let i = 0; i < waypoints.length - 1; i++) {
+      let segExclude;
+      if (i === 0) segExclude = srcId ? [srcId] : null;
+      else if (i === waypoints.length - 2) segExclude = tgtId ? [tgtId] : null;
+      else segExclude = null; // middle segments: no exclusions
+      if (segmentHitsLeafBox(waypoints[i], waypoints[i+1], margin, segExclude)) return true;
+    }
+    return false;
+  }
+
+  // ─────────────────────────────────────────────
+  // PASS 1: Group transitions by (boxId, side)
+  // and distribute ports along each side
+  // ─────────────────────────────────────────────
+  const portGroups = {}; // key: "boxId:side", value: array of {tr, isSource}
+  for (const tr of parsed.transitions) {
+    if (tr.from === tr.to || tr.kind === 'internal') continue;
+    const srcBox = getBoxShared(tr.from, parsed, g);
+    const tgtBox = getBoxShared(tr.to, parsed, g);
+    if (!srcBox || !tgtBox) continue;
+
+    const sides = smartComputeSides(srcBox, tgtBox);
+    const srcKey = tr.from + ':' + sides.srcSide;
+    const tgtKey = tr.to + ':' + sides.tgtSide;
+
+    if (!portGroups[srcKey]) portGroups[srcKey] = [];
+    if (!portGroups[tgtKey]) portGroups[tgtKey] = [];
+    portGroups[srcKey].push({ tr, isSource: true, tgtCenter: {
+      x: tgtBox.x + tgtBox.w / 2,
+      y: tgtBox.y + tgtBox.h / 2
+    }});
+    portGroups[tgtKey].push({ tr, isSource: false, srcCenter: {
+      x: srcBox.x + srcBox.w / 2,
+      y: srcBox.y + srcBox.h / 2
+    }});
+  }
+
+  // Sort each group by perpendicular position and assign port indices
+  const portAssignment = {}; // key: "transition_id", value: {srcPortIdx, srcPortCount, tgtPortIdx, tgtPortCount}
+  for (const key in portGroups) {
+    const group = portGroups[key];
+    const side = key.split(':')[1]; // 'top','bottom','left','right'
+    const useX = (side === 'top' || side === 'bottom');
+    group.sort((a, b) => {
+      const ac = a.isSource ? a.tgtCenter : a.srcCenter;
+      const bc = b.isSource ? b.tgtCenter : b.srcCenter;
+      return useX ? (ac.x - bc.x) : (ac.y - bc.y);
+    });
+    for (let i = 0; i < group.length; i++) {
+      const item = group[i];
+      const tr = item.tr;
+      const trId = tr.from + '->' + tr.to + '-' + parsed.transitions.indexOf(tr);
+      if (!portAssignment[trId]) portAssignment[trId] = {};
+      if (item.isSource) {
+        portAssignment[trId].srcPortIdx = i;
+        portAssignment[trId].srcPortCount = group.length;
+      } else {
+        portAssignment[trId].tgtPortIdx = i;
+        portAssignment[trId].tgtPortCount = group.length;
+      }
+    }
+  }
+
+  // ─────────────────────────────────────────────
+  // PASS 2: Generate geometric routes (I/L/Z/U)
+  // ─────────────────────────────────────────────
+  const zTypeChannels = {}; // key: corridor, value: array of mid coordinates used
+  const uTypeOutsets = {}; // key: "side", value: max used outset
+
+  for (let ti = 0; ti < parsed.transitions.length; ti++) {
+    const tr = parsed.transitions[ti];
+    if (tr.from === tr.to || tr.kind === 'internal') continue;
+
+    const srcBox = getBoxShared(tr.from, parsed, g);
+    const tgtBox = getBoxShared(tr.to, parsed, g);
+    if (!srcBox || !tgtBox) continue;
+
+    // Self-transitions: use buildSelfRouteShared
+    if (tr.from === tr.to) {
+      const selfRoute = buildSelfRouteShared(srcBox);
+      if (selfRoute) tr._autoRouteWaypoints = selfRoute;
+      continue;
+    }
+
+    const sides = smartComputeSides(srcBox, tgtBox);
+    const trId = tr.from + '->' + tr.to + '-' + ti;
+    const portAssign = portAssignment[trId] || {};
+
+    const srcPortIdx = portAssign.srcPortIdx || 0;
+    const srcPortCount = portAssign.srcPortCount || 1;
+    const tgtPortIdx = portAssign.tgtPortIdx || 0;
+    const tgtPortCount = portAssign.tgtPortCount || 1;
+
+    const srcPt = smartPortPoint(srcBox, sides.srcSide, srcPortIdx, srcPortCount);
+    const tgtPt = smartPortPoint(tgtBox, sides.tgtSide, tgtPortIdx, tgtPortCount);
+
+    let route = null;
+    // Resolve full-path IDs for src/tgt exclusion
+    const srcLeaf = leafBoxes.find(b => Math.abs(b.x - srcBox.x) < 0.5 && Math.abs(b.y - srcBox.y) < 0.5 && Math.abs(b.w - srcBox.w) < 0.5);
+    const tgtLeaf = leafBoxes.find(b => Math.abs(b.x - tgtBox.x) < 0.5 && Math.abs(b.y - tgtBox.y) < 0.5 && Math.abs(b.w - tgtBox.w) < 0.5);
+    const srcId = srcLeaf ? srcLeaf._id : null;
+    const tgtId = tgtLeaf ? tgtLeaf._id : null;
+
+    // Check I-type (straight)
+    const alignTolerance = 2;
+    const isHorizontalAligned = Math.abs(srcPt.y - tgtPt.y) < alignTolerance;
+    const isVerticalAligned = Math.abs(srcPt.x - tgtPt.x) < alignTolerance;
+
+    if (isHorizontalAligned && (sides.srcSide === 'left' || sides.srcSide === 'right') &&
+        (sides.tgtSide === 'left' || sides.tgtSide === 'right')) {
+      if (!segmentHitsLeafBox(srcPt, tgtPt, 5, [srcId, tgtId].filter(Boolean))) {
+        route = [srcPt, tgtPt];
+      }
+    } else if (isVerticalAligned && (sides.srcSide === 'top' || sides.srcSide === 'bottom') &&
+               (sides.tgtSide === 'top' || sides.tgtSide === 'bottom')) {
+      if (!segmentHitsLeafBox(srcPt, tgtPt, 5, [srcId, tgtId].filter(Boolean))) {
+        route = [srcPt, tgtPt];
+      }
+    }
+
+    // Try L-type (1 turn)
+    if (!route) {
+      const isAdjacent = (sides.srcSide === 'right' && sides.tgtSide === 'top') ||
+                        (sides.srcSide === 'right' && sides.tgtSide === 'bottom') ||
+                        (sides.srcSide === 'left' && sides.tgtSide === 'top') ||
+                        (sides.srcSide === 'left' && sides.tgtSide === 'bottom') ||
+                        (sides.srcSide === 'top' && sides.tgtSide === 'right') ||
+                        (sides.srcSide === 'top' && sides.tgtSide === 'left') ||
+                        (sides.srcSide === 'bottom' && sides.tgtSide === 'right') ||
+                        (sides.srcSide === 'bottom' && sides.tgtSide === 'left');
+
+      if (isAdjacent) {
+        // Try first corner: (tgtPt.x, srcPt.y)
+        const corner1 = { x: tgtPt.x, y: srcPt.y };
+        if (!segmentHitsLeafBox(srcPt, corner1, 5, srcId ? [srcId] : null) && !segmentHitsLeafBox(corner1, tgtPt, 5, tgtId ? [tgtId] : null)) {
+          route = [srcPt, corner1, tgtPt];
+        } else {
+          // Try alternative corner: (srcPt.x, tgtPt.y)
+          const corner2 = { x: srcPt.x, y: tgtPt.y };
+          if (!segmentHitsLeafBox(srcPt, corner2, 5, srcId ? [srcId] : null) && !segmentHitsLeafBox(corner2, tgtPt, 5, tgtId ? [tgtId] : null)) {
+            route = [srcPt, corner2, tgtPt];
           }
         }
       }
     }
-    return count;
-  }
 
-  // Current routes
-  const currentRoutes = [];
-  for (const tr of parsed.transitions) {
-    const srcBox = getBox(tr.from);
-    const tgtBox = getBox(tr.to);
-    if (!srcBox || !tgtBox) { currentRoutes.push([]); continue; }
-    if (tr.from === tr.to) { currentRoutes.push(buildSelfRoute(srcBox)); continue; }
-    const sides = computePortSide(srcBox, tgtBox);
-    const fromPt = getPortPoint(srcBox, sides.srcSide, 0, 1);
-    const toPt = getPortPoint(tgtBox, sides.tgtSide, 0, 1);
-    currentRoutes.push(buildRoute(fromPt, toPt, sides.srcSide, sides.tgtSide));
-  }
+    // Try Z-type (2 turns — works for opposite sides AND as L-type fallback)
+    if (!route) {
+      {
+        const isHorizontal = sides.srcSide === 'left' || sides.srcSide === 'right';
+        const baseMid = isHorizontal
+          ? (srcPt.x + tgtPt.x) / 2
+          : (srcPt.y + tgtPt.y) / 2;
 
-  const currentCrossings = countCrossings(currentRoutes);
-  if (currentCrossings === 0) return; // Already optimal
+        const corridorKey = isHorizontal ? 'h' : 'v';
+        if (!zTypeChannels[corridorKey]) zTypeChannels[corridorKey] = [];
 
-  // Simple optimization: try flipping each transition's sides and keep if fewer crossings
-  let bestRoutes = currentRoutes;
-  let bestCount = currentCrossings;
-  const allSides = ['top', 'bottom', 'left', 'right'];
+        // Try to find a clear mid-channel within 200px scan
+        // Ensure mid is at least minSegDist from both src and tgt axis positions
+        const minSegDist = g; // 1 grid = 20px
+        const srcAxis = isHorizontal ? srcPt.x : srcPt.y;
+        const tgtAxis = isHorizontal ? tgtPt.x : tgtPt.y;
+        let mid = null;
+        for (let scan = 0; scan <= 200; scan += 10) {
+          const candidates = [baseMid + scan, baseMid - scan];
+          for (const candidate of candidates) {
+            // Skip if too close to either port axis
+            if (Math.abs(candidate - srcAxis) < minSegDist) continue;
+            if (Math.abs(candidate - tgtAxis) < minSegDist) continue;
 
-  for (let ti = 0; ti < parsed.transitions.length; ti++) {
-    const tr = parsed.transitions[ti];
-    const srcBox = getBox(tr.from);
-    const tgtBox = getBox(tr.to);
-    if (!srcBox || !tgtBox || tr.from === tr.to) continue;
+            const bend1 = isHorizontal
+              ? { x: candidate, y: srcPt.y }
+              : { x: srcPt.x, y: candidate };
+            const bend2 = isHorizontal
+              ? { x: candidate, y: tgtPt.y }
+              : { x: tgtPt.x, y: candidate };
 
-    for (const ss of allSides) {
-      for (const ts of allSides) {
-        if (ss === ts && (ss === 'left' || ss === 'right')) continue; // Same horizontal = overlap
-        const fromPt = getPortPoint(srcBox, ss, 0, 1);
-        const toPt = getPortPoint(tgtBox, ts, 0, 1);
-        const newRoute = buildRoute(fromPt, toPt, ss, ts);
-        const trial = [...bestRoutes];
-        trial[ti] = newRoute;
-        const c = countCrossings(trial);
-        if (c < bestCount) {
-          bestCount = c;
-          bestRoutes = trial;
+            // Check ALL 3 segments: src→bend1, bend1→bend2, bend2→tgt
+            if (!routeHitsLeafBox([srcPt, bend1, bend2, tgtPt], 5, srcId, tgtId)) {
+              mid = candidate;
+              break;
+            }
+          }
+          if (mid !== null) break;
+        }
+
+        if (mid !== null) {
+          if (isHorizontal) {
+            route = [srcPt, { x: mid, y: srcPt.y }, { x: mid, y: tgtPt.y }, tgtPt];
+          } else {
+            route = [srcPt, { x: srcPt.x, y: mid }, { x: tgtPt.x, y: mid }, tgtPt];
+          }
         }
       }
     }
+
+    // Try U-type (2 turns, same side) with collision scan
+    if (!route) {
+      const isSameSide = sides.srcSide === sides.tgtSide;
+      if (isSameSide) {
+        const dir = (sides.srcSide === 'right' || sides.srcSide === 'bottom') ? 1 : -1;
+        const baseOutset = Math.max(
+          (sides.srcSide === 'right') ? (srcBox.x + srcBox.w) : (sides.srcSide === 'bottom') ? (srcBox.y + srcBox.h) : srcBox.x < tgtBox.x ? srcBox.x : tgtBox.x,
+          (sides.srcSide === 'right') ? (tgtBox.x + tgtBox.w) : (sides.srcSide === 'bottom') ? (tgtBox.y + tgtBox.h) : 0
+        );
+        // Scan for a clear U-route outset
+        for (let off = 30; off <= 200; off += 20) {
+          const outset = (sides.srcSide === 'right' || sides.srcSide === 'left')
+            ? (dir > 0 ? Math.max(srcBox.x + srcBox.w, tgtBox.x + tgtBox.w) + off
+                       : Math.min(srcBox.x, tgtBox.x) - off)
+            : (dir > 0 ? Math.max(srcBox.y + srcBox.h, tgtBox.y + tgtBox.h) + off
+                       : Math.min(srcBox.y, tgtBox.y) - off);
+
+          let candidate;
+          if (sides.srcSide === 'right' || sides.srcSide === 'left') {
+            candidate = [srcPt, { x: outset, y: srcPt.y }, { x: outset, y: tgtPt.y }, tgtPt];
+          } else {
+            candidate = [srcPt, { x: srcPt.x, y: outset }, { x: tgtPt.x, y: outset }, tgtPt];
+          }
+          if (!routeHitsLeafBox(candidate, 5, srcId, tgtId)) {
+            route = candidate;
+            break;
+          }
+        }
+      }
+    }
+
+    // Fallback to A*
+    if (!route) {
+      const wp = astarRoute(og, srcBox, tgtBox, new Set());
+      if (wp) route = wp;
+    }
+
+    // Store route
+    if (route) {
+      tr._autoRouteWaypoints = route;
+    } else {
+      delete tr._autoRouteWaypoints;
+    }
+    delete tr._autoRouteFromSide;
+    delete tr._autoRouteToSide;
   }
 
-  // If improved, refresh (the current rendering already uses computePortSide, so we can't persist
-  // side overrides without DSL changes. For now, just report the result.)
-  if (bestCount < currentCrossings) {
-    alert(`Auto-Route: ${currentCrossings} → ${bestCount} crossings. (Visual optimization only — refresh to revert)`);
-  } else {
-    alert('Auto-Route: routing is already optimal.');
+  // ─────────────────────────────────────────────
+  // PASS 3: Post-processing
+  // ─────────────────────────────────────────────
+  const minSeg = g * 0.8; // minimum segment length ≈ 16px for grid=20
+  for (const tr of parsed.transitions) {
+    if (!tr._autoRouteWaypoints) continue;
+    let wp = tr._autoRouteWaypoints;
+    if (wp.length < 2) continue;
+
+    // Step 1: Remove duplicate/near-duplicate points
+    let deduped = [wp[0]];
+    for (let i = 1; i < wp.length; i++) {
+      const prev = deduped[deduped.length - 1];
+      if (Math.abs(wp[i].x - prev.x) > 0.5 || Math.abs(wp[i].y - prev.y) > 0.5) {
+        deduped.push(wp[i]);
+      }
+    }
+    wp = deduped;
+
+    // Step 2: Remove collinear mid-points
+    let simplified = [wp[0]];
+    for (let i = 1; i < wp.length - 1; i++) {
+      const prev = simplified[simplified.length - 1];
+      const next = wp[i + 1];
+      const sameH = Math.abs(prev.y - wp[i].y) < 0.5 && Math.abs(wp[i].y - next.y) < 0.5;
+      const sameV = Math.abs(prev.x - wp[i].x) < 0.5 && Math.abs(wp[i].x - next.x) < 0.5;
+      if (!sameH && !sameV) simplified.push(wp[i]);
+    }
+    simplified.push(wp[wp.length - 1]);
+    wp = simplified;
+
+    // Step 3: Merge short interior segments by shifting adjacent corners
+    // For Z/L routes: if a middle segment is too short, extend the outer segments
+    if (wp.length === 4) {
+      // Z-type: [src, bend1, bend2, tgt] — middle segment is bend1→bend2
+      const midDx = Math.abs(wp[2].x - wp[1].x);
+      const midDy = Math.abs(wp[2].y - wp[1].y);
+      const midLen = Math.sqrt(midDx*midDx + midDy*midDy);
+      if (midLen < minSeg && midLen > 0.1) {
+        // Merge bends to midpoint
+        const mx = (wp[1].x + wp[2].x) / 2;
+        const my = (wp[1].y + wp[2].y) / 2;
+        // Keep orthogonality: if middle is vertical, shift x; if horizontal, shift y
+        if (midDx < midDy) {
+          // Middle is mostly vertical, short in x — merge x positions
+          wp[1] = { x: mx, y: wp[1].y };
+          wp[2] = { x: mx, y: wp[2].y };
+        } else {
+          wp[1] = { x: wp[1].x, y: my };
+          wp[2] = { x: wp[2].x, y: my };
+        }
+      }
+    }
+
+    if (wp.length >= 2) {
+      tr._autoRouteWaypoints = wp;
+    }
+  }
+
+  // Re-render
+  const _svgWrap = document.getElementById('svg-wrap');
+  if (_svgWrap) {
+    _svgWrap.innerHTML = renderSVG(parsed);
+    if (typeof setupInteractions === 'function') setupInteractions();
   }
 }
 
@@ -4735,7 +6184,9 @@ function fixIds() {
   for (const el of allElements) {
     const newId = labelToId(el.label);
     if (!newId || newId === el.id) continue;
-    if (parsed.stateMap[newId] || parsed.pseudoMap[newId] || parsed.groupMap[newId] || parsed.noteMap[newId]) continue;
+    // Check collision using path (allows same bare ID under different parents)
+    const newPath = el.parentPath ? el.parentPath + '.' + newId : newId;
+    if (parsed.stateMap[newPath] || parsed.pseudoMap[newId] || parsed.groupMap[newId] || parsed.noteMap[newId]) continue;
     const idRe = new RegExp('\\b' + el.id.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\b', 'g');
     dsl = dsl.replace(idRe, newId);
   }
@@ -4801,10 +6252,54 @@ function addNewElement(type) {
   const defX = parentState ? 1 : 10;
   const defY = parentState ? 2 : 10;
 
+  // OBS-01 fix: for root-level new states, scan existing top-level states
+  // (and groups) and pick a non-overlapping slot. Without this, every
+  // `+State` click lands on `at 10,10` and consecutive clicks stack
+  // invisibly at the same origin. `parentState`-scoped adds keep their
+  // old behaviour — they insert into a composite's local coordinate
+  // frame and the visible overlap there is a separate concern.
+  function findFreeRootSlot(w, h) {
+    const rects = [];
+    if (parsed) {
+      for (const s of parsed.states) {
+        if (s.parentPath || s.parent) continue; // only top-level
+        rects.push({ x: s.x, y: s.y, w: s.w || 1, h: s.h || 1 });
+      }
+      for (const gEl of (parsed.groups || [])) {
+        rects.push({ x: gEl.x, y: gEl.y, w: gEl.w || 1, h: gEl.h || 1 });
+      }
+    }
+    const overlaps = (x, y) => rects.some(r =>
+      !(x + w <= r.x || r.x + r.w <= x || y + h <= r.y || r.y + r.h <= y)
+    );
+    // Canvas-aware wrap width (fall back to a generous default).
+    const cw = (parsed && parsed.canvas && parsed.canvas.width)
+      ? Math.max(20, Math.floor(parsed.canvas.width / (parsed.canvas.grid || 20)))
+      : 60;
+    const stepX = w + 2;
+    const stepY = h + 2;
+    for (let y = 10; y < 10 + stepY * 40; y += stepY) {
+      for (let x = 10; x < cw; x += stepX) {
+        if (!overlaps(x, y)) return { x, y };
+      }
+    }
+    // Fallback: stack below the lowest existing rect so we never return 10,10
+    // when the canvas is full. Guarantees distinct coords across calls.
+    let maxBottom = 10;
+    for (const r of rects) maxBottom = Math.max(maxBottom, r.y + r.h);
+    return { x: 10, y: maxBottom + 2 };
+  }
+
   switch (type) {
     case 'state': {
       const id = `__new_${addCounter++}`;
-      line = `state ${id} "New State" at ${defX},${defY} size 8x4`;
+      let nx = defX, ny = defY;
+      if (!parentState) {
+        const slot = findFreeRootSlot(8, 4);
+        nx = slot.x;
+        ny = slot.y;
+      }
+      line = `state ${id} "New State" at ${nx},${ny} size 8x4`;
       break;
     }
     case 'group': {
@@ -4954,18 +6449,18 @@ document.addEventListener('keydown', function(e) {
   const ta = document.getElementById('editor');
   const ae = document.activeElement;
 
-  // Ctrl+Z: Undo (always works)
+  // Don't intercept while editing DSL or other form fields (let native undo/redo etc. work)
+  if (ae === ta) return;
+  if (ae && (ae.tagName === 'INPUT' || ae.tagName === 'SELECT' || ae.tagName === 'TEXTAREA')) {
+    return;
+  }
+
+  // Ctrl+Z: Undo (app-level)
   if ((e.ctrlKey || e.metaKey) && e.key === 'z' && !e.shiftKey) { e.preventDefault(); undo(); return; }
   // Ctrl+Y or Ctrl+Shift+Z: Redo
   if ((e.ctrlKey || e.metaKey) && (e.key === 'y' || (e.key === 'z' && e.shiftKey))) { e.preventDefault(); redo(); return; }
   // Ctrl+Shift+Z uppercase fallback
   if ((e.ctrlKey || e.metaKey) && e.key === 'Z' && e.shiftKey) { e.preventDefault(); redo(); return; }
-
-  // Don't intercept while editing DSL
-  if (ae === ta) return;
-  if (ae && (ae.tagName === 'INPUT' || ae.tagName === 'SELECT' || ae.tagName === 'TEXTAREA')) {
-    return;
-  }
 
   // Ctrl+C: Copy
   if ((e.ctrlKey || e.metaKey) && e.key === 'c') { e.preventDefault(); copySelection(); return; }
@@ -4983,8 +6478,8 @@ document.addEventListener('keydown', function(e) {
       sel = parsed.notes.map(n => ({type: 'note', id: n.id}));
     } else {
       sel = [
-        ...parsed.states.map(s => ({type: 'state', id: s.id})),
-        ...parsed.pseudoStates.map(p => ({type: p.type, id: p.id})),
+        ...parsed.states.map(s => ({type: 'state', id: s.path || s.id})),
+        ...parsed.pseudoStates.map(p => ({type: p.type, id: p.path || p.id})),
         ...parsed.groups.map(g => ({type: 'group', id: g.id}))
       ];
     }
@@ -5070,7 +6565,7 @@ if (isVSCode) {
     if (msg.type === 'paste') { pasteSelection(); }
     if (msg.type === 'selectAll') {
       if (!parsed) return;
-      sel = [...parsed.states.map(s => ({type:'state',id:s.id})), ...parsed.pseudoStates.map(p => ({type:p.type,id:p.id})), ...parsed.groups.map(g => ({type:'group',id:g.id}))];
+      sel = [...parsed.states.map(s => ({type:'state',id:s.path||s.id})), ...parsed.pseudoStates.map(p => ({type:p.type,id:p.path||p.id})), ...parsed.groups.map(g => ({type:'group',id:g.id}))];
       refresh();
     }
   });

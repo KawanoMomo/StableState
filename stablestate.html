@@ -4813,6 +4813,45 @@ if (!isVSCode) {
   editorEl.addEventListener('input', function() {
     refresh();
   });
+
+  // Tab / Shift+Tab: indent / outdent instead of moving focus.
+  // Works on current selection (multi-line) or single cursor position.
+  editorEl.addEventListener('keydown', function(e) {
+    if (e.key !== 'Tab') return;
+    e.preventDefault();
+    const indent = '  ';
+    const value = this.value;
+    const selStart = this.selectionStart;
+    const selEnd = this.selectionEnd;
+    // Multi-line selection → block indent/outdent
+    if (selStart !== selEnd && value.substring(selStart, selEnd).indexOf('\n') >= 0) {
+      const lineStart = value.lastIndexOf('\n', selStart - 1) + 1;
+      const block = value.substring(lineStart, selEnd);
+      let newBlock;
+      if (e.shiftKey) {
+        newBlock = block.replace(/^( {1,2}|\t)/gm, '');
+      } else {
+        newBlock = block.replace(/^/gm, indent);
+      }
+      this.value = value.substring(0, lineStart) + newBlock + value.substring(selEnd);
+      this.selectionStart = lineStart;
+      this.selectionEnd = lineStart + newBlock.length;
+    } else if (e.shiftKey) {
+      // Shift+Tab with no selection → outdent current line
+      const lineStart = value.lastIndexOf('\n', selStart - 1) + 1;
+      const head = value.substring(lineStart, Math.min(lineStart + 2, value.length));
+      const strip = head.startsWith('  ') ? 2 : (head.startsWith(' ') || head.startsWith('\t') ? 1 : 0);
+      if (strip > 0) {
+        this.value = value.substring(0, lineStart) + value.substring(lineStart + strip);
+        this.selectionStart = this.selectionEnd = Math.max(lineStart, selStart - strip);
+      }
+    } else {
+      // Insert 2 spaces at cursor
+      this.value = value.substring(0, selStart) + indent + value.substring(selEnd);
+      this.selectionStart = this.selectionEnd = selStart + indent.length;
+    }
+    this.dispatchEvent(new Event('input', { bubbles: true }));
+  });
 }
 
 // ═══════════════════════════════════════════════
@@ -5229,8 +5268,10 @@ function setupInteractions() {
 
 // ═══════════════════════════════════════════════
 // Zoom (mouse wheel on SVG area — attached ONCE)
+// Ctrl/Cmd + wheel zooms; bare wheel scrolls naturally.
 // ═══════════════════════════════════════════════
 document.getElementById('svg-wrap').addEventListener('wheel', function(e) {
+  if (!(e.ctrlKey || e.metaKey)) return;
   e.preventDefault();
   setZoom(e.deltaY > 0 ? -1 : 1);
 }, { passive: false });
@@ -6223,26 +6264,31 @@ function addNewElement(type) {
 
   // Check if a state is selected — new element goes inside it
   // If not yet composite, convert it by appending { ... }
+  // sel[0].id is the dotted path (e.g. "outer.mid.inner") but the DSL uses
+  // bare ids inside nested blocks, so we can't match by id-in-text. Use the
+  // parser-recorded `st.line` (1-indexed source line) as the authoritative
+  // lookup — works for any nesting depth.
   let parentState = null;
+  let parentDefIdx = -1;
   if (parsed && sel.length === 1 && sel[0].type === 'state' && type !== 'group' && type !== 'note') {
     const selId = sel[0].id;
     const st = parsed.stateMap[selId];
-    if (st) {
+    if (st && st.line) {
       const dslLines = dsl.split('\n');
-      const escapedId = selId.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-      const re = new RegExp('^(\\s*state\\s+' + escapedId + '\\s+.*)$');
-      const defIdx = dslLines.findIndex(l => re.test(l));
-      if (defIdx >= 0) {
+      const defIdx = st.line - 1;
+      if (defIdx >= 0 && defIdx < dslLines.length) {
         const defLine = dslLines[defIdx];
         if (defLine.trim().endsWith('{')) {
           // Already composite
           parentState = st;
+          parentDefIdx = defIdx;
         } else {
           // Convert to composite: append { and add closing }
           dslLines[defIdx] = defLine + ' {';
           dslLines.splice(defIdx + 1, 0, '}');
           dsl = dslLines.join('\n');
           parentState = st;
+          parentDefIdx = defIdx;
         }
       }
     }
@@ -6326,15 +6372,19 @@ function addNewElement(type) {
 
   if (line) {
     if (parentState && type !== 'group' && type !== 'note') {
-      // Insert inside the composite state's { } block
-      const indent = '  ';
+      // Insert inside the composite state's { } block.
+      // Start scanning from the parent's own line (parentDefIdx) so we find
+      // THE matching } for this composite — not the first one in the file
+      // that happens to share a bare id with an outer composite.
       const lines = dsl.split('\n');
-      // Find the closing } for this composite state by tracking nesting
+      const parentLine = lines[parentDefIdx] || '';
+      const parentIndent = (parentLine.match(/^\s*/) || [''])[0];
+      const indent = parentIndent + '  ';
       let depth = 0;
       let insertIdx = -1;
-      for (let i = 0; i < lines.length; i++) {
+      for (let i = parentDefIdx; i < lines.length; i++) {
         const t = lines[i].trim();
-        if (t.match(new RegExp('^state\\s+' + parentState.id + '\\s+')) && t.endsWith('{')) {
+        if (i === parentDefIdx && t.endsWith('{')) {
           depth = 1;
           continue;
         }

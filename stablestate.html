@@ -487,6 +487,7 @@ function parseDSL(text) {
     notes: [],
     noteConnections: [],
     errors: [],
+    warnings: [],
     stateMap: {},
     pseudoMap: {},
     groupMap: {},
@@ -599,7 +600,7 @@ function parseDSL(text) {
         // Parse trailing props on the closing brace line: } entry=Foo exit=Bar
         const afterBrace = trimmed.slice(1).trim();
         if (afterBrace && result.stateMap[popped.path || popped.id]) {
-          parseProps(afterBrace, result.stateMap[popped.path || popped.id]);
+          parseProps(afterBrace, result.stateMap[popped.path || popped.id], lineNum, result.errors);
         }
       }
       continue;
@@ -741,7 +742,7 @@ function parseDSL(text) {
       };
 
       // Parse props
-      if (propsStr) parseProps(propsStr, st);
+      if (propsStr) parseProps(propsStr, st, lineNum, result.errors);
 
       result.states.push(st);
       result.stateMap[path] = st;
@@ -791,7 +792,7 @@ function parseDSL(text) {
         style: null,
         line: lineNum
       };
-      if (rest) parseProps(rest, g);
+      if (rest) parseProps(rest, g, lineNum, result.errors);
       result.groups.push(g);
       result.groupMap[id] = g;
       continue;
@@ -815,7 +816,7 @@ function parseDSL(text) {
         textColor: null,
         line: lineNum
       };
-      if (rest) parseProps(rest, n);
+      if (rest) parseProps(rest, n, lineNum, result.errors);
       result.notes.push(n);
       result.noteMap[id] = n;
       continue;
@@ -840,6 +841,7 @@ function parseDSL(text) {
 
       // Parse optional : Event [Guard] / Action @kind width=N style=S color=C default=X
       let event = null, guard = null, action = null, kind = null, width = null, style = null, color = null, defaultTarget = null;
+      let isCyclic = false;
       if (rest.startsWith(':')) {
         const detail = rest.slice(1).trim();
         let remaining = detail;
@@ -854,11 +856,29 @@ function parseDSL(text) {
         }
         // Strip all key=value attrs from remaining
         remaining = remaining.replace(/\b(width|style|color|default)=\S+/g, '').trim();
-        // Parse @kind from the end
-        const kindMatch = remaining.match(/@(local|external|internal)\s*$/);
-        if (kindMatch) {
-          kind = kindMatch[1];
-          remaining = remaining.slice(0, remaining.lastIndexOf('@' + kind)).trim();
+        // Parse @cyclic and @kind suffixes (any order) from the end.
+        // @cyclic is orthogonal to @kind — both may appear, in either order.
+        // Loop strips whichever suffix currently terminates `remaining` until
+        // neither matches, which handles "@kind @cyclic" and "@cyclic @kind".
+        // NOTE: We use a local shape here instead of stripTransitionSuffixes()
+        // because we need to capture kind/isCyclic into locals. The strip-only
+        // variant of this loop is used by removeTransition/replaceTransition.
+        let suffixChanged = true;
+        while (suffixChanged) {
+          suffixChanged = false;
+          const cyclicMatch = remaining.match(/@cyclic\s*$/);
+          if (cyclicMatch) {
+            isCyclic = true;
+            remaining = remaining.slice(0, remaining.lastIndexOf('@cyclic')).trim();
+            suffixChanged = true;
+            continue;
+          }
+          const kindMatch = remaining.match(/@(local|external|internal)\s*$/);
+          if (kindMatch) {
+            kind = kindMatch[1];
+            remaining = remaining.slice(0, remaining.lastIndexOf('@' + kind)).trim();
+            suffixChanged = true;
+          }
         }
         // Parse / Action
         const slashIdx = remaining.indexOf('/');
@@ -883,6 +903,7 @@ function parseDSL(text) {
         guard: guard,
         action: action,
         kind: kind || result.config.transition,
+        cyclic: isCyclic,
         width: width,
         style: style,
         color: color,
@@ -923,14 +944,27 @@ function parseDSL(text) {
   return result;
 }
 
-/** Parse key=value props and apply them to target object */
-function parseProps(propsStr, target) {
-  // Match key=value pairs where value can be #HEX, word, or quoted
-  const propRe = /(\w+)=(\S+)/g;
+/** Parse key=value props and apply them to target object.
+ *  Supports bare values (non-whitespace) and double-quoted values with \n / \" escapes.
+ *  When lineNum and errors are provided, pushes E4 errors for unclosed quotes. */
+function parseProps(propsStr, target, lineNum, errors) {
+  // Match either a quoted value "..." (with \" escapes) or a bare non-whitespace token.
+  // The quoted alternative uses [^"\\]|\\. so that escaped chars inside don't terminate it.
+  const propRe = /(\w+)=("(?:[^"\\]|\\.)*"|\S+)/g;
   let m;
   while ((m = propRe.exec(propsStr)) !== null) {
     const key = m[1];
-    const val = m[2];
+    let val = m[2];
+    // Unquote if fully quoted — strip outer quotes, unescape \" → ", preserve other escapes
+    if (val.length >= 2 && val[0] === '"' && val[val.length - 1] === '"') {
+      // Only \" is unescaped here. \n, \\, \t stay as 2-char literals on
+      // purpose — the textarea/PlantUML layers (Tasks 9-11) own newline handling.
+      val = val.slice(1, -1).replace(/\\"/g, '"');
+    } else if (val[0] === '"') {
+      // Malformed: bare branch caught a half-quoted token (unclosed quote).
+      // Skip assignment — the E4 pass below will emit the diagnostic.
+      continue;
+    }
     switch (key) {
       case 'entry': target.entry = val; break;
       case 'do': target.do = val; break;
@@ -940,6 +974,17 @@ function parseProps(propsStr, target) {
       case 'border': target.borderColor = val; break;
       case 'round': target.round = parseFloat(val); break;
       case 'style': target.style = val; break;
+    }
+  }
+  // E4: detect unclosed quoted values. When the input is e.g. `do="unclosed` with no closing
+  // quote, the quoted alternative of propRe fails but the bare \S+ alternative still matches
+  // (capturing `do=` + `"unclosed`), bypassing the unquote branch. We scan the raw input
+  // separately for this pattern so we can emit a precise diagnostic.
+  if (errors && lineNum != null) {
+    const unclosedRe = /(\w+)="[^"]*$/;
+    const um = propsStr.match(unclosedRe);
+    if (um) {
+      errors.push({ line: lineNum, msg: "unclosed quoted value for '" + um[1] + "'" });
     }
   }
 }
@@ -1036,6 +1081,9 @@ function validate(result) {
       if (t.guard) {
         result.errors.push({ line: t.line, msg: 'initial pseudo-state transition must not have a guard (found: [' + t.guard + '])' });
       }
+      if (t.cyclic) {
+        result.errors.push({ line: t.line, msg: 'initial pseudo-state transition must not have @cyclic' });
+      }
     }
   }
 
@@ -1048,6 +1096,9 @@ function validate(result) {
       if (t.event) {
         result.errors.push({ line: t.line, msg: 'choice pseudo-state transition must not have an event (found: ' + t.event + ')' });
       }
+      if (t.cyclic) {
+        result.errors.push({ line: t.line, msg: 'choice pseudo-state transition must not have @cyclic' });
+      }
       if (!t.guard) {
         guardlessCount++;
       }
@@ -1055,6 +1106,24 @@ function validate(result) {
     if (guardlessCount > 1) {
       result.errors.push({ line: ps.line, msg: 'choice pseudo-state ' + ps.id + ' has ' + guardlessCount + ' guard-less transitions (max 1 allowed as else/default)' });
     }
+  }
+
+  // ─── W1: @cyclic transitions should have a do= activity on their source state ───
+  // Cyclic transitions model periodic guard re-evaluation, which conceptually
+  // requires a do-activity as the "thing that keeps checking". Without one the
+  // author's intent is unclear (who drives the re-check?), so flag a warning.
+  // Pseudo-state sources (initial/choice/etc.) are excluded — E1/E2/E3 own those.
+  for (const t of result.transitions) {
+    if (!t.cyclic) continue;
+    if (result.pseudoMap[t.from]) continue; // pseudo-state source — handled by E1/E2/E3
+    const src = resolveStateRef(t.from, result);
+    if (!src) continue; // unresolved ref — parser/validator already reports
+    if (src.type !== 'state') continue; // pseudo-state resolved via dot-path — skip
+    if (src.do) continue; // has do activity — no warning
+    result.warnings.push({
+      line: t.line,
+      msg: "@cyclic transition leaves state '" + t.from + "' which has no 'do=' activity; consider adding one to clarify who evaluates the guard"
+    });
   }
 
   // ─── Config constraints ───
@@ -1126,38 +1195,59 @@ function updateSize(type, id, nw, nh, dsl, lineNum) {
 }
 
 // Add or replace a property (key=value) on an element line
+// Format a prop value for DSL emission: quote if it contains whitespace or
+// the 2-char `\n` escape literal, otherwise emit bare. Embedded `"` are
+// escaped as `\"` for the quoted form. Backslashes are NOT re-escaped here —
+// the 2-char-literal convention (`\n`, `\\`, `\t` stay as raw 2-char
+// sequences) is the contract with parseProps (see Task 7).
+function formatPropValue(val) {
+  if (val == null) return '';
+  const s = String(val);
+  if (s === '') return '';
+  // Need quotes if whitespace (including raw \n/\t) OR the 2-char \n escape
+  // OR contains a double quote itself.
+  if (/[\s"]|\\n/.test(s)) {
+    return '"' + s.replace(/"/g, '\\"') + '"';
+  }
+  return s;
+}
+
 function updateProp(type, id, prop, val, dsl, lineNum) {
+  const emit = formatPropValue(val);
+  // Match either a quoted value (with \" escapes) or a bare non-whitespace token,
+  // mirroring parseProps so we can replace an existing quoted prop in place.
+  const propValPat = `(?:"(?:[^"\\\\]|\\\\.)*"|\\S+)`;
   if (lineNum != null) {
     const lines = dsl.split('\n');
     const idx = lineNum - 1;
     if (idx >= 0 && idx < lines.length) {
-      const reExist = new RegExp(`^(\\s*${type}\\s+${id}\\s+.*)\\b${prop}=\\S+(.*$)`);
+      const reExist = new RegExp(`^(\\s*${type}\\s+${id}\\s+.*)\\b${prop}=${propValPat}(.*$)`);
       if (reExist.test(lines[idx])) {
-        lines[idx] = lines[idx].replace(reExist, `$1${prop}=${val}$2`);
+        lines[idx] = lines[idx].replace(reExist, `$1${prop}=${emit}$2`);
       } else {
         const trimEnd = lines[idx].trimEnd();
         if (trimEnd.endsWith('{')) {
-          lines[idx] = trimEnd.slice(0, -1).trimEnd() + ` ${prop}=${val} {`;
+          lines[idx] = trimEnd.slice(0, -1).trimEnd() + ` ${prop}=${emit} {`;
         } else {
-          lines[idx] = trimEnd + ` ${prop}=${val}`;
+          lines[idx] = trimEnd + ` ${prop}=${emit}`;
         }
       }
     }
     return lines.join('\n');
   }
   // First try to replace existing prop
-  const reExist = new RegExp(`^(\\s*${type}\\s+${id}\\s+.*)\\b${prop}=\\S+(.*$)`, 'm');
+  const reExist = new RegExp(`^(\\s*${type}\\s+${id}\\s+.*)\\b${prop}=${propValPat}(.*$)`, 'm');
   if (reExist.test(dsl)) {
-    return dsl.replace(reExist, `$1${prop}=${val}$2`);
+    return dsl.replace(reExist, `$1${prop}=${emit}$2`);
   }
   // Prop doesn't exist — append before trailing { or at end of line
   const reLine = new RegExp(`^(\\s*${type}\\s+${id}\\s+.+)$`, 'm');
   return dsl.replace(reLine, function(wholeLine) {
     const trimEnd = wholeLine.trimEnd();
     if (trimEnd.endsWith('{')) {
-      return trimEnd.slice(0, -1).trimEnd() + ` ${prop}=${val} {`;
+      return trimEnd.slice(0, -1).trimEnd() + ` ${prop}=${emit} {`;
     }
-    return trimEnd + ` ${prop}=${val}`;
+    return trimEnd + ` ${prop}=${emit}`;
   });
 }
 
@@ -1177,7 +1267,7 @@ function updateLabel(type, id, newLabel, dsl, lineNum) {
 }
 
 // Append a new transition line to the DSL
-function addTransition(from, to, event, guard, action, kind, dsl) {
+function addTransition(from, to, event, guard, action, kind, dsl, cyclic) {
   // Determine default transition kind from @config
   let defaultKind = 'local';
   const configMatch = dsl.match(/^@config\s+transition=(\S+)/m);
@@ -1188,16 +1278,35 @@ function addTransition(from, to, event, guard, action, kind, dsl) {
   const hasGuard = guard != null && guard !== '';
   const hasAction = action != null && action !== '';
   const hasKind = kind != null && kind !== '' && kind !== defaultKind;
+  const hasCyclic = cyclic === true;
 
-  if (hasEvent || hasGuard || hasAction || hasKind) {
+  if (hasEvent || hasGuard || hasAction || hasKind || hasCyclic) {
     line += ' :';
     if (hasEvent) line += ` ${event}`;
     if (hasGuard) line += ` [${guard}]`;
     if (hasAction) line += ` / ${action}`;
     if (hasKind) line += ` @${kind}`;
+    if (hasCyclic) line += ` @cyclic`;
   }
 
   return dsl + '\n' + line;
+}
+
+// Strip trailing @cyclic and @(local|external|internal) suffixes from a transition
+// detail string, in any order. Used by removeTransition and replaceTransition for
+// match comparisons (capture-less strip). The parseDSL body uses a shape variant
+// that captures kind/isCyclic and is NOT consolidated here.
+function stripTransitionSuffixes(s) {
+  let changed = true;
+  while (changed) {
+    changed = false;
+    const before = s;
+    s = s.replace(/@cyclic\s*$/, '').trim();
+    if (s !== before) { changed = true; continue; }
+    s = s.replace(/@(local|external|internal)\s*$/, '').trim();
+    if (s !== before) changed = true;
+  }
+  return s;
 }
 
 // Remove a matching transition line (match by from, to, event, guard)
@@ -1213,8 +1322,8 @@ function removeTransition(from, to, event, guard, dsl) {
       let lineEvent = null, lineGuard = null;
       if (rest.startsWith(':')) {
         let detail = rest.slice(1).trim();
-        // Remove @kind
-        detail = detail.replace(/@(local|external|internal)\s*$/, '').trim();
+        // Remove @cyclic and @kind suffixes (either order)
+        detail = stripTransitionSuffixes(detail);
         // Remove action
         const slashIdx = detail.indexOf('/');
         if (slashIdx !== -1) detail = detail.slice(0, slashIdx).trim();
@@ -1237,7 +1346,7 @@ function removeTransition(from, to, event, guard, dsl) {
 }
 
 // Replace a matching transition line in-place (preserves DSL order)
-function replaceTransition(oldFrom, oldTo, oldEvent, oldGuard, newFrom, newTo, newEvent, newGuard, newAction, newKind, dsl) {
+function replaceTransition(oldFrom, oldTo, oldEvent, oldGuard, newFrom, newTo, newEvent, newGuard, newAction, newKind, dsl, newCyclic) {
   // Build the new transition line (same logic as addTransition)
   let defaultKind = 'local';
   const configMatch = dsl.match(/^@config\s+transition=(\S+)/m);
@@ -1253,12 +1362,14 @@ function replaceTransition(oldFrom, oldTo, oldEvent, oldGuard, newFrom, newTo, n
     const hasG = newGuard != null && newGuard !== '';
     const hasA = newAction != null && newAction !== '';
     const hasK = newKind != null && newKind !== '' && newKind !== defaultKind;
-    if (hasEv || hasG || hasA || hasK) {
+    const hasC = newCyclic === true;
+    if (hasEv || hasG || hasA || hasK || hasC) {
       line += ' :';
       if (hasEv) line += ` ${newEvent}`;
       if (hasG) line += ` [${newGuard}]`;
       if (hasA) line += ` / ${newAction}`;
       if (hasK) line += ` @${newKind}`;
+      if (hasC) line += ` @cyclic`;
     }
     return line;
   }
@@ -1275,7 +1386,9 @@ function replaceTransition(oldFrom, oldTo, oldEvent, oldGuard, newFrom, newTo, n
       let lineEvent = null, lineGuard = null;
       if (rest.startsWith(':')) {
         let detail = rest.slice(1).trim();
-        detail = detail.replace(/@(local|external|internal)\s*$/, '').trim();
+        // Strip @cyclic and @kind suffixes (either order) before extracting
+        // event/guard for the match comparison.
+        detail = stripTransitionSuffixes(detail);
         const slashIdx = detail.indexOf('/');
         if (slashIdx !== -1) detail = detail.slice(0, slashIdx).trim();
         const gm = detail.match(/\[([^\]]*)\]/);
@@ -1715,6 +1828,14 @@ function getAbsolutePos(element, parsed) {
 }
 
 // ═══════════════════════════════════════════════
+// Cyclic transition visual defaults
+// (used by renderSVG, renderTable, exportPlantUML)
+// ═══════════════════════════════════════════════
+const CYCLIC_COLOR = '#F59E0B';    // amber
+const CYCLIC_DASH  = '6,4';
+const CYCLIC_GLYPH = '⟳';          // U+27F3 CLOCKWISE OPEN CIRCLE ARROW
+
+// ═══════════════════════════════════════════════
 // SVG Renderer
 // ═══════════════════════════════════════════════
 function renderSVG(parsed) {
@@ -1787,7 +1908,12 @@ function renderSVG(parsed) {
         ay += 14;
       }
       if (st.do) {
-        svg += `<text x="${pos.x + 10}" y="${ay}" font-family="${mono}" font-size="10" fill="#888888" style="pointer-events:none">do / ${esc(st.do)}</text>`;
+        // Task 10: multiline do shows first logical line + … (U+2026). Box size unchanged.
+        // st.do contains \n as 2-char literal (Task 7 parser contract); split on '\\n'.
+        const doFirstLine = st.do.split('\\n')[0];
+        const doHasMore = st.do.indexOf('\\n') >= 0;
+        const doDisplay = doFirstLine + (doHasMore ? ' …' : '');
+        svg += `<text x="${pos.x + 10}" y="${ay}" font-family="${mono}" font-size="10" fill="#888888" style="pointer-events:none">do / ${esc(doDisplay)}</text>`;
         ay += 14;
       }
       if (st.exit) {
@@ -1847,7 +1973,12 @@ function renderSVG(parsed) {
         ay += 14;
       }
       if (st.do) {
-        svg += `<text x="${pos.x + 8}" y="${ay}" font-family="${mono}" font-size="10" fill="#888888" style="pointer-events:none">do / ${esc(st.do)}</text>`;
+        // Task 10: multiline do shows first logical line + … (U+2026). Box size unchanged.
+        // st.do contains \n as 2-char literal (Task 7 parser contract); split on '\\n'.
+        const doFirstLine = st.do.split('\\n')[0];
+        const doHasMore = st.do.indexOf('\\n') >= 0;
+        const doDisplay = doFirstLine + (doHasMore ? ' …' : '');
+        svg += `<text x="${pos.x + 8}" y="${ay}" font-family="${mono}" font-size="10" fill="#888888" style="pointer-events:none">do / ${esc(doDisplay)}</text>`;
         ay += 14;
       }
       if (st.exit) {
@@ -1924,6 +2055,8 @@ function renderSVG(parsed) {
     const mid = 'ah_' + c.replace(/[^a-zA-Z0-9]/g, '');
     svg += `<marker id="${mid}" markerWidth="10" markerHeight="8" refX="10" refY="4" orient="auto"><path d="M0,0 L10,4 L0,8 Z" fill="${c}"/></marker>`;
   }
+  // Cyclic arrow marker (amber, for transitions with @cyclic flag)
+  svg += `<marker id="arr-cyclic" markerWidth="10" markerHeight="8" refX="10" refY="4" orient="auto"><path d="M0,0 L10,4 L0,8 Z" fill="${CYCLIC_COLOR}"/></marker>`;
   svg += `</defs>`;
 
   // Helper: get bounding box {x, y, w, h} in pixels for a state or pseudo-state
@@ -2336,9 +2469,19 @@ function renderSVG(parsed) {
 
     // Build SVG path
     const sw = tr.width || 1.5;
-    const sc = tr.color || '#89DDFF';
-    const dashAttr = tr.style === 'dashed' ? ' stroke-dasharray="6 3"' : '';
-    const _amid = 'ah_' + sc.replace(/[^a-zA-Z0-9]/g, '');
+    // Cyclic default stroke color is amber; user's explicit color= wins
+    let sc;
+    if (tr.color) sc = tr.color;
+    else if (tr.cyclic) sc = CYCLIC_COLOR;
+    else sc = '#89DDFF';
+    // Cyclic default line is dashed; user's explicit style= wins
+    let dashAttr;
+    if (tr.style === 'dashed') dashAttr = ' stroke-dasharray="6 3"';
+    else if (tr.style === 'solid') dashAttr = '';  // explicit: beats cyclic fallthrough below
+    else if (tr.cyclic) dashAttr = ` stroke-dasharray="${CYCLIC_DASH}"`;
+    else dashAttr = '';
+    // Cyclic uses a dedicated amber marker unless user provided a custom color
+    const _amid = (tr.cyclic && !tr.color) ? 'arr-cyclic' : ('ah_' + sc.replace(/[^a-zA-Z0-9]/g, ''));
     if (crossings.length === 0) {
       // Simple polyline
       const pts = route.map(p => `${p.x},${p.y}`).join(' ');
@@ -2381,7 +2524,7 @@ function renderSVG(parsed) {
 
     // Labels — positioned at each route's own midpoint (routes are separated by port distribution)
     const isChoiceElse = !tr.event && !tr.guard && parsed.pseudoMap[tr.from] && parsed.pseudoMap[tr.from].type === 'choice';
-    const hasLabel = tr.event || tr.guard || tr.action || isChoiceElse;
+    const hasLabel = tr.event || tr.guard || tr.action || isChoiceElse || tr.cyclic;
     if (hasLabel) {
       const mid = routeMidpoint(route);
       // Determine if the segment at midpoint is horizontal or vertical
@@ -2399,6 +2542,10 @@ function renderSVG(parsed) {
       // For horizontal segments: label above/below the line
       // For vertical segments: label to the left/right of the line
       const labelLines = [];
+      // Cyclic marker prefix — always shown for @cyclic transitions, cannot be opted out
+      if (tr.cyclic) {
+        labelLines.push({ text: CYCLIC_GLYPH, color: CYCLIC_COLOR, size: 11 });
+      }
       if (tr.event) labelLines.push({ text: tr.event, color: '#FFCB6B', size: 10 });
       const guardAction = [];
       if (tr.guard) {
@@ -2517,6 +2664,175 @@ function renderSVG(parsed) {
 
   svg += '</svg>';
   return svg;
+}
+
+// ═══════════════════════════════════════════════
+// Multiline Autocomplete Helper
+// ═══════════════════════════════════════════════
+// Attach state-name autocomplete and Tab-indent behavior to a textarea.
+// Used by pp-table-action (action cell editor) and will be reused by
+// pp-do (Task 9: do-activity editor).
+//
+// opts:
+//   stateCandidates:   () => string[]   function returning current state IDs
+//                                       for "-> " state-name completion
+//   keywordCandidates: string[]         optional keyword completions
+//                                       (e.g. `if []`, `else`, `-> `).
+//                                       When omitted/empty, keyword autocomplete
+//                                       is disabled but Tab-indent still works.
+function attachMultilineAutocomplete(ta, opts) {
+  const getStates = (opts && opts.stateCandidates) || (function() { return []; });
+  const keywords = (opts && opts.keywordCandidates) || [];
+  let acList = null, acItems = [], acIdx = -1, acPrefix = '', acStart = 0;
+
+  function getAcContext() {
+    const pos = ta.selectionStart;
+    const textBefore = ta.value.substring(0, pos);
+    const lineStart = textBefore.lastIndexOf('\n') + 1;
+    const line = textBefore.substring(lineStart);
+    // Check for "-> prefix" (state name completion)
+    const arrowMatch = line.match(/->\s*(\S*)$/);
+    if (arrowMatch) return { type: 'state', prefix: arrowMatch[1], start: pos - arrowMatch[1].length };
+    // Check for keyword at line start (after optional indent)
+    const kwMatch = line.match(/^(\s*)(\S*)$/);
+    if (kwMatch && kwMatch[2].length > 0) return { type: 'keyword', prefix: kwMatch[2], start: pos - kwMatch[2].length };
+    return null;
+  }
+
+  function buildCandidates(type, prefix) {
+    if (type === 'state') {
+      return getStates();
+    }
+    if (type === 'keyword') {
+      return keywords;
+    }
+    return [];
+  }
+
+  function getCaretCoords() {
+    // Mirror element technique: copy textarea content into a hidden div,
+    // place a marker span at cursor position, measure its offset
+    const mirror = document.createElement('div');
+    const cs = getComputedStyle(ta);
+    ['fontFamily','fontSize','fontWeight','lineHeight','letterSpacing','wordSpacing',
+     'textIndent','whiteSpace','wordWrap','overflowWrap','padding','borderWidth','boxSizing'
+    ].forEach(p => mirror.style[p] = cs[p]);
+    mirror.style.position = 'absolute';
+    mirror.style.left = '-9999px';
+    mirror.style.top = '0';
+    mirror.style.width = cs.width;
+    mirror.style.overflow = 'hidden';
+    const pos = ta.selectionStart;
+    const textBefore = ta.value.substring(0, pos);
+    const textAfter = ta.value.substring(pos);
+    mirror.textContent = textBefore;
+    const marker = document.createElement('span');
+    marker.textContent = textAfter || '.';
+    mirror.appendChild(marker);
+    document.body.appendChild(mirror);
+    const markerRect = marker.getBoundingClientRect();
+    const mirrorRect = mirror.getBoundingClientRect();
+    const x = markerRect.left - mirrorRect.left;
+    const y = markerRect.top - mirrorRect.top - ta.scrollTop;
+    document.body.removeChild(mirror);
+    return { x: x, y: y };
+  }
+
+  function showAc(candidates) {
+    hideAc();
+    if (candidates.length === 0) return;
+    acList = document.createElement('div');
+    acList.className = 'ac-list';
+    acList.style.position = 'absolute';
+    // Position at caret
+    const caret = getCaretCoords();
+    const taRect = ta.getBoundingClientRect();
+    const panelRect = ta.parentNode.getBoundingClientRect();
+    acList.style.left = (taRect.left - panelRect.left + caret.x) + 'px';
+    acList.style.top = (taRect.top - panelRect.top + caret.y + parseInt(getComputedStyle(ta).lineHeight) || 18) + 'px';
+    acList.style.width = 'auto';
+    acList.style.minWidth = '120px';
+    acItems = candidates.slice(0, 5);
+    acIdx = 0;
+    for (let i = 0; i < acItems.length; i++) {
+      const div = document.createElement('div');
+      div.className = 'ac-item' + (i === 0 ? ' active' : '');
+      div.textContent = acItems[i];
+      div.addEventListener('mousedown', function(ev) { ev.preventDefault(); acceptAc(i); });
+      acList.appendChild(div);
+    }
+    ta.parentNode.style.position = 'relative';
+    ta.parentNode.appendChild(acList);
+  }
+
+  function hideAc() {
+    if (acList && acList.parentNode) acList.parentNode.removeChild(acList);
+    acList = null; acItems = []; acIdx = -1;
+  }
+
+  function acceptAc(idx) {
+    const val = acItems[idx];
+    const before = ta.value.substring(0, acStart);
+    const after = ta.value.substring(ta.selectionStart);
+    ta.value = before + val + after;
+    // Place cursor inside [] if keyword has brackets
+    const bracketPos = val.indexOf('[]');
+    if (bracketPos >= 0) {
+      ta.selectionStart = ta.selectionEnd = acStart + bracketPos + 1;
+    } else {
+      ta.selectionStart = ta.selectionEnd = acStart + val.length;
+    }
+    hideAc();
+  }
+
+  function updateAc() {
+    const ctx = getAcContext();
+    if (!ctx || ctx.prefix.length === 0) { hideAc(); return; }
+    acPrefix = ctx.prefix.toLowerCase();
+    acStart = ctx.start;
+    const all = buildCandidates(ctx.type, ctx.prefix);
+    const filtered = all.filter(c => c.toLowerCase().startsWith(acPrefix));
+    if (filtered.length > 0) showAc(filtered);
+    else hideAc();
+  }
+
+  ta.addEventListener('input', updateAc);
+
+  ta.addEventListener('keydown', function(e) {
+    if (acList) {
+      if (e.key === 'Tab' || e.key === 'Enter') {
+        e.preventDefault();
+        if (acIdx >= 0) acceptAc(acIdx);
+        return;
+      }
+      if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        acIdx = Math.min(acIdx + 1, acItems.length - 1);
+        acList.querySelectorAll('.ac-item').forEach((el, i) => el.classList.toggle('active', i === acIdx));
+        return;
+      }
+      if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        acIdx = Math.max(acIdx - 1, 0);
+        acList.querySelectorAll('.ac-item').forEach((el, i) => el.classList.toggle('active', i === acIdx));
+        return;
+      }
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        hideAc();
+        return;
+      }
+    } else {
+      // Tab inserts 2 spaces when no autocomplete showing
+      if (e.key === 'Tab') {
+        e.preventDefault();
+        const start = this.selectionStart;
+        this.value = this.value.substring(0, start) + '  ' + this.value.substring(this.selectionEnd);
+        this.selectionStart = this.selectionEnd = start + 2;
+        return;
+      }
+    }
+  });
 }
 
 // ═══════════════════════════════════════════════
@@ -2716,7 +3032,10 @@ function renderTable(parsed) {
         return fromEl && (fromEl.path === lc.id || fromEl.id === lc.id);
       });
       const val = matching.length > 0 && matching[0].guard ? matching[0].guard : '-';
-      bodyHtml += `<td class="table-editable" data-field="guard" data-state="${lc.id}" data-event="${esc(evName)}" style="cursor:pointer;color:#C3E88D">${esc(val).replace(/\\n/g, '<br>')}</td>`;
+      const isCyclic = matching.length > 0 && matching[0].cyclic === true;
+      const cyclicPrefix = isCyclic ? (CYCLIC_GLYPH + ' ') : '';
+      const cellColor = isCyclic ? CYCLIC_COLOR : '#C3E88D';
+      bodyHtml += `<td class="table-editable" data-field="guard" data-state="${lc.id}" data-event="${esc(evName)}" style="cursor:pointer;color:${cellColor}">${cyclicPrefix}${esc(val).replace(/\\n/g, '<br>')}</td>`;
     }
     bodyHtml += '</tr>';
 
@@ -2732,7 +3051,10 @@ function renderTable(parsed) {
         const ifElse = actionToIfElse(matching[0].to, parsed);
         if (ifElse) val = ifElse;
       }
-      bodyHtml += `<td class="table-editable" data-field="action" data-state="${lc.id}" data-event="${esc(evName)}" style="cursor:pointer;color:#C3E88D;white-space:pre-wrap">${esc(val).replace(/\\n/g, '\n')}</td>`;
+      const isCyclic = matching.length > 0 && matching[0].cyclic === true;
+      const cyclicPrefix = isCyclic ? (CYCLIC_GLYPH + ' ') : '';
+      const cellColor = isCyclic ? CYCLIC_COLOR : '#C3E88D';
+      bodyHtml += `<td class="table-editable" data-field="action" data-state="${lc.id}" data-event="${esc(evName)}" style="cursor:pointer;color:${cellColor};white-space:pre-wrap">${cyclicPrefix}${esc(val).replace(/\\n/g, '\n')}</td>`;
     }
     bodyHtml += '</tr>';
 
@@ -2764,7 +3086,10 @@ function renderTable(parsed) {
           }
         }
       }
-      bodyHtml += `<td class="table-editable" data-field="target" data-state="${lc.id}" data-event="${esc(evName)}" style="cursor:pointer">${esc(val)}</td>`;
+      const isCyclic = matching.length > 0 && matching[0].cyclic === true;
+      const cyclicPrefix = isCyclic ? (CYCLIC_GLYPH + ' ') : '';
+      const cyclicStyle = isCyclic ? `;color:${CYCLIC_COLOR}` : '';
+      bodyHtml += `<td class="table-editable" data-field="target" data-state="${lc.id}" data-event="${esc(evName)}" style="cursor:pointer${cyclicStyle}">${cyclicPrefix}${esc(val)}</td>`;
     }
     bodyHtml += '</tr>';
   }
@@ -2870,6 +3195,11 @@ function renderTable(parsed) {
       if (!isChoiceMode) html += `<button class="tb" id="pp-branch-btn" style="font-size:9px;padding:2px 6px;color:#C3E88D;border-color:#C3E88D">+ 分岐</button>`;
       html += `</div>`;
       html += `<textarea class="prop-input" id="pp-table-action" style="height:${isChoiceMode ? 100 : 60}px;resize:vertical;font-size:11px;line-height:1.4;text-align:left;font-family:Consolas,monospace" placeholder="アクション">${esc(curAction).replace(/\\n/g, '\n')}</textarea>`;
+      const curCyclic = existing && existing.cyclic === true;
+      html += `<label class="prop-row" style="display:flex;align-items:center;gap:6px;font-size:11px;color:#94a3b8;margin-top:6px;cursor:pointer">`;
+      html += `<input type="checkbox" id="pp-table-cyclic"${curCyclic ? ' checked' : ''} style="cursor:pointer">`;
+      html += `<span>${CYCLIC_GLYPH} @cyclic (周期評価)</span>`;
+      html += `</label>`;
       html += `<button class="tb tb-accent" id="pp-table-apply" style="width:100%;margin-top:6px">適用</button>`;
       if (existing) html += `<button class="tb" id="pp-table-delete" style="width:100%;margin-top:4px;border-color:#EF4444;color:#FCA5A5">遷移を削除</button>`;
       html += `</div>`;
@@ -2891,166 +3221,23 @@ function renderTable(parsed) {
         });
       }
 
-      // Autocomplete for state names after "-> "
+      // Autocomplete for state names after "-> " and keyword completion
+      // (extracted into attachMultilineAutocomplete helper; Task 9 will reuse
+      //  it for the pp-do textarea, passing only stateCandidates.)
       const actionTa = document.getElementById('pp-table-action');
-      let acList = null, acItems = [], acIdx = -1, acPrefix = '', acStart = 0;
-
-      function getAcContext() {
-        const pos = actionTa.selectionStart;
-        const textBefore = actionTa.value.substring(0, pos);
-        const lineStart = textBefore.lastIndexOf('\n') + 1;
-        const line = textBefore.substring(lineStart);
-        // Check for "-> prefix" (state name completion)
-        const arrowMatch = line.match(/->\s*(\S*)$/);
-        if (arrowMatch) return { type: 'state', prefix: arrowMatch[1], start: pos - arrowMatch[1].length };
-        // Check for keyword at line start (after optional indent)
-        const kwMatch = line.match(/^(\s*)(\S*)$/);
-        if (kwMatch && kwMatch[2].length > 0) return { type: 'keyword', prefix: kwMatch[2], start: pos - kwMatch[2].length };
-        return null;
-      }
-
       const AC_KEYWORDS = ['if []', 'elif []', 'else if []', 'else', '-> '];
-
-      function buildCandidates(type, prefix) {
-        if (type === 'state') {
-          if (!parsed) return [];
-          return parsed.states.map(s => s.path || s.id);
-        }
-        if (type === 'keyword') {
-          return AC_KEYWORDS;
-        }
-        return [];
-      }
-
-      function getCaretCoords() {
-        // Mirror element technique: copy textarea content into a hidden div,
-        // place a marker span at cursor position, measure its offset
-        const mirror = document.createElement('div');
-        const cs = getComputedStyle(actionTa);
-        ['fontFamily','fontSize','fontWeight','lineHeight','letterSpacing','wordSpacing',
-         'textIndent','whiteSpace','wordWrap','overflowWrap','padding','borderWidth','boxSizing'
-        ].forEach(p => mirror.style[p] = cs[p]);
-        mirror.style.position = 'absolute';
-        mirror.style.left = '-9999px';
-        mirror.style.top = '0';
-        mirror.style.width = cs.width;
-        mirror.style.overflow = 'hidden';
-        const pos = actionTa.selectionStart;
-        const textBefore = actionTa.value.substring(0, pos);
-        const textAfter = actionTa.value.substring(pos);
-        mirror.textContent = textBefore;
-        const marker = document.createElement('span');
-        marker.textContent = textAfter || '.';
-        mirror.appendChild(marker);
-        document.body.appendChild(mirror);
-        const markerRect = marker.getBoundingClientRect();
-        const mirrorRect = mirror.getBoundingClientRect();
-        const x = markerRect.left - mirrorRect.left;
-        const y = markerRect.top - mirrorRect.top - actionTa.scrollTop;
-        document.body.removeChild(mirror);
-        return { x: x, y: y };
-      }
-
-      function showAc(candidates) {
-        hideAc();
-        if (candidates.length === 0) return;
-        acList = document.createElement('div');
-        acList.className = 'ac-list';
-        acList.style.position = 'absolute';
-        // Position at caret
-        const caret = getCaretCoords();
-        const taRect = actionTa.getBoundingClientRect();
-        const panelRect = actionTa.parentNode.getBoundingClientRect();
-        acList.style.left = (taRect.left - panelRect.left + caret.x) + 'px';
-        acList.style.top = (taRect.top - panelRect.top + caret.y + parseInt(getComputedStyle(actionTa).lineHeight) || 18) + 'px';
-        acList.style.width = 'auto';
-        acList.style.minWidth = '120px';
-        acItems = candidates.slice(0, 5);
-        acIdx = 0;
-        for (let i = 0; i < acItems.length; i++) {
-          const div = document.createElement('div');
-          div.className = 'ac-item' + (i === 0 ? ' active' : '');
-          div.textContent = acItems[i];
-          div.addEventListener('mousedown', function(ev) { ev.preventDefault(); acceptAc(i); });
-          acList.appendChild(div);
-        }
-        actionTa.parentNode.style.position = 'relative';
-        actionTa.parentNode.appendChild(acList);
-      }
-
-      function hideAc() {
-        if (acList && acList.parentNode) acList.parentNode.removeChild(acList);
-        acList = null; acItems = []; acIdx = -1;
-      }
-
-      function acceptAc(idx) {
-        const val = acItems[idx];
-        const before = actionTa.value.substring(0, acStart);
-        const after = actionTa.value.substring(actionTa.selectionStart);
-        actionTa.value = before + val + after;
-        // Place cursor inside [] if keyword has brackets
-        const bracketPos = val.indexOf('[]');
-        if (bracketPos >= 0) {
-          actionTa.selectionStart = actionTa.selectionEnd = acStart + bracketPos + 1;
-        } else {
-          actionTa.selectionStart = actionTa.selectionEnd = acStart + val.length;
-        }
-        hideAc();
-      }
-
-      function updateAc() {
-        const ctx = getAcContext();
-        if (!ctx || ctx.prefix.length === 0) { hideAc(); return; }
-        acPrefix = ctx.prefix.toLowerCase();
-        acStart = ctx.start;
-        const all = buildCandidates(ctx.type, ctx.prefix);
-        const filtered = all.filter(c => c.toLowerCase().startsWith(acPrefix));
-        if (filtered.length > 0) showAc(filtered);
-        else hideAc();
-      }
-
-      actionTa.addEventListener('input', updateAc);
-
-      actionTa.addEventListener('keydown', function(e) {
-        if (acList) {
-          if (e.key === 'Tab' || e.key === 'Enter') {
-            e.preventDefault();
-            if (acIdx >= 0) acceptAc(acIdx);
-            return;
-          }
-          if (e.key === 'ArrowDown') {
-            e.preventDefault();
-            acIdx = Math.min(acIdx + 1, acItems.length - 1);
-            acList.querySelectorAll('.ac-item').forEach((el, i) => el.classList.toggle('active', i === acIdx));
-            return;
-          }
-          if (e.key === 'ArrowUp') {
-            e.preventDefault();
-            acIdx = Math.max(acIdx - 1, 0);
-            acList.querySelectorAll('.ac-item').forEach((el, i) => el.classList.toggle('active', i === acIdx));
-            return;
-          }
-          if (e.key === 'Escape') {
-            e.preventDefault();
-            hideAc();
-            return;
-          }
-        } else {
-          // Tab inserts 2 spaces when no autocomplete showing
-          if (e.key === 'Tab') {
-            e.preventDefault();
-            const start = this.selectionStart;
-            this.value = this.value.substring(0, start) + '  ' + this.value.substring(this.selectionEnd);
-            this.selectionStart = this.selectionEnd = start + 2;
-            return;
-          }
-        }
+      attachMultilineAutocomplete(actionTa, {
+        stateCandidates: function() {
+          return parsed ? parsed.states.map(s => s.path || s.id) : [];
+        },
+        keywordCandidates: AC_KEYWORDS
       });
 
       document.getElementById('pp-table-apply').addEventListener('click', function() {
         const target = document.getElementById('pp-table-target').value;
         const guard = document.getElementById('pp-table-guard').value.trim();
         const actionRaw = document.getElementById('pp-table-action').value;
+        const cyclicVal = document.getElementById('pp-table-cyclic').checked === true;
         const ev = evName === '(none)' ? null : evName;
         pushHistory();
         let dsl = getDsl();
@@ -3068,9 +3255,9 @@ function renderTable(parsed) {
           else { targetId = stateDotPath(target); }
           if (existing) {
             dsl = replaceTransition(existing.from, existing.to, existing.event, existing.guard,
-              stateDotPath(stateId), targetId, ev, guard || null, action || null, kind, dsl);
+              stateDotPath(stateId), targetId, ev, guard || null, action || null, kind, dsl, cyclicVal);
           } else {
-            dsl = addTransition(stateDotPath(stateId), targetId, ev, guard || null, action || null, kind, dsl);
+            dsl = addTransition(stateDotPath(stateId), targetId, ev, guard || null, action || null, kind, dsl, cyclicVal);
           }
         }
 
@@ -3151,7 +3338,7 @@ function renderProps() {
       html += `</div>`;
       html += `<div class="prop-section"><div class="prop-label">Actions</div>`;
       html += `<div class="prop-row"><input class="prop-input" id="pp-entry" value="${esc(st.entry || '')}" placeholder="entry"></div>`;
-      html += `<div class="prop-row"><input class="prop-input" id="pp-do" value="${esc(st.do || '')}" placeholder="do"></div>`;
+      html += `<div class="prop-row"><textarea class="prop-input" id="pp-do" placeholder="do" style="min-height:40px;resize:vertical;font-family:Consolas,monospace;font-size:11px;line-height:1.4;white-space:pre">${esc((st.do || '').replace(/\\n/g, '\n'))}</textarea></div>`;
       html += `<div class="prop-row"><input class="prop-input" id="pp-exit" value="${esc(st.exit || '')}" placeholder="exit"></div>`;
       html += `</div>`;
       // Color palette
@@ -3477,24 +3664,56 @@ function renderProps() {
   if (pph) pph.addEventListener('change', handleSizeChange);
 
   // Actions (entry, do, exit)
-  ['entry', 'do', 'exit'].forEach(function(field) {
+  // pp-do is a textarea (Task 9) — supports multi-line content with \n escape
+  // for DSL storage. pp-entry and pp-exit remain single-line <input>.
+  function saveActionField(field, rawValue) {
+    const info = getElTypeAndId();
+    if (!info) return;
+    pushHistory();
+    let dsl = getDsl();
+    // For pp-do textarea: escape real newlines to \n 2-char literal before
+    // writing back to the DSL. updateProp/formatPropValue then decides whether
+    // to quote the value.
+    const val = (field === 'do')
+      ? rawValue.replace(/\n/g, '\\n').trim()
+      : rawValue.trim();
+    if (val) {
+      dsl = updateProp(info.type, info.id, field, val, dsl, info.line);
+    } else {
+      // Remove the property. Match either a quoted value (with \" escapes) or
+      // a bare non-whitespace token, so we can also strip previously-quoted
+      // values (e.g. do="multi line").
+      const re = new RegExp(
+        `(^\\s*${info.type}\\s+${info.id}\\s+.*)\\b${field}=(?:"(?:[^"\\\\]|\\\\.)*"|\\S+)`,
+        'm'
+      );
+      dsl = dsl.replace(re, '$1');
+    }
+    setDsl(dsl);
+    refreshView();
+  }
+  ['entry', 'exit'].forEach(function(field) {
     propChange('pp-' + field, function() {
-      const info = getElTypeAndId();
-      if (!info) return;
-      pushHistory();
-      let dsl = getDsl();
-      const val = this.value.trim();
-      if (val) {
-        dsl = updateProp(info.type, info.id, field, val, dsl, info.line);
-      } else {
-        // Remove the property by replacing with empty — use regex to strip
-        const re = new RegExp(`(^\\s*${info.type}\\s+${info.id}\\s+.*)\\b${field}=\\S+`, 'm');
-        dsl = dsl.replace(re, '$1');
-      }
-      setDsl(dsl);
-      refreshView();
+      saveActionField(field, this.value);
     });
   });
+  // pp-do: listen on 'change' (fires on blur/commit) to save back, consistent
+  // with pp-entry / pp-exit. attachMultilineAutocomplete also provides live
+  // autocomplete wiring for state names after the `-> ` prefix.
+  const doTa = document.getElementById('pp-do');
+  if (doTa) {
+    doTa.addEventListener('change', function() {
+      saveActionField('do', this.value);
+    });
+    if (doTa.tagName === 'TEXTAREA') {
+      attachMultilineAutocomplete(doTa, {
+        stateCandidates: function() {
+          return parsed ? parsed.states.map(s => s.path || s.id) : [];
+        }
+        // No keywordCandidates — pp-do is for state-name completion only.
+      });
+    }
+  }
 
   // Color dots
   panel.querySelectorAll('.color-dot[data-prop]').forEach(function(dot) {
@@ -3659,6 +3878,9 @@ function getExportSVGString() {
   // `fill="#6366F1" stroke="#fff"` (indigo for states/pseudo-states) or
   // `fill="#F59E0B" stroke="#fff"` (amber for notes). Both are strictly
   // editor UI chrome and must not be baked into exported SVG/PNG artifacts.
+  // Note: the Task 2 `<marker id="arr-cyclic">` (also amber #F59E0B) is a
+  // <marker> with a <path> child, not a rect, and has no `data-resize`
+  // attribute, so neither selector matches it — cyclic arrows survive export.
   clone.querySelectorAll('[data-resize]').forEach(el => el.remove());
   clone.querySelectorAll('rect[fill="#6366F1"][stroke="#fff"], rect[fill="#F59E0B"][stroke="#fff"]').forEach(el => el.remove());
   return new XMLSerializer().serializeToString(clone);
@@ -3815,12 +4037,18 @@ function exportPlantUML(p) {
   );
 
   function renderLabel(tr) {
-    if (!tr.event && !tr.guard && !tr.action) return '';
     const parts = [];
+    if (tr.cyclic) parts.push(CYCLIC_GLYPH);
     if (tr.event) parts.push(tr.event);
     if (tr.guard) parts.push('[' + tr.guard + ']');
     if (tr.action) parts.push('/ ' + tr.action);
+    if (parts.length === 0) return '';
     return ' : ' + parts.join(' ');
+  }
+  function arrowStr(tr) {
+    // Cyclic transitions render with amber dashed arrow to mirror the SVG
+    // styling (Task 2). Non-cyclic stays as the default PlantUML `-->`.
+    return tr.cyclic ? ('-[' + CYCLIC_COLOR + ',dashed]->') : '-->';
   }
   function renderEndpoint(ref) {
     // `from` side of initial becomes `[*]`. final stays as its id (it was
@@ -3866,12 +4094,19 @@ function exportPlantUML(p) {
       }
       // Interior transitions: all transitions whose LCA is this composite.
       for (const tr of innerTrans) {
-        lines.push(innerPad + renderEndpoint(tr.from) + ' --> ' + renderEndpoint(tr.to) + renderLabel(tr));
+        lines.push(innerPad + renderEndpoint(tr.from) + ' ' + arrowStr(tr) + ' ' + renderEndpoint(tr.to) + renderLabel(tr));
       }
       lines.push(pad + '}');
     } else {
       lines.push(pad + 'state "' + st.label + '" as ' + st.id);
     }
+    // Task 11: emit entry/do/exit as state description lines for BOTH composite
+    // and leaf states. PlantUML treats `\n` within a description as a line break,
+    // so multiline `do` (stored as 2-char literal per Task 7 parser contract)
+    // renders naturally without further escape conversion.
+    if (st.entry) lines.push(pad + st.id + ' : entry / ' + st.entry);
+    if (st.do)    lines.push(pad + st.id + ' : do / ' + st.do);
+    if (st.exit)  lines.push(pad + st.id + ' : exit / ' + st.exit);
   }
 
   // ─── Root-level declarations ───
@@ -3889,7 +4124,7 @@ function exportPlantUML(p) {
   // Root-level transitions (those whose LCA is root).
   const rootTrans = transByScope.get(null) || [];
   for (const tr of rootTrans) {
-    lines.push(renderEndpoint(tr.from) + ' --> ' + renderEndpoint(tr.to) + renderLabel(tr));
+    lines.push(renderEndpoint(tr.from) + ' ' + arrowStr(tr) + ' ' + renderEndpoint(tr.to) + renderLabel(tr));
   }
 
   lines.push('@enduml');

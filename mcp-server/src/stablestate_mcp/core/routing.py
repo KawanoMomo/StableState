@@ -285,6 +285,135 @@ def assign_back_edge_lanes(diagram, ranks: dict[str, int]) -> dict[int, int]:
     return {ti: idx for idx, (ti, _) in enumerate(back)}
 
 
+def _segment_crosses_box(x1: float, y1: float, x2: float, y2: float,
+                          box: dict) -> bool:
+    """Liang-Barsky line-clip — does the segment intersect the box interior?"""
+    bx, by = box["x"], box["y"]
+    bx2, by2 = bx + box["w"], by + box["h"]
+    dx, dy = x2 - x1, y2 - y1
+    p = [-dx, dx, -dy, dy]
+    q = [x1 - bx, bx2 - x1, y1 - by, by2 - y1]
+    t0, t1 = 0.0, 1.0
+    for i in range(4):
+        if abs(p[i]) < 1e-10:
+            if q[i] < 0:
+                return False
+        else:
+            r = q[i] / p[i]
+            if p[i] < 0:
+                t0 = max(t0, r)
+            else:
+                t1 = min(t1, r)
+            if t0 > t1:
+                return False
+    return t0 < t1
+
+
+def polyline_crosses_box(points: list[dict], box: dict, margin: float = 0) -> bool:
+    """True if any segment of the polyline crosses the box interior.
+
+    `margin` shrinks the box slightly so segments that just graze an edge
+    don't count as crossings (use 1.0 for ~1px tolerance).
+    """
+    if margin:
+        box = {
+            "x": box["x"] + margin, "y": box["y"] + margin,
+            "w": max(0.001, box["w"] - 2 * margin),
+            "h": max(0.001, box["h"] - 2 * margin),
+        }
+    for i in range(len(points) - 1):
+        if _segment_crosses_box(
+            points[i]["x"], points[i]["y"],
+            points[i + 1]["x"], points[i + 1]["y"], box,
+        ):
+            return True
+    return False
+
+
+def compute_top_channel_y(diagram) -> float:
+    """Pixel y above all top-level states for forward-edge detour routing."""
+    g = diagram.canvas.grid
+    tops_grid = [s.y for s in diagram.states if s.parent is None]
+    tops_grid += [grp.y for grp in diagram.groups]
+    if not tops_grid:
+        return -2.0 * g
+    return (min(tops_grid) - 3.0) * g
+
+
+def build_top_channel_route(
+    src_box: dict, tgt_box: dict, channel_y: float,
+    src_idx: int = 0, src_count: int = 1,
+    tgt_idx: int = 0, tgt_count: int = 1,
+) -> list[dict]:
+    """Route via top channel: src.top → (src_port.x, channel_y) →
+    (tgt_port.x, channel_y) → tgt.top. Mirror of build_back_edge_route
+    on the top edge."""
+    def _top_port(box, idx, count):
+        pad = 0.4 if count <= 2 else 0.25 if count <= 4 else 0.15
+        t = 0.5 if count <= 1 else pad + (1 - 2 * pad) * idx / (count - 1)
+        return {"x": box["x"] + box["w"] * t, "y": box["y"]}
+
+    src_port = _top_port(src_box, src_idx, src_count)
+    tgt_port = _top_port(tgt_box, tgt_idx, tgt_count)
+    return [
+        src_port,
+        {"x": src_port["x"], "y": channel_y},
+        {"x": tgt_port["x"], "y": channel_y},
+        tgt_port,
+    ]
+
+
+def assign_detour_lanes(diagram, ranks: dict[str, int]) -> dict[int, int]:
+    """Detect forward / lateral edges whose direct route would cross an
+    unrelated top-level state, and assign each a top-channel lane index.
+
+    Algorithm:
+      1. Skip self / backward / pseudo-only transitions.
+      2. For each candidate, compute a tentative straight route from
+         src center to tgt center (acts as a coarse crossing probe).
+      3. If the segment crosses any unrelated top-level state's box,
+         flag for detour.
+      4. Assign lanes by span ascending (short = lane 0, long = deeper).
+
+    Returns {transition_index: lane_index}.
+    """
+    # Pre-compute boxes for top-level states
+    boxes: dict[str, dict] = {}
+    g = diagram.canvas.grid
+    for s in diagram.states:
+        if s.parent is None:
+            boxes[s.id] = {
+                "x": s.x * g, "y": s.y * g,
+                "w": s.w * g, "h": s.h * g,
+            }
+
+    candidates: list[tuple[int, float]] = []
+    for ti, t in enumerate(diagram.transitions):
+        cls = classify_edge(t.from_id, t.to_id, ranks)
+        if cls in ("self", "backward"):
+            continue
+        if t.from_id not in boxes or t.to_id not in boxes:
+            continue
+        sb = boxes[t.from_id]
+        tb = boxes[t.to_id]
+        # Probe segment: center to center
+        s_pt = {"x": sb["x"] + sb["w"] / 2, "y": sb["y"] + sb["h"] / 2}
+        t_pt = {"x": tb["x"] + tb["w"] / 2, "y": tb["y"] + tb["h"] / 2}
+        crosses = False
+        for other_id, other_box in boxes.items():
+            if other_id == t.from_id or other_id == t.to_id:
+                continue
+            if _segment_crosses_box(s_pt["x"], s_pt["y"], t_pt["x"], t_pt["y"], other_box):
+                crosses = True
+                break
+        if crosses:
+            span = abs(s_pt["x"] - t_pt["x"]) + abs(s_pt["y"] - t_pt["y"])
+            candidates.append((ti, span))
+
+    candidates.sort(key=lambda p: p[1])
+    return {ti: idx for idx, (ti, _) in enumerate(candidates)}
+
+
 def build_back_edge_route(
     src_box: dict, tgt_box: dict, bus_y: float,
     src_idx: int = 0, src_count: int = 1,

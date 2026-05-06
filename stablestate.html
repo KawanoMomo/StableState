@@ -2808,6 +2808,91 @@ function renderSVG(parsed) {
   const _laneOf = {};
   _backList.forEach((e, i) => { _laneOf[e.ti] = i; });
   const _laneY = i => _busBaseY + i * _laneSpacing;
+
+  // ─── Sprint 2: detour channel for forward edges that cross obstacles ───
+  // Top channel runs above all top-level states; forward/lateral edges
+  // whose center-to-center probe would cross an unrelated state get
+  // routed via the top channel with their own lane.
+  // If the top channel has no room (states near canvas top edge) the
+  // detour silently routes through the bottom bus instead, so we never
+  // produce off-canvas arrows.
+  let _topMost = Infinity;
+  for (const s of parsed.states) if (!s.parent) _topMost = Math.min(_topMost, s.y);
+  for (const grp of parsed.groups) _topMost = Math.min(_topMost, grp.y);
+  if (!isFinite(_topMost)) _topMost = 0;
+  const _topChannelBaseY = (_topMost - 1.5) * g;
+  const _topLaneSpacing = 1.5 * g;
+
+  // Liang-Barsky segment vs box intersection
+  function _segCrossBox(x1, y1, x2, y2, box) {
+    const bx2 = box.x + box.w, by2 = box.y + box.h;
+    const dx = x2 - x1, dy = y2 - y1;
+    const p = [-dx, dx, -dy, dy];
+    const q = [x1 - box.x, bx2 - x1, y1 - box.y, by2 - y1];
+    let t0 = 0.0, t1 = 1.0;
+    for (let i = 0; i < 4; i++) {
+      if (Math.abs(p[i]) < 1e-10) { if (q[i] < 0) return false; }
+      else {
+        const r = q[i] / p[i];
+        if (p[i] < 0) t0 = Math.max(t0, r);
+        else          t1 = Math.min(t1, r);
+        if (t0 > t1) return false;
+      }
+    }
+    return t0 < t1;
+  }
+
+  // Identify forward/lateral edges whose center-to-center probe crosses
+  // an unrelated top-level state. Skip self / backward (already handled).
+  const _topLevelBoxes = {};
+  for (const s of parsed.states) {
+    if (!s.parent) {
+      _topLevelBoxes[s.id] = { x: s.x * g, y: s.y * g, w: s.w * g, h: s.h * g };
+    }
+  }
+  const _detourList = [];
+  for (let ti = 0; ti < parsed.transitions.length; ti++) {
+    const tr = parsed.transitions[ti];
+    const cls = _classifyEdge(tr.from, tr.to);
+    if (cls === 'self' || cls === 'backward') continue;
+    const sb = _topLevelBoxes[tr.from], tb = _topLevelBoxes[tr.to];
+    if (!sb || !tb) continue;
+    const sx = sb.x + sb.w / 2, sy = sb.y + sb.h / 2;
+    const tx = tb.x + tb.w / 2, ty = tb.y + tb.h / 2;
+    let crosses = false;
+    for (const oid in _topLevelBoxes) {
+      if (oid === tr.from || oid === tr.to) continue;
+      if (_segCrossBox(sx, sy, tx, ty, _topLevelBoxes[oid])) { crosses = true; break; }
+    }
+    if (crosses) {
+      _detourList.push({ ti, span: Math.abs(tx - sx) + Math.abs(ty - sy) });
+    }
+  }
+  _detourList.sort((a, b) => a.span - b.span);
+  // Top channel needs (N + 1) * spacing of clear space above the topmost
+  // state. If we don't have it, fall back to bus routing for those edges.
+  const _topAvailable = (_topMost) * g; // distance from canvas top y=0 to topmost state
+  const _detourSpaceNeeded = (_detourList.length + 1) * _topLaneSpacing;
+  const _useTopChannel = _detourList.length > 0 && _topAvailable >= _detourSpaceNeeded;
+  const _detourLaneOf = {};
+  if (_useTopChannel) {
+    _detourList.forEach((e, i) => { _detourLaneOf[e.ti] = i; });
+  } else {
+    // Promote forward-detour edges into the back-edge bus so they still
+    // get a non-crossing route. They are appended after existing back-
+    // edges, with lane indices continuing the sequence (so back-edges
+    // keep their assignments and detour-forwards stack below).
+    for (const e of _detourList) {
+      const lane = Object.keys(_laneOf).length + (_detourLaneOf[e.ti] != null ? 0 : 0);
+      _laneOf[e.ti] = Object.keys(_laneOf).length;
+    }
+  }
+  const _topLaneY = i => _topChannelBaseY - i * _topLaneSpacing; // ascending lanes go further up
+  function _topPort(box, idx, count) {
+    const pad = count <= 2 ? 0.4 : count <= 4 ? 0.25 : 0.15;
+    const t = count <= 1 ? 0.5 : pad + (1 - 2 * pad) * idx / (count - 1);
+    return { x: box.x + box.w * t, y: box.y };
+  }
   // Bottom-edge port distribution for back-edges (mirrors getPortPoint)
   function _bottomPort(box, idx, count) {
     const pad = count <= 2 ? 0.4 : count <= 4 ? 0.25 : 0.15;
@@ -2862,17 +2947,26 @@ function renderSVG(parsed) {
     }
     const isSelf = tr.from === tr.to;
     const isReverse = reverseSet.has(ti);
-    // Sprint 1: detect back-edges and force bottom→bottom routing through bus
+    // Sprint 1/2: bus routing covers (a) back-edges and (b) forward edges
+    //   that can't fit in the top channel detour. Top channel detour is
+    //   used only when there's clear space above all states.
     const _kind = _classifyEdge(tr.from, tr.to);
-    const isBackEdge = _kind === 'backward';
+    const useBus    = !isSelf && _laneOf[ti] != null;
+    const useTopChn = !isSelf && !useBus && _useTopChannel && _detourLaneOf[ti] != null;
+    const isBackEdge = useBus;   // legacy alias for downstream code
+    const isDetour   = useTopChn;
     let srcSide, tgtSide;
     if (isSelf) {
       srcSide = 'right';
       tgtSide = 'top';
-    } else if (isBackEdge) {
-      // Back-edge bus: both endpoints attach to bottom edges
+    } else if (useBus) {
+      // Bus: both endpoints attach to bottom edges
       srcSide = 'bottom';
       tgtSide = 'bottom';
+    } else if (useTopChn) {
+      // Top-channel detour: both endpoints attach to top edges
+      srcSide = 'top';
+      tgtSide = 'top';
     } else if (isReverse) {
       const fwdSides = computePortSide(srcBox, tgtBox);
       if (fwdSides.srcSide === 'right' || fwdSides.srcSide === 'left') {
@@ -2889,7 +2983,7 @@ function renderSVG(parsed) {
     }
     // Legacy _autoRouteFromSide/_autoRouteToSide removed — A* router now
     // provides full waypoint arrays via _autoRouteWaypoints (read in 2nd pass).
-    transitionSides.push({ srcSide, tgtSide, srcBox, tgtBox, isSelf, isReverse, isBackEdge });
+    transitionSides.push({ srcSide, tgtSide, srcBox, tgtBox, isSelf, isReverse, isBackEdge, isDetour });
 
     // Add to unified edge groups (both source and target edges)
     const srcKey = tr.from + ':' + srcSide;
@@ -2917,7 +3011,7 @@ function renderSVG(parsed) {
     const dimTr = searchMatchIds && !searchMatchIds.has(tr.from) && !searchMatchIds.has(tr.to) ? ' opacity="0.2"' : '';
     svg += `<g${dimTr}>`;
 
-    const { srcSide, tgtSide, srcBox, tgtBox, isSelf, isBackEdge } = info;
+    const { srcSide, tgtSide, srcBox, tgtBox, isSelf, isBackEdge, isDetour } = info;
     let route;
 
     // A* autoRoute override: use pre-computed waypoints directly
@@ -2939,6 +3033,24 @@ function renderSVG(parsed) {
       const sp = _bottomPort(srcBox, srcIdx, srcEdge.length);
       const tp = _bottomPort(tgtBox, tgtIdx, tgtEdge.length);
       const laneY = _laneY(_laneOf[ti] != null ? _laneOf[ti] : 0);
+      route = [
+        sp,
+        { x: sp.x, y: laneY },
+        { x: tp.x, y: laneY },
+        tp,
+      ];
+    } else if (isDetour) {
+      // Sprint 2: top-channel polyline for forward/lateral edges that
+      // would cross an unrelated block on the direct route.
+      const srcKey = tr.from + ':top';
+      const tgtKey = tr.to + ':top';
+      const srcEdge = edgeGroups[srcKey];
+      const tgtEdge = edgeGroups[tgtKey];
+      const srcIdx = edgeIndexMap[srcKey + ':' + ti];
+      const tgtIdx = edgeIndexMap[tgtKey + ':' + ti];
+      const sp = _topPort(srcBox, srcIdx, srcEdge.length);
+      const tp = _topPort(tgtBox, tgtIdx, tgtEdge.length);
+      const laneY = _topLaneY(_detourLaneOf[ti] != null ? _detourLaneOf[ti] : 0);
       route = [
         sp,
         { x: sp.x, y: laneY },

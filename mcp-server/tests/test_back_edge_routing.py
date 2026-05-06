@@ -20,6 +20,8 @@ from stablestate_mcp.core.parser import parse_dsl
 from stablestate_mcp.core.routing import (
     compute_ranks, classify_edge, compute_bus_y, build_back_edge_route,
     assign_back_edge_lanes, derive_pseudo_ranks,
+    polyline_crosses_box, compute_top_channel_y, build_top_channel_route,
+    assign_detour_lanes,
 )
 
 
@@ -250,6 +252,117 @@ def test_assign_lanes_returns_empty_when_no_back_edges():
 
 
 # ─────────────── Sprint 1.5: pseudo-state derived ranks ───────────────
+
+# ─────────────── Sprint 2: detour channel for crossings ───────────────
+
+def test_polyline_crosses_box_detects_horizontal_through():
+    """A horizontal segment passing through a box should be detected."""
+    box = {"x": 100, "y": 50, "w": 100, "h": 50}  # 100..200 x 50..100
+    pts = [{"x": 50, "y": 70}, {"x": 250, "y": 70}]  # crosses horizontally
+    assert polyline_crosses_box(pts, box) is True
+
+
+def test_polyline_crosses_box_above_no_crossing():
+    """A segment above the box should not be detected as crossing."""
+    box = {"x": 100, "y": 50, "w": 100, "h": 50}
+    pts = [{"x": 50, "y": 30}, {"x": 250, "y": 30}]  # above box
+    assert polyline_crosses_box(pts, box) is False
+
+
+def test_polyline_crosses_box_polyline_with_one_crossing_segment():
+    """Polyline whose middle segment crosses the box."""
+    box = {"x": 100, "y": 50, "w": 100, "h": 50}
+    pts = [
+        {"x": 50, "y": 30},   # above-left
+        {"x": 50, "y": 70},   # left of box, same y
+        {"x": 250, "y": 70},  # crosses through
+        {"x": 250, "y": 30},  # above-right
+    ]
+    assert polyline_crosses_box(pts, box) is True
+
+
+def test_compute_top_channel_y_is_above_topmost_state():
+    dsl = (
+        "@canvas width=960 height=600 grid=20\n"
+        'state a "A" at 5,4 size 8x4\n'    # top y = 4
+        'state b "B" at 15,2 size 8x4\n'   # top y = 2 (highest)
+    )
+    d = parse_dsl(dsl)
+    g = d.canvas.grid
+    top = compute_top_channel_y(d)
+    assert top < 2 * g          # strictly above top-most state
+    assert top > -8 * g         # within a few grid units
+
+
+def test_build_top_channel_route_shape_4_points():
+    """src.top → (src_port.x, channel_y) → (tgt_port.x, channel_y) → tgt.top"""
+    src = {"x": 100, "y": 200, "w": 160, "h": 80}
+    tgt = {"x": 600, "y": 200, "w": 160, "h": 80}
+    channel_y = 80
+    r = build_top_channel_route(src, tgt, channel_y)
+    assert len(r) == 4
+    assert r[0]["y"] == src["y"]      # src top edge
+    assert r[-1]["y"] == tgt["y"]     # tgt top edge
+    assert r[1]["y"] == channel_y     # channel waypoints
+    assert r[2]["y"] == channel_y
+
+
+def test_assign_detour_lanes_flags_crossing_forward_edges():
+    """Three states a, b, c at same y. a -> c skipping b. Direct route at
+    same y crosses b. assign_detour_lanes should flag the a->c edge."""
+    dsl = (
+        "@canvas width=1200 height=400 grid=20\n"
+        "initial ini at 0.5,3\n"
+        'state a "A" at 5,2 size 8x4\n'
+        'state b "B" at 15,2 size 8x4\n'
+        'state c "C" at 25,2 size 8x4\n'
+        "ini -> a\n"
+        "a -> c\n"
+        "c -> b\n"
+    )
+    d = parse_dsl(dsl)
+    ranks = compute_ranks(d)
+    lanes = assign_detour_lanes(d, ranks)
+    ti_ac = next(i for i, t in enumerate(d.transitions) if t.from_id == "a" and t.to_id == "c")
+    assert ti_ac in lanes  # a->c needs a detour lane
+
+
+def test_assign_detour_lanes_skips_clear_edges():
+    """Two adjacent states with no obstacle between → no detour."""
+    dsl = (
+        "@canvas width=960 height=400 grid=20\n"
+        "initial ini at 0.5,3\n"
+        'state a "A" at 5,2 size 8x4\n'
+        'state b "B" at 15,2 size 8x4\n'
+        "ini -> a\n"
+        "a -> b\n"
+    )
+    d = parse_dsl(dsl)
+    ranks = compute_ranks(d)
+    lanes = assign_detour_lanes(d, ranks)
+    ti_ab = next(i for i, t in enumerate(d.transitions) if t.from_id == "a" and t.to_id == "b")
+    assert ti_ab not in lanes
+
+
+def test_assign_detour_lanes_skips_back_edges():
+    """Back-edges already handled by bus; detour shouldn't double-route."""
+    dsl = (
+        "@canvas width=960 height=400 grid=20\n"
+        "initial ini at 0.5,3\n"
+        'state a "A" at 5,2 size 8x4\n'
+        'state b "B" at 15,2 size 8x4\n'
+        'state c "C" at 25,2 size 8x4\n'
+        "ini -> a\n"
+        "a -> b\n"
+        "b -> c\n"
+        "c -> a\n"      # back-edge — should NOT be detour-flagged
+    )
+    d = parse_dsl(dsl)
+    ranks = compute_ranks(d)
+    lanes = assign_detour_lanes(d, ranks)
+    ti_ca = next(i for i, t in enumerate(d.transitions) if t.from_id == "c" and t.to_id == "a")
+    assert ti_ca not in lanes
+
 
 def test_derive_pseudo_ranks_choice_inherits_from_incoming():
     """A choice pseudo-state's effective rank should be max rank of incoming

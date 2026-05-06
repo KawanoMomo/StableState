@@ -11,6 +11,7 @@ mcp.tool()(diagram.ss_save)
 mcp.tool()(diagram.ss_show)
 mcp.tool()(diagram.ss_undo)
 mcp.tool()(diagram.ss_get_dsl)
+mcp.tool()(diagram.ss_set_canvas)
 
 # Element manipulation
 mcp.tool()(elements.ss_add_state)

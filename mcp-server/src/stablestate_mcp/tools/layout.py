@@ -136,7 +136,7 @@ def ss_auto_layout(algorithm: str = "hierarchical", scope: str | None = None) ->
     if max_x > cw - 1 or max_y > ch - 1:
         canvas_msg = (
             f" (NOTE: layout extends to {math.ceil(max_x)}x{math.ceil(max_y)} grid; "
-            f"current canvas is {int(cw)}x{int(ch)} — consider expanding)"
+            f"current canvas is {int(cw)}x{int(ch)} -- consider expanding)"
         )
     scope_msg = f" in '{scope}'" if scope else ""
     return f"Re-laid out {moved} state(s){scope_msg} using '{algorithm}'{canvas_msg}"
@@ -162,13 +162,42 @@ def _grid_layout(targets: list, origin_x: float, origin_y: float) -> dict:
 
 
 def _hierarchical_layout(targets: list, d, origin_x: float, origin_y: float) -> dict:
-    """BFS from initial-pseudo targets. Each rank becomes a column."""
+    """BFS from initial-pseudo targets. Each rank becomes a column.
+
+    Pseudo-states (choice/fork/join/...) are treated as transparent: a
+    chain `A -> choice -> B` contributes `A -> B` to the BFS adjacency so
+    they don't break the ranking flow."""
     target_ids = {s.id for s in targets}
     sm = {s.id: s for s in targets}
+    pseudo_ids = {ps.id for ps in d.pseudo_states}
+
+    # Resolve any transition target through a chain of pseudo-states until
+    # we hit a real state in target_ids (or give up).
+    out_via_pseudo: dict[str, list[str]] = defaultdict(list)
+    for t in d.transitions:
+        out_via_pseudo[t.from_id].append(t.to_id)
+
+    def resolve_real(start: str, _seen: set | None = None) -> list[str]:
+        """Return all real-state targets reachable from `start` via 0+ pseudo-state hops."""
+        _seen = _seen or set()
+        if start in _seen:
+            return []
+        _seen.add(start)
+        if start in target_ids:
+            return [start]
+        if start not in pseudo_ids:
+            return []
+        out: list[str] = []
+        for nxt in out_via_pseudo.get(start, []):
+            out.extend(resolve_real(nxt, _seen))
+        return out
+
     adj: dict[str, list[str]] = defaultdict(list)
     for t in d.transitions:
-        if t.from_id in target_ids and t.to_id in target_ids:
-            adj[t.from_id].append(t.to_id)
+        if t.from_id in target_ids:
+            for real in resolve_real(t.to_id):
+                if real != t.from_id:
+                    adj[t.from_id].append(real)
 
     # Seeds: initial-pseudo targets restricted to scope, else states with no incoming
     seeds_all = _initial_targets(d)

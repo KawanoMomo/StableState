@@ -76,3 +76,25 @@ def ss_undo() -> str:
 def ss_get_dsl() -> str:
     """Get the current DSL text as-is."""
     return state.get_dsl()
+
+
+def ss_set_canvas(width: int | None = None, height: int | None = None, grid: int | None = None) -> str:
+    """Resize the canvas. Use this when ss_auto_layout reports the layout
+    extends past the current canvas, or before adding many new states."""
+    import re as _re
+    d = state.get()
+    new_w = width if width is not None else d.canvas.width
+    new_h = height if height is not None else d.canvas.height
+    new_g = grid if grid is not None else d.canvas.grid
+
+    state.push_history()
+    dsl = state.get_dsl()
+    canvas_re = _re.compile(r"^@canvas\b.*$", _re.MULTILINE)
+    new_line = f"@canvas width={new_w} height={new_h} grid={new_g}"
+    if canvas_re.search(dsl):
+        dsl = canvas_re.sub(new_line, dsl, count=1)
+    else:
+        dsl = new_line + "\n" + dsl
+    state.set_dsl(dsl)
+    state._current = parse_dsl(dsl)
+    return f"Canvas: {new_w}x{new_h} grid={new_g}"

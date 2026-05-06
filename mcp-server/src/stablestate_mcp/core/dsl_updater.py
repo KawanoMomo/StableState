@@ -36,7 +36,10 @@ def update_label(type_: str, id_: str, label: str, dsl: str) -> str:
 
 
 def update_prop(type_: str, id_: str, prop: str, val: str, dsl: str) -> str:
-    """Add or update a key=value property on an element line."""
+    """Add or update a key=value property on an element line.
+
+    For composite-state lines ending with `{`, the property is inserted
+    before the brace so the parser still recognises the block opening."""
     lines = dsl.split("\n")
     line_re = re.compile(rf"^\s*{re.escape(type_)}\s+{re.escape(id_)}\s+")
     prop_re = re.compile(rf"\b{re.escape(prop)}=\S+")
@@ -45,7 +48,12 @@ def update_prop(type_: str, id_: str, prop: str, val: str, dsl: str) -> str:
             if prop_re.search(line):
                 lines[i] = prop_re.sub(f"{prop}={val}", line)
             else:
-                lines[i] = line.rstrip() + f" {prop}={val}"
+                stripped = line.rstrip()
+                if stripped.endswith("{"):
+                    head = stripped[:-1].rstrip()
+                    lines[i] = f"{head} {prop}={val} {{"
+                else:
+                    lines[i] = stripped + f" {prop}={val}"
             break
     return "\n".join(lines)
 

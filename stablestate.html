@@ -2960,9 +2960,16 @@ function renderSVG(parsed) {
       srcSide = 'right';
       tgtSide = 'top';
     } else if (useBus) {
-      // Bus: both endpoints attach to bottom edges
+      // Bus: src always leaves from bottom. Target side depends on kind:
+      // back-edge → bottom (return-flow semantics), forward-detour →
+      // natural leading edge (left when going right, right when going left)
+      // so the arrow looks like forward flow despite the bus detour.
       srcSide = 'bottom';
-      tgtSide = 'bottom';
+      if (_kind === 'backward') {
+        tgtSide = 'bottom';
+      } else {
+        tgtSide = tgtBox.x > srcBox.x ? 'left' : 'right';
+      }
     } else if (useTopChn) {
       // Top-channel detour: both endpoints attach to top edges
       srcSide = 'top';
@@ -2983,7 +2990,7 @@ function renderSVG(parsed) {
     }
     // Legacy _autoRouteFromSide/_autoRouteToSide removed — A* router now
     // provides full waypoint arrays via _autoRouteWaypoints (read in 2nd pass).
-    transitionSides.push({ srcSide, tgtSide, srcBox, tgtBox, isSelf, isReverse, isBackEdge, isDetour });
+    transitionSides.push({ srcSide, tgtSide, srcBox, tgtBox, isSelf, isReverse, isBackEdge, isDetour, kind: _kind });
 
     // Add to unified edge groups (both source and target edges)
     const srcKey = tr.from + ':' + srcSide;
@@ -3011,7 +3018,7 @@ function renderSVG(parsed) {
     const dimTr = searchMatchIds && !searchMatchIds.has(tr.from) && !searchMatchIds.has(tr.to) ? ' opacity="0.2"' : '';
     svg += `<g${dimTr}>`;
 
-    const { srcSide, tgtSide, srcBox, tgtBox, isSelf, isBackEdge, isDetour } = info;
+    const { srcSide, tgtSide, srcBox, tgtBox, isSelf, isBackEdge, isDetour, kind: _kind } = info;
     let route;
 
     // A* autoRoute override: use pre-computed waypoints directly
@@ -3021,24 +3028,50 @@ function renderSVG(parsed) {
       route = buildSelfRoute(srcBox);
     } else if (isBackEdge) {
       // Sprint 1: 4-point bus polyline. Sprint 1.5 adds per-edge lane.
-      // Source/target ports are distributed along the bottom edge using
-      // the same edgeGroup index space so multiple back-edges sharing
-      // endpoints fan out instead of overlapping.
+      // Sprint 3: forward edges promoted to the bus (no top-channel space)
+      // use a 5-point polyline that enters target from its leading side
+      // (left when going right, right when going left), so they look
+      // semantically forward rather than like a back-edge.
       const srcKey = tr.from + ':bottom';
-      const tgtKey = tr.to + ':bottom';
       const srcEdge = edgeGroups[srcKey];
-      const tgtEdge = edgeGroups[tgtKey];
       const srcIdx = edgeIndexMap[srcKey + ':' + ti];
-      const tgtIdx = edgeIndexMap[tgtKey + ':' + ti];
       const sp = _bottomPort(srcBox, srcIdx, srcEdge.length);
-      const tp = _bottomPort(tgtBox, tgtIdx, tgtEdge.length);
       const laneY = _laneY(_laneOf[ti] != null ? _laneOf[ti] : 0);
-      route = [
-        sp,
-        { x: sp.x, y: laneY },
-        { x: tp.x, y: laneY },
-        tp,
-      ];
+      const isForwardDetour = _kind !== 'backward';
+      if (isForwardDetour) {
+        // 5-point forward detour: enters target from leading edge.
+        // Use shared port distribution so adjacent normal-routed edges
+        // entering the same side don't collide on the same y.
+        const margin = 1.0 * g;
+        const goingRight = tgtBox.x > srcBox.x;
+        const approachX = goingRight ? tgtBox.x - margin
+                                     : tgtBox.x + tgtBox.w + margin;
+        const fdSide = goingRight ? 'left' : 'right';
+        const tgtKey = tr.to + ':' + fdSide;
+        const tgtEdge = edgeGroups[tgtKey] || [{ ti, dir: 'tgt' }];
+        const tgtIdx = edgeIndexMap[tgtKey + ':' + ti] != null
+                       ? edgeIndexMap[tgtKey + ':' + ti] : 0;
+        const tp = getPortPoint(tgtBox, fdSide, tgtIdx, tgtEdge.length);
+        route = [
+          sp,
+          { x: sp.x, y: laneY },
+          { x: approachX, y: laneY },
+          { x: approachX, y: tp.y },
+          tp,
+        ];
+      } else {
+        // 4-point back-edge bus
+        const tgtKey = tr.to + ':bottom';
+        const tgtEdge = edgeGroups[tgtKey];
+        const tgtIdx = edgeIndexMap[tgtKey + ':' + ti];
+        const tp = _bottomPort(tgtBox, tgtIdx, tgtEdge.length);
+        route = [
+          sp,
+          { x: sp.x, y: laneY },
+          { x: tp.x, y: laneY },
+          tp,
+        ];
+      }
     } else if (isDetour) {
       // Sprint 2: top-channel polyline for forward/lateral edges that
       // would cross an unrelated block on the direct route.

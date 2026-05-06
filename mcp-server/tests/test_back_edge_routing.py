@@ -21,7 +21,7 @@ from stablestate_mcp.core.routing import (
     compute_ranks, classify_edge, compute_bus_y, build_back_edge_route,
     assign_back_edge_lanes, derive_pseudo_ranks,
     polyline_crosses_box, compute_top_channel_y, build_top_channel_route,
-    assign_detour_lanes,
+    assign_detour_lanes, build_forward_detour_route,
 )
 
 
@@ -362,6 +362,46 @@ def test_assign_detour_lanes_skips_back_edges():
     lanes = assign_detour_lanes(d, ranks)
     ti_ca = next(i for i, t in enumerate(d.transitions) if t.from_id == "c" and t.to_id == "a")
     assert ti_ca not in lanes
+
+
+# ─────────────── Sprint 3: forward-detour entry direction ───────────────
+
+def test_forward_detour_5_points_for_rightward_target():
+    """Forward edge going right: leaves src.bottom, traverses lane,
+    rises just before target's left edge, enters target.left."""
+    src = {"x": 100, "y": 100, "w": 160, "h": 80}    # right edge=260
+    tgt = {"x": 600, "y": 100, "w": 160, "h": 80}    # left edge=600
+    lane_y = 240
+    r = build_forward_detour_route(src, tgt, lane_y)
+    assert len(r) == 5
+    assert r[0]["y"] == src["y"] + src["h"]      # src bottom
+    # Entry into target: at target.left
+    assert r[-1]["x"] == tgt["x"]
+    # Traverse on lane y
+    assert r[1]["y"] == lane_y
+    assert r[2]["y"] == lane_y
+    # Approach point sits just before target's left edge
+    assert r[2]["x"] < tgt["x"]
+    assert r[3]["x"] < tgt["x"]
+
+
+def test_forward_detour_uses_target_right_when_leftward():
+    """Rare case: target is to the LEFT of source. Enter from target.right."""
+    src = {"x": 600, "y": 100, "w": 160, "h": 80}
+    tgt = {"x": 100, "y": 100, "w": 160, "h": 80}    # right edge=260
+    r = build_forward_detour_route(src, tgt, 240)
+    # Entry into target: at target.right
+    assert r[-1]["x"] == tgt["x"] + tgt["w"]
+    # Approach point sits just past target's right edge
+    assert r[2]["x"] > tgt["x"] + tgt["w"]
+
+
+def test_forward_detour_target_y_centered_when_count_one():
+    src = {"x": 100, "y": 100, "w": 160, "h": 80}
+    tgt = {"x": 600, "y": 100, "w": 160, "h": 80}
+    r = build_forward_detour_route(src, tgt, 240)
+    # Target port y should be centered on left edge (h/2 from top)
+    assert r[-1]["y"] == tgt["y"] + tgt["h"] / 2
 
 
 def test_derive_pseudo_ranks_choice_inherits_from_incoming():

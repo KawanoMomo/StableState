@@ -414,6 +414,52 @@ def assign_detour_lanes(diagram, ranks: dict[str, int]) -> dict[int, int]:
     return {ti: idx for idx, (ti, _) in enumerate(candidates)}
 
 
+def build_forward_detour_route(
+    src_box: dict, tgt_box: dict, lane_y: float,
+    src_idx: int = 0, src_count: int = 1,
+    tgt_idx: int = 0, tgt_count: int = 1,
+    margin: float = 20.0,
+) -> list[dict]:
+    """5-point polyline for a forward edge that has to detour around an
+    obstacle. Leaves source's bottom edge, drops to the lane, traverses
+    horizontally, rises just before the target's leading edge, then
+    enters the target from its natural front (left when going right,
+    right when going left).
+
+    This contrasts with `build_back_edge_route` which enters target from
+    the bottom — semantically appropriate for back-edges (return flow)
+    but unnatural for forward edges that have been promoted to the bus.
+    """
+    def _bottom_port(box, idx, count):
+        pad = 0.4 if count <= 2 else 0.25 if count <= 4 else 0.15
+        t = 0.5 if count <= 1 else pad + (1 - 2 * pad) * idx / (count - 1)
+        return {"x": box["x"] + box["w"] * t, "y": box["y"] + box["h"]}
+
+    def _side_port(box, side: str, idx, count):
+        pad = 0.4 if count <= 2 else 0.25 if count <= 4 else 0.15
+        t = 0.5 if count <= 1 else pad + (1 - 2 * pad) * idx / (count - 1)
+        if side == "left":
+            return {"x": box["x"], "y": box["y"] + box["h"] * t}
+        return {"x": box["x"] + box["w"], "y": box["y"] + box["h"] * t}
+
+    src_port = _bottom_port(src_box, src_idx, src_count)
+    if tgt_box["x"] > src_box["x"]:
+        tgt_side = "left"
+        approach_x = tgt_box["x"] - margin
+    else:
+        tgt_side = "right"
+        approach_x = tgt_box["x"] + tgt_box["w"] + margin
+    tgt_port = _side_port(tgt_box, tgt_side, tgt_idx, tgt_count)
+
+    return [
+        src_port,
+        {"x": src_port["x"], "y": lane_y},
+        {"x": approach_x, "y": lane_y},
+        {"x": approach_x, "y": tgt_port["y"]},
+        tgt_port,
+    ]
+
+
 def build_back_edge_route(
     src_box: dict, tgt_box: dict, bus_y: float,
     src_idx: int = 0, src_count: int = 1,

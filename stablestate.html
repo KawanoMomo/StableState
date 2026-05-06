@@ -2674,11 +2674,109 @@ function renderSVG(parsed) {
   // Collect all polyline routes for crossing detection
   const allRoutes = [];
 
+  // ─── Sprint 1 (channel routing): rank-based back-edge detection ───
+  // Goal: route "back-edges" (transitions that go against BFS rank, e.g.
+  //       a Retry from Failed back to Idle) through a dedicated horizontal
+  //       bus below all top-level states, instead of cutting through them.
+  // Spec: docs/specs/2026-05-06-channel-routing-moc.html section 3.
+  const _topLevelIds = new Set(parsed.states.filter(s => !s.parent).map(s => s.id));
+  const _pseudoIds   = new Set(parsed.pseudoStates.map(p => p.id));
+  const _outEdges = {};
+  for (const t of parsed.transitions) {
+    if (!_outEdges[t.from]) _outEdges[t.from] = [];
+    _outEdges[t.from].push(t.to);
+  }
+  function _resolveReal(start, seen) {
+    seen = seen || new Set();
+    if (seen.has(start)) return [];
+    seen.add(start);
+    if (_topLevelIds.has(start)) return [start];
+    if (!_pseudoIds.has(start)) return [];
+    const out = [];
+    for (const nxt of (_outEdges[start] || [])) {
+      for (const r of _resolveReal(nxt, seen)) out.push(r);
+    }
+    return out;
+  }
+  // Pseudo-collapsed adjacency on top-level states only
+  const _adj = {};
+  for (const t of parsed.transitions) {
+    if (!_topLevelIds.has(t.from)) continue;
+    for (const r of _resolveReal(t.to)) {
+      if (r === t.from) continue;
+      if (!_adj[t.from]) _adj[t.from] = [];
+      _adj[t.from].push(r);
+    }
+  }
+  // Seeds: initial-pseudo targets (resolved through pseudo chain)
+  const _seeds = [];
+  for (const ps of parsed.pseudoStates) {
+    if (ps.type !== 'initial' || ps.parent) continue;
+    for (const nxt of (_outEdges[ps.id] || [])) {
+      for (const r of _resolveReal(nxt)) if (!_seeds.includes(r)) _seeds.push(r);
+    }
+  }
+  if (!_seeds.length) {
+    // Fallback: states without pseudo-resolved incoming edges
+    const _incoming = new Set();
+    for (const src in _adj) for (const dst of _adj[src]) _incoming.add(dst);
+    for (const id of _topLevelIds) if (!_incoming.has(id)) _seeds.push(id);
+  }
+  // BFS shortest-path ranking — longest-path relaxation diverges on cycles
+  // (e.g. idle ⇄ checking in retry loops). Shortest-path is sufficient for
+  // back-edge classification.
+  const _ranks = {};
+  const _q = [];
+  for (const s of _seeds) {
+    if (_ranks[s] == null) { _ranks[s] = 0; _q.push(s); }
+  }
+  while (_q.length) {
+    const node = _q.shift();
+    for (const nxt of (_adj[node] || [])) {
+      if (_ranks[nxt] == null) { _ranks[nxt] = _ranks[node] + 1; _q.push(nxt); }
+    }
+  }
+  // Unranked: assign trailing ranks
+  let _base = -1;
+  for (const v of Object.values(_ranks)) if (v > _base) _base = v;
+  _base += 1;
+  for (const s of parsed.states) {
+    if (s.parent) continue;
+    if (_ranks[s.id] == null) { _ranks[s.id] = _base; _base += 1; }
+  }
+  // Back-edge bus y position: below the deepest top-level bottom edge
+  let _deepest = 0;
+  for (const s of parsed.states) {
+    if (!s.parent) _deepest = Math.max(_deepest, s.y + s.h);
+  }
+  for (const grp of parsed.groups) {
+    _deepest = Math.max(_deepest, grp.y + grp.h);
+  }
+  const _busY = (_deepest > 0 ? _deepest + 3.0 : 2.0) * g;
+
+  // Classify edge by rank delta. Only top-level state→state edges qualify
+  // for bus routing; pseudo / composite-internal edges fall through to
+  // the existing buildRoute path.
+  function _classifyEdge(from, to) {
+    if (from === to) return 'self';
+    if (_ranks[from] == null || _ranks[to] == null) return 'lateral';
+    const rf = _ranks[from], rt = _ranks[to];
+    if (rt > rf) return 'forward';
+    if (rt < rf) return 'backward';
+    return 'lateral';
+  }
+  // Bottom-edge port distribution for back-edges (mirrors getPortPoint)
+  function _bottomPort(box, idx, count) {
+    const pad = count <= 2 ? 0.4 : count <= 4 ? 0.25 : 0.15;
+    const t = count <= 1 ? 0.5 : pad + (1 - 2 * pad) * idx / (count - 1);
+    return { x: box.x + box.w * t, y: box.y + box.h };
+  }
+
   // Pre-compute port distribution
   // UNIFIED edge groups: merge incoming and outgoing transitions on the same edge
   // so they share the same port space and don't overlap at the connection point.
   const edgeGroups = {}; // key: "stateId:side" -> [{ti, dir:'src'|'tgt'}]
-  const transitionSides = []; // per-transition: {srcSide, tgtSide, srcBox, tgtBox, isSelf, isReverse}
+  const transitionSides = []; // per-transition: {srcSide, tgtSide, srcBox, tgtBox, isSelf, isReverse, isBackEdge}
 
   // Build bidirectional pair lookup: detect A→B / B→A pairs
   const pairKey = (a, b) => [a, b].sort().join('\u2194');
@@ -2721,10 +2819,17 @@ function renderSVG(parsed) {
     }
     const isSelf = tr.from === tr.to;
     const isReverse = reverseSet.has(ti);
+    // Sprint 1: detect back-edges and force bottom→bottom routing through bus
+    const _kind = _classifyEdge(tr.from, tr.to);
+    const isBackEdge = _kind === 'backward';
     let srcSide, tgtSide;
     if (isSelf) {
       srcSide = 'right';
       tgtSide = 'top';
+    } else if (isBackEdge) {
+      // Back-edge bus: both endpoints attach to bottom edges
+      srcSide = 'bottom';
+      tgtSide = 'bottom';
     } else if (isReverse) {
       const fwdSides = computePortSide(srcBox, tgtBox);
       if (fwdSides.srcSide === 'right' || fwdSides.srcSide === 'left') {
@@ -2741,7 +2846,7 @@ function renderSVG(parsed) {
     }
     // Legacy _autoRouteFromSide/_autoRouteToSide removed — A* router now
     // provides full waypoint arrays via _autoRouteWaypoints (read in 2nd pass).
-    transitionSides.push({ srcSide, tgtSide, srcBox, tgtBox, isSelf, isReverse });
+    transitionSides.push({ srcSide, tgtSide, srcBox, tgtBox, isSelf, isReverse, isBackEdge });
 
     // Add to unified edge groups (both source and target edges)
     const srcKey = tr.from + ':' + srcSide;
@@ -2769,7 +2874,7 @@ function renderSVG(parsed) {
     const dimTr = searchMatchIds && !searchMatchIds.has(tr.from) && !searchMatchIds.has(tr.to) ? ' opacity="0.2"' : '';
     svg += `<g${dimTr}>`;
 
-    const { srcSide, tgtSide, srcBox, tgtBox, isSelf } = info;
+    const { srcSide, tgtSide, srcBox, tgtBox, isSelf, isBackEdge } = info;
     let route;
 
     // A* autoRoute override: use pre-computed waypoints directly
@@ -2777,6 +2882,24 @@ function renderSVG(parsed) {
       route = tr._autoRouteWaypoints;
     } else if (isSelf) {
       route = buildSelfRoute(srcBox);
+    } else if (isBackEdge) {
+      // Sprint 1: 4-point bus polyline. Source/target ports are distributed
+      // along the bottom edge using the same edgeGroup index space so
+      // multiple back-edges sharing endpoints fan out instead of overlapping.
+      const srcKey = tr.from + ':bottom';
+      const tgtKey = tr.to + ':bottom';
+      const srcEdge = edgeGroups[srcKey];
+      const tgtEdge = edgeGroups[tgtKey];
+      const srcIdx = edgeIndexMap[srcKey + ':' + ti];
+      const tgtIdx = edgeIndexMap[tgtKey + ':' + ti];
+      const sp = _bottomPort(srcBox, srcIdx, srcEdge.length);
+      const tp = _bottomPort(tgtBox, tgtIdx, tgtEdge.length);
+      route = [
+        sp,
+        { x: sp.x, y: _busY },
+        { x: tp.x, y: _busY },
+        tp,
+      ];
     } else {
       const srcKey = tr.from + ':' + srcSide;
       const tgtKey = tr.to + ':' + tgtSide;

@@ -225,6 +225,66 @@ def compute_bus_y(diagram) -> float:
     return (deepest + _BUS_MARGIN_BELOW) * g
 
 
+def derive_pseudo_ranks(diagram, ranks: dict[str, int]) -> dict[str, int]:
+    """Give each top-level pseudo-state an effective rank derived from its
+    incoming real-state edges, so back-edges originating at choice/fork/etc.
+    can be classified correctly.
+
+    Rule: pseudo_rank = max(rank[from] for incoming real-state edges) + 1.
+    Pseudo-states without any ranked incoming edge are skipped.
+    """
+    out: dict[str, int] = {}
+    incoming: dict[str, list[str]] = defaultdict(list)
+    for t in diagram.transitions:
+        incoming[t.to_id].append(t.from_id)
+    for ps in diagram.pseudo_states:
+        if ps.parent is not None:
+            continue
+        ranked_in = [ranks[fid] for fid in incoming.get(ps.id, []) if fid in ranks]
+        if ranked_in:
+            out[ps.id] = max(ranked_in) + 1
+    return out
+
+
+def assign_back_edge_lanes(diagram, ranks: dict[str, int]) -> dict[int, int]:
+    """Assign each back-edge a unique lane index so multiple back-edges
+    don't overlap on a single horizontal line.
+
+    Strategy: sort back-edges by horizontal span (|src.x - tgt.x|) descending,
+    then assign lane 0, 1, 2, ... so the LONGEST span goes deepest. This
+    prevents short edges from being covered by long ones.
+
+    Returns {transition_index: lane_index}. Transitions that are not
+    back-edges are absent from the dict.
+    """
+    state_x: dict[str, float] = {}
+    for s in diagram.states:
+        if s.parent is None:
+            state_x[s.id] = s.x + s.w / 2
+    pseudo_x: dict[str, float] = {}
+    for ps in diagram.pseudo_states:
+        if ps.parent is None:
+            pseudo_x[ps.id] = ps.x
+
+    def _x_of(eid: str) -> float | None:
+        return state_x.get(eid, pseudo_x.get(eid))
+
+    back: list[tuple[int, float]] = []  # (transition_index, span)
+    for ti, t in enumerate(diagram.transitions):
+        if classify_edge(t.from_id, t.to_id, ranks) != "backward":
+            continue
+        sx = _x_of(t.from_id)
+        tx = _x_of(t.to_id)
+        if sx is None or tx is None:
+            continue
+        back.append((ti, abs(sx - tx)))
+
+    # Sort by span descending; assign lanes 0..N-1 (longest = deepest = highest index)
+    # We want: longest span → lane N-1 (deepest), shortest → lane 0 (shallowest).
+    back.sort(key=lambda p: p[1])  # ascending span
+    return {ti: idx for idx, (ti, _) in enumerate(back)}
+
+
 def build_back_edge_route(
     src_box: dict, tgt_box: dict, bus_y: float,
     src_idx: int = 0, src_count: int = 1,

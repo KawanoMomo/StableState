@@ -10,11 +10,16 @@ Edge classification: a transition `from -> to` is
 
 Sprint 1 only re-routes BACKWARD edges. The rest go through the existing
 buildRoute path unchanged.
+
+Sprint 1.5 (this update) adds:
+  - per-edge lane assignment so multiple back-edges don't overlap on the bus
+  - pseudo-state-as-source classification (choice/fork-originated back-edges)
 """
 import pytest
 from stablestate_mcp.core.parser import parse_dsl
 from stablestate_mcp.core.routing import (
     compute_ranks, classify_edge, compute_bus_y, build_back_edge_route,
+    assign_back_edge_lanes, derive_pseudo_ranks,
 )
 
 
@@ -173,3 +178,101 @@ def test_back_edge_route_supports_port_offset_for_fan_in():
     r2 = build_back_edge_route(src, tgt, 280, tgt_idx=2, tgt_count=3)
     # x positions on tgt's bottom must be distinct and increasing
     assert r0[-1]["x"] < r1[-1]["x"] < r2[-1]["x"]
+
+
+# ─────────────── Sprint 1.5: lane assignment ───────────────
+
+def test_assign_lanes_gives_each_back_edge_a_unique_lane():
+    """Three back-edges → three distinct lane indices (0, 1, 2)."""
+    dsl = (
+        "@canvas width=2000 height=400 grid=20\n"
+        "initial ini at 0.5,3\n"
+        'state a "A" at 5,2 size 8x4\n'
+        'state b "B" at 15,2 size 8x4\n'
+        'state c "C" at 25,2 size 8x4\n'
+        'state d "D" at 35,2 size 8x4\n'
+        "ini -> a\n"
+        "a -> b\n"
+        "b -> c\n"
+        "c -> d\n"
+        "d -> a\n"      # back-edge 1 (long)
+        "c -> b\n"      # back-edge 2 (medium)
+        "b -> a\n"      # back-edge 3 (short)
+    )
+    d = parse_dsl(dsl)
+    ranks = compute_ranks(d)
+    lanes = assign_back_edge_lanes(d, ranks)
+    # Three back-edges → three lanes
+    assert len(lanes) == 3
+    assert sorted(lanes.values()) == [0, 1, 2]
+
+
+def test_assign_lanes_longest_span_gets_deepest_lane():
+    """When sorted by span descending, the longest back-edge gets the
+    highest lane index (deepest = most distant from the states)."""
+    dsl = (
+        "@canvas width=2000 height=400 grid=20\n"
+        "initial ini at 0.5,3\n"
+        'state a "A" at 5,2 size 8x4\n'
+        'state b "B" at 15,2 size 8x4\n'
+        'state c "C" at 25,2 size 8x4\n'
+        'state d "D" at 35,2 size 8x4\n'
+        "ini -> a\n"
+        "a -> b\n"
+        "b -> c\n"
+        "c -> d\n"
+        "b -> a\n"      # short
+        "d -> a\n"      # longest
+        "c -> b\n"      # medium
+    )
+    d = parse_dsl(dsl)
+    ranks = compute_ranks(d)
+    lanes = assign_back_edge_lanes(d, ranks)
+    # Find transition indices for b->a and d->a
+    ti_short = next(i for i, t in enumerate(d.transitions) if t.from_id == "b" and t.to_id == "a")
+    ti_long  = next(i for i, t in enumerate(d.transitions) if t.from_id == "d" and t.to_id == "a")
+    # Longest span gets the deepest (highest) lane
+    assert lanes[ti_long] > lanes[ti_short]
+
+
+def test_assign_lanes_returns_empty_when_no_back_edges():
+    dsl = (
+        "@canvas width=960 height=400 grid=20\n"
+        "initial ini at 0.5,3\n"
+        'state a "A" at 5,2 size 8x4\n'
+        'state b "B" at 15,2 size 8x4\n'
+        "ini -> a\n"
+        "a -> b\n"
+    )
+    d = parse_dsl(dsl)
+    ranks = compute_ranks(d)
+    assert assign_back_edge_lanes(d, ranks) == {}
+
+
+# ─────────────── Sprint 1.5: pseudo-state derived ranks ───────────────
+
+def test_derive_pseudo_ranks_choice_inherits_from_incoming():
+    """A choice pseudo-state's effective rank should be max rank of incoming
+    real states + 1, so its outgoing edges to lower-rank states are
+    classified as backward."""
+    dsl = (
+        "@canvas width=1500 height=400 grid=20\n"
+        "initial ini at 0.5,3\n"
+        'state a "A" at 5,2 size 8x4\n'
+        'state b "B" at 15,2 size 8x4\n'
+        "choice c1 at 30,4\n"
+        'state d "D" at 40,2 size 8x4\n'
+        "ini -> a\n"
+        "a -> b\n"
+        "b -> c1\n"
+        "c1 -> d\n"
+        "c1 -> a\n"      # back-edge through pseudo (c1 should outrank a)
+    )
+    d = parse_dsl(dsl)
+    ranks = compute_ranks(d)
+    # Without pseudo ranks, c1 has no rank → edges from c1 fall through
+    pseudo_ranks = derive_pseudo_ranks(d, ranks)
+    assert pseudo_ranks["c1"] > ranks["a"]
+    # Now classify_edge with merged ranks should call c1 -> a backward
+    merged = {**ranks, **pseudo_ranks}
+    assert classify_edge("c1", "a", merged) == "backward"

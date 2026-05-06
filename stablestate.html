@@ -2744,6 +2744,24 @@ function renderSVG(parsed) {
     if (s.parent) continue;
     if (_ranks[s.id] == null) { _ranks[s.id] = _base; _base += 1; }
   }
+  // Sprint 1.5: derive pseudo-state ranks from incoming real-state edges
+  // so back-edges sourced at choice/fork/etc. (e.g. verify_branch -> failed)
+  // are classified correctly instead of falling to 'lateral'.
+  const _pseudoIncoming = {};
+  for (const t of parsed.transitions) {
+    if (!_pseudoIncoming[t.to]) _pseudoIncoming[t.to] = [];
+    _pseudoIncoming[t.to].push(t.from);
+  }
+  const _pseudoRanks = {};
+  for (const ps of parsed.pseudoStates) {
+    if (ps.parent) continue;
+    const fromIds = _pseudoIncoming[ps.id] || [];
+    const rs = fromIds.map(fid => _ranks[fid]).filter(r => r != null);
+    if (rs.length) _pseudoRanks[ps.id] = Math.max(...rs) + 1;
+  }
+  // Merged rank lookup: real states + pseudo derivations
+  const _allRanks = Object.assign({}, _ranks, _pseudoRanks);
+
   // Back-edge bus y position: below the deepest top-level bottom edge
   let _deepest = 0;
   for (const s of parsed.states) {
@@ -2752,19 +2770,44 @@ function renderSVG(parsed) {
   for (const grp of parsed.groups) {
     _deepest = Math.max(_deepest, grp.y + grp.h);
   }
-  const _busY = (_deepest > 0 ? _deepest + 3.0 : 2.0) * g;
+  const _busBaseY = (_deepest > 0 ? _deepest + 3.0 : 2.0) * g;
+  const _laneSpacing = 1.5 * g; // 1.5 grid units between lanes
 
-  // Classify edge by rank delta. Only top-level state→state edges qualify
-  // for bus routing; pseudo / composite-internal edges fall through to
-  // the existing buildRoute path.
+  // Classify edge by rank delta. Top-level state→state and
+  // pseudo-derived back-edges qualify for bus routing.
   function _classifyEdge(from, to) {
     if (from === to) return 'self';
-    if (_ranks[from] == null || _ranks[to] == null) return 'lateral';
-    const rf = _ranks[from], rt = _ranks[to];
+    if (_allRanks[from] == null || _allRanks[to] == null) return 'lateral';
+    const rf = _allRanks[from], rt = _allRanks[to];
     if (rt > rf) return 'forward';
     if (rt < rf) return 'backward';
     return 'lateral';
   }
+
+  // Sprint 1.5: assign each back-edge its own lane so horizontal segments
+  // don't overlap. Sort by horizontal span ascending → shortest lane 0
+  // (closest to states), longest lane N-1 (deepest).
+  function _xOf(id) {
+    for (const s of parsed.states) {
+      if (s.id === id && !s.parent) return s.x + s.w / 2;
+    }
+    for (const ps of parsed.pseudoStates) {
+      if (ps.id === id && !ps.parent) return ps.x;
+    }
+    return null;
+  }
+  const _backList = [];
+  for (let ti = 0; ti < parsed.transitions.length; ti++) {
+    const tr = parsed.transitions[ti];
+    if (_classifyEdge(tr.from, tr.to) !== 'backward') continue;
+    const sx = _xOf(tr.from), tx = _xOf(tr.to);
+    if (sx == null || tx == null) continue;
+    _backList.push({ ti, span: Math.abs(sx - tx) });
+  }
+  _backList.sort((a, b) => a.span - b.span);
+  const _laneOf = {};
+  _backList.forEach((e, i) => { _laneOf[e.ti] = i; });
+  const _laneY = i => _busBaseY + i * _laneSpacing;
   // Bottom-edge port distribution for back-edges (mirrors getPortPoint)
   function _bottomPort(box, idx, count) {
     const pad = count <= 2 ? 0.4 : count <= 4 ? 0.25 : 0.15;
@@ -2883,9 +2926,10 @@ function renderSVG(parsed) {
     } else if (isSelf) {
       route = buildSelfRoute(srcBox);
     } else if (isBackEdge) {
-      // Sprint 1: 4-point bus polyline. Source/target ports are distributed
-      // along the bottom edge using the same edgeGroup index space so
-      // multiple back-edges sharing endpoints fan out instead of overlapping.
+      // Sprint 1: 4-point bus polyline. Sprint 1.5 adds per-edge lane.
+      // Source/target ports are distributed along the bottom edge using
+      // the same edgeGroup index space so multiple back-edges sharing
+      // endpoints fan out instead of overlapping.
       const srcKey = tr.from + ':bottom';
       const tgtKey = tr.to + ':bottom';
       const srcEdge = edgeGroups[srcKey];
@@ -2894,10 +2938,11 @@ function renderSVG(parsed) {
       const tgtIdx = edgeIndexMap[tgtKey + ':' + ti];
       const sp = _bottomPort(srcBox, srcIdx, srcEdge.length);
       const tp = _bottomPort(tgtBox, tgtIdx, tgtEdge.length);
+      const laneY = _laneY(_laneOf[ti] != null ? _laneOf[ti] : 0);
       route = [
         sp,
-        { x: sp.x, y: _busY },
-        { x: tp.x, y: _busY },
+        { x: sp.x, y: laneY },
+        { x: tp.x, y: laneY },
         tp,
       ];
     } else {

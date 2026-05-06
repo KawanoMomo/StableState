@@ -165,13 +165,14 @@ def parse_dsl(text: str) -> Diagram:
                 continue
 
             event, guard, action, kind = None, None, None, None
-            width, style, color = None, None, None
+            width, style, color, default_target = None, None, None, None
+            cyclic = False
 
             if rest.startswith(":"):
                 detail = rest[1:].strip()
                 remaining = detail
-                # Extract key=value attrs
-                for am in _RE_PROP.finditer(remaining):
+                # Extract trailing key=value attrs (width/style/color/default)
+                for am in re.finditer(r"\b(width|style|color|default)=(\S+)", remaining):
                     k, v = am.group(1), am.group(2)
                     if k == "width":
                         width = float(v)
@@ -179,12 +180,27 @@ def parse_dsl(text: str) -> Diagram:
                         style = v
                     elif k == "color":
                         color = v
-                remaining = re.sub(r"\b(width|style|color)=\S+", "", remaining).strip()
-                # @kind
-                km = re.search(r"@(local|external|internal)\s*$", remaining)
-                if km:
-                    kind = km.group(1)
-                    remaining = remaining[: remaining.rfind("@" + kind)].strip()
+                    elif k == "default":
+                        default_target = v
+                remaining = re.sub(
+                    r"\b(width|style|color|default)=\S+", "", remaining
+                ).strip()
+                # Loop-strip @cyclic / @kind suffixes — both may appear in any order.
+                # Mirrors stablestate.html L868-884.
+                changed = True
+                while changed:
+                    changed = False
+                    cm = re.search(r"@cyclic\s*$", remaining)
+                    if cm:
+                        cyclic = True
+                        remaining = remaining[: remaining.rfind("@cyclic")].strip()
+                        changed = True
+                        continue
+                    km = re.search(r"@(local|external|internal)\s*$", remaining)
+                    if km:
+                        kind = km.group(1)
+                        remaining = remaining[: remaining.rfind("@" + kind)].strip()
+                        changed = True
                 # / Action
                 si = remaining.find("/")
                 if si != -1:
@@ -201,6 +217,8 @@ def parse_dsl(text: str) -> Diagram:
                 "from": from_id, "to": to_id,
                 "event": event, "guard": guard, "action": action,
                 "kind": kind or d.config.transition,
+                "cyclic": cyclic,
+                "default_target": default_target,
                 "width": width, "style": style, "color": color,
                 "line": line_num,
             }))

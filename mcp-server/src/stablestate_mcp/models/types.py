@@ -65,6 +65,8 @@ class Transition(BaseModel):
     guard: str | None = None
     action: str | None = None
     kind: str = "local"
+    cyclic: bool = False
+    default_target: str | None = None
     width: float | None = None
     style: str | None = None
     color: str | None = None

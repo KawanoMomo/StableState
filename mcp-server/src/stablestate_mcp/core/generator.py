@@ -77,8 +77,14 @@ def generate_dsl(d: Diagram) -> str:
 
     # Transitions
     for t in d.transitions:
+        has_label = (
+            t.event or t.guard or t.action
+            or t.kind != d.config.transition
+            or t.cyclic or t.default_target
+            or t.width or t.style or t.color
+        )
         label = ""
-        if t.event or t.guard or t.action or t.kind != d.config.transition or t.width or t.style or t.color:
+        if has_label:
             parts = []
             if t.event:
                 parts.append(t.event)
@@ -88,6 +94,8 @@ def generate_dsl(d: Diagram) -> str:
                 parts.append(f"/ {t.action}")
             if t.kind != d.config.transition:
                 parts.append(f"@{t.kind}")
+            if t.cyclic:
+                parts.append("@cyclic")
             attrs = []
             if t.style:
                 attrs.append(f"style={t.style}")
@@ -95,6 +103,8 @@ def generate_dsl(d: Diagram) -> str:
                 attrs.append(f"color={t.color}")
             if t.width:
                 attrs.append(f"width={t.width}")
+            if t.default_target:
+                attrs.append(f"default={t.default_target}")
             if attrs:
                 parts.extend(attrs)
             if parts:

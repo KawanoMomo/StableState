@@ -35,6 +35,8 @@ def generate_dsl(d: Diagram) -> str:
             props += f" style={st.style}"
         if st.round is not None:
             props += f" round={st.round}"
+        if st.role:
+            props += f" role={st.role}"
 
         size = f" size {st.w}x{st.h}" if st.w or st.h else ""
         if st.children:
@@ -64,6 +66,8 @@ def generate_dsl(d: Diagram) -> str:
             props += f" color={g.color}"
         if g.border_color:
             props += f" border={g.border_color}"
+        if g.role:
+            props += f" role={g.role}"
         lines.append(f'group {g.id} "{g.label}" at {g.x},{g.y} size {g.w}x{g.h}{props}')
 
     # Notes
@@ -73,6 +77,8 @@ def generate_dsl(d: Diagram) -> str:
             props += f" color={n.color}"
         if n.text_color:
             props += f" text={n.text_color}"
+        if n.role:
+            props += f" role={n.role}"
         lines.append(f'note {n.id} "{n.label}" at {n.x},{n.y} size {n.w}x{n.h}{props}')
 
     # Transitions

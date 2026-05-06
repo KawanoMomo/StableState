@@ -31,6 +31,7 @@ class State(BaseModel):
     text_color: str | None = None
     style: str | None = None
     round: int | None = None
+    role: str | None = None
     line: int = 0
 
 
@@ -55,6 +56,7 @@ class Group(BaseModel):
     color: str | None = None
     border_color: str | None = None
     text_color: str | None = None
+    role: str | None = None
     line: int = 0
 
 
@@ -85,6 +87,7 @@ class Note(BaseModel):
     color: str | None = None
     text_color: str | None = None
     border_color: str | None = None
+    role: str | None = None
     line: int = 0
 
 

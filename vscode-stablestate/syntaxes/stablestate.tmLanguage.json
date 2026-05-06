@@ -204,7 +204,7 @@
     },
     "property": {
       "name": "support.other.property.stablestate",
-      "match": "\\b(entry|do|exit|color|text|border|round|style|width|height|grid|transition|orthogonal|history|default)="
+      "match": "\\b(entry|do|exit|color|text|border|round|style|width|height|grid|transition|orthogonal|history|default|role)="
     },
     "kind-keyword": {
       "patterns": [

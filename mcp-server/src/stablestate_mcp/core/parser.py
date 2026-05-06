@@ -98,6 +98,7 @@ def parse_dsl(text: str) -> Diagram:
                 color=props.get("color"), border_color=props.get("border"),
                 text_color=props.get("text"), style=props.get("style"),
                 round=int(props["round"]) if "round" in props else None,
+                role=props.get("role"),
                 line=line_num,
             )
             d.states.append(st)
@@ -131,7 +132,8 @@ def parse_dsl(text: str) -> Diagram:
                 x=float(m.group(3)), y=float(m.group(4)),
                 w=float(m.group(5)), h=float(m.group(6)),
                 color=props.get("color"), border_color=props.get("border"),
-                text_color=props.get("text"), line=line_num,
+                text_color=props.get("text"), role=props.get("role"),
+                line=line_num,
             )
             d.groups.append(g)
             continue
@@ -145,7 +147,8 @@ def parse_dsl(text: str) -> Diagram:
                 x=float(m.group(3)), y=float(m.group(4)),
                 w=float(m.group(5)), h=float(m.group(6)),
                 color=props.get("color"), text_color=props.get("text"),
-                border_color=props.get("border"), line=line_num,
+                border_color=props.get("border"), role=props.get("role"),
+                line=line_num,
             )
             d.notes.append(n)
             note_map[n.id] = n

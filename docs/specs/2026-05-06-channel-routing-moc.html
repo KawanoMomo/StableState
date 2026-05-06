@@ -1,0 +1,384 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<title>StableState 配線アルゴリズム改善 — Mockup</title>
+<style>
+  body { background: #0F172A; color: #E2E8F0; font-family: 'Hiragino Sans', sans-serif; padding: 24px; margin: 0; }
+  h1 { color: #FBBF24; border-bottom: 1px solid #334155; padding-bottom: 8px; }
+  h2 { color: #93C5FD; margin-top: 36px; }
+  h3 { color: #FCD34D; margin-bottom: 4px; }
+  .section { margin-bottom: 36px; }
+  .row { display: flex; gap: 24px; flex-wrap: wrap; }
+  .col { flex: 1; min-width: 540px; background: #1E293B; padding: 16px; border-radius: 8px; border: 1px solid #334155; }
+  .col.before { border-left: 4px solid #EF4444; }
+  .col.after  { border-left: 4px solid #22C55E; }
+  .label { font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; color: #94A3B8; }
+  .legend { display: flex; gap: 16px; margin-top: 12px; flex-wrap: wrap; font-size: 12px; }
+  .legend span { display: inline-flex; align-items: center; gap: 6px; }
+  .swatch { width: 16px; height: 4px; display: inline-block; }
+  .key { background: #0F172A; padding: 2px 6px; border-radius: 3px; font-family: monospace; font-size: 11px; color: #FCD34D; }
+  .annotation { font-size: 12px; color: #CBD5E1; line-height: 1.6; }
+  .annotation b { color: #FBBF24; }
+  .pill { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 11px; font-weight: 600; margin-right: 6px; }
+  .pill.fwd  { background: #15803D; color: #BBF7D0; }
+  .pill.back { background: #B45309; color: #FDE68A; }
+  .pill.fan  { background: #1D4ED8; color: #BFDBFE; }
+  .pill.cross { background: #B91C1C; color: #FECACA; }
+  table { border-collapse: collapse; width: 100%; margin-top: 12px; font-size: 12px; }
+  th, td { border: 1px solid #334155; padding: 6px 10px; text-align: left; vertical-align: top; }
+  th { background: #0F172A; color: #FBBF24; }
+  td.q { width: 25%; color: #93C5FD; font-weight: 600; }
+  td.a { width: 75%; }
+  svg { background: #0B1220; border-radius: 4px; }
+  .schema-note { background: #0F172A; border-left: 3px solid #6366F1; padding: 10px 14px; margin: 12px 0; font-size: 12px; line-height: 1.7; }
+</style>
+</head>
+<body>
+
+<h1>線の配線アルゴリズム改善 — Mockup (案A: チャネル方式)</h1>
+
+<div class="annotation">
+本資料は <b>「DSLは図形のみ管理、線は自動描画」</b> の原則を死守したまま、現状の単純ベジェルーティングを Sugiyama 風の <b>階層+チャネル方式</b> に置き換える設計案のビジュアル mock です。実装前のレビュー用で、コードはまだ書いていません。
+</div>
+
+<!-- ═══════ Section 1: 問題の可視化 ═══════ -->
+<div class="section">
+<h2>1. 現状の問題 — OTA更新図で観察された3つのパターン</h2>
+
+<svg viewBox="0 0 1200 360" width="100%" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <marker id="arr-cur" viewBox="0 0 10 7" refX="9" refY="3.5" markerWidth="8" markerHeight="6" orient="auto-start-reverse">
+      <path d="M0,0 L10,3.5 L0,7 Z" fill="#94A3B8"/>
+    </marker>
+    <marker id="arr-bad" viewBox="0 0 10 7" refX="9" refY="3.5" markerWidth="8" markerHeight="6" orient="auto-start-reverse">
+      <path d="M0,0 L10,3.5 L0,7 Z" fill="#EF4444"/>
+    </marker>
+  </defs>
+  <!-- top row of states (simplified) -->
+  <g font-family="sans-serif" font-size="12" font-weight="600" fill="#E2E8F0">
+    <rect x="60"  y="80" width="100" height="50" rx="6" fill="#1E293B" stroke="#64748B" stroke-width="1.5"/>
+    <text x="110" y="110" text-anchor="middle">Idle</text>
+    <rect x="200" y="80" width="100" height="50" rx="6" fill="#1E293B" stroke="#A78BFA" stroke-width="1.5"/>
+    <text x="250" y="110" text-anchor="middle">Checking</text>
+    <rect x="340" y="80" width="100" height="50" rx="6" fill="#1E293B" stroke="#22C55E" stroke-width="1.5"/>
+    <text x="390" y="110" text-anchor="middle">Downloading</text>
+    <rect x="480" y="80" width="100" height="50" rx="6" fill="#1E293B" stroke="#A78BFA" stroke-width="1.5"/>
+    <text x="530" y="110" text-anchor="middle">Verifying</text>
+    <polygon points="640,105 660,90 680,105 660,120" fill="#1E293B" stroke="#A78BFA" stroke-width="1.5"/>
+    <text x="660" y="140" text-anchor="middle" font-size="10">verify_branch</text>
+    <rect x="730" y="80" width="100" height="50" rx="6" fill="#1E293B" stroke="#F59E0B" stroke-width="1.5"/>
+    <text x="780" y="110" text-anchor="middle">Ready</text>
+    <rect x="870" y="80" width="100" height="50" rx="6" fill="#1E293B" stroke="#22C55E" stroke-width="1.5"/>
+    <text x="920" y="110" text-anchor="middle">Installing</text>
+    <rect x="1010" y="80" width="80" height="50" rx="6" fill="#1E293B" stroke="#22C55E" stroke-width="1.5"/>
+    <text x="1050" y="110" text-anchor="middle">Done</text>
+    <rect x="540" y="240" width="100" height="50" rx="6" fill="#1E293B" stroke="#EF4444" stroke-width="1.5"/>
+    <text x="590" y="270" text-anchor="middle">Failed</text>
+  </g>
+
+  <!-- forward edges: clean -->
+  <g stroke="#94A3B8" stroke-width="1.4" fill="none" marker-end="url(#arr-cur)">
+    <path d="M160,105 L200,105"/>
+    <path d="M300,105 L340,105"/>
+    <path d="M440,105 L480,105"/>
+    <path d="M580,105 L640,105"/>
+    <path d="M680,105 L730,105"/>
+    <path d="M830,105 L870,105"/>
+    <path d="M970,105 L1010,105"/>
+  </g>
+
+  <!-- problem 1: back-edge (long arc) -->
+  <path d="M540,265 C 400,300 200,300 110,140" stroke="#EF4444" stroke-width="1.6" fill="none" marker-end="url(#arr-bad)" stroke-dasharray="0"/>
+  <text x="280" y="320" fill="#FCA5A5" font-size="11" font-family="sans-serif">
+    <tspan x="280">①バックエッジが長距離 (failed → idle Retry):</tspan>
+    <tspan x="280" dy="14">中間の Checking / Downloading / Verifying を貫通</tspan>
+  </text>
+
+  <!-- problem 2: fan-out crossing -->
+  <path d="M660,120 Q 620,200 590,240" stroke="#EF4444" stroke-width="1.6" fill="none" marker-end="url(#arr-bad)"/>
+  <text x="500" y="200" fill="#FCA5A5" font-size="11" font-family="sans-serif">②choice のfan-out</text>
+  <text x="500" y="215" fill="#FCA5A5" font-size="11" font-family="sans-serif">が Verifying と干渉</text>
+
+  <!-- problem 3: install->failed crosses ready -->
+  <path d="M920,130 C 800,180 700,200 640,255" stroke="#EF4444" stroke-width="1.6" fill="none" marker-end="url(#arr-bad)"/>
+  <text x="900" y="225" fill="#FCA5A5" font-size="11" font-family="sans-serif">
+    <tspan x="900">③installing → failed が</tspan>
+    <tspan x="900" dy="14">Ready を斜めに貫通</tspan>
+  </text>
+</svg>
+
+<div class="legend">
+  <span><span class="pill cross">crossing</span> 関係ないブロックを貫通</span>
+  <span><span class="pill back">back-edge</span> ランク逆方向の長距離線</span>
+  <span><span class="pill fan">fan-out</span> 同一始点からの分岐</span>
+</div>
+</div>
+
+<!-- ═══════ Section 2: 提案案 ═══════ -->
+<div class="section">
+<h2>2. 提案: チャネル方式による配線</h2>
+
+<div class="annotation">
+ランク (=BFS depth) ごとの「列」の上下に固定幅の <b>routing channel</b> を予約します。線は端点 → チャネル → 端点 の3区画 polyline で結ぶことを基本にし、種類ごとに通るチャネルを分けます。
+</div>
+
+<svg viewBox="0 0 1200 480" width="100%" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <marker id="arr-fwd" viewBox="0 0 10 7" refX="9" refY="3.5" markerWidth="7" markerHeight="6" orient="auto-start-reverse">
+      <path d="M0,0 L10,3.5 L0,7 Z" fill="#22C55E"/>
+    </marker>
+    <marker id="arr-back" viewBox="0 0 10 7" refX="9" refY="3.5" markerWidth="7" markerHeight="6" orient="auto-start-reverse">
+      <path d="M0,0 L10,3.5 L0,7 Z" fill="#F59E0B"/>
+    </marker>
+    <marker id="arr-fanD" viewBox="0 0 10 7" refX="9" refY="3.5" markerWidth="7" markerHeight="6" orient="auto-start-reverse">
+      <path d="M0,0 L10,3.5 L0,7 Z" fill="#3B82F6"/>
+    </marker>
+    <pattern id="chan-fwd" width="6" height="6" patternUnits="userSpaceOnUse">
+      <path d="M0,6 L6,0" stroke="#15803D" stroke-width="0.4" opacity="0.4"/>
+    </pattern>
+    <pattern id="chan-back" width="6" height="6" patternUnits="userSpaceOnUse">
+      <path d="M0,6 L6,0" stroke="#92400E" stroke-width="0.4" opacity="0.4"/>
+    </pattern>
+  </defs>
+
+  <!-- Channel zones (visual aid only; not drawn in real diagrams) -->
+  <rect x="40" y="55" width="1130" height="14" fill="url(#chan-fwd)" stroke="#15803D" stroke-width="0.5" stroke-dasharray="3,2" opacity="0.6"/>
+  <text x="50" y="50" fill="#22C55E" font-size="11" font-family="sans-serif">Forward channel (ランク間順方向)</text>
+
+  <rect x="40" y="345" width="1130" height="14" fill="url(#chan-back)" stroke="#92400E" stroke-width="0.5" stroke-dasharray="3,2" opacity="0.6"/>
+  <text x="50" y="340" fill="#F59E0B" font-size="11" font-family="sans-serif">Back-edge bus (ランク逆方向 — Retry/Reset/Cancelの専用通路)</text>
+
+  <rect x="40" y="220" width="1130" height="14" fill="url(#chan-back)" stroke="#1E40AF" stroke-width="0.5" stroke-dasharray="3,2" opacity="0.4"/>
+  <text x="50" y="215" fill="#3B82F6" font-size="11" font-family="sans-serif">Detour channel (関係ないブロックを横切る場合の迂回路)</text>
+
+  <!-- States -->
+  <g font-family="sans-serif" font-size="12" font-weight="600" fill="#E2E8F0">
+    <rect x="60"  y="100" width="100" height="50" rx="6" fill="#1E293B" stroke="#64748B" stroke-width="1.5"/>
+    <text x="110" y="130" text-anchor="middle">Idle</text>
+    <rect x="200" y="100" width="100" height="50" rx="6" fill="#1E293B" stroke="#A78BFA" stroke-width="1.5"/>
+    <text x="250" y="130" text-anchor="middle">Checking</text>
+    <rect x="340" y="100" width="100" height="50" rx="6" fill="#1E293B" stroke="#22C55E" stroke-width="1.5"/>
+    <text x="390" y="130" text-anchor="middle">Downloading</text>
+    <rect x="480" y="100" width="100" height="50" rx="6" fill="#1E293B" stroke="#A78BFA" stroke-width="1.5"/>
+    <text x="530" y="130" text-anchor="middle">Verifying</text>
+    <polygon points="640,125 660,110 680,125 660,140" fill="#1E293B" stroke="#A78BFA" stroke-width="1.5"/>
+    <text x="660" y="160" text-anchor="middle" font-size="10">verify_branch</text>
+    <rect x="730" y="100" width="100" height="50" rx="6" fill="#1E293B" stroke="#F59E0B" stroke-width="1.5"/>
+    <text x="780" y="130" text-anchor="middle">Ready</text>
+    <rect x="870" y="100" width="100" height="50" rx="6" fill="#1E293B" stroke="#22C55E" stroke-width="1.5"/>
+    <text x="920" y="130" text-anchor="middle">Installing</text>
+    <rect x="1010" y="100" width="80" height="50" rx="6" fill="#1E293B" stroke="#22C55E" stroke-width="1.5"/>
+    <text x="1050" y="130" text-anchor="middle">Done</text>
+    <rect x="540" y="270" width="100" height="50" rx="6" fill="#1E293B" stroke="#EF4444" stroke-width="1.5"/>
+    <text x="590" y="300" text-anchor="middle">Failed</text>
+  </g>
+
+  <!-- Forward edges: clean horizontal -->
+  <g stroke="#22C55E" stroke-width="1.6" fill="none" marker-end="url(#arr-fwd)">
+    <path d="M160,125 L200,125"/>
+    <path d="M300,125 L340,125"/>
+    <path d="M440,125 L480,125"/>
+    <path d="M580,125 L640,125"/>
+    <path d="M680,125 L730,125"/>
+    <path d="M830,125 L870,125"/>
+    <path d="M970,125 L1010,125"/>
+  </g>
+
+  <!-- Fan-out from choice down to Failed via detour channel -->
+  <g stroke="#3B82F6" stroke-width="1.6" fill="none" marker-end="url(#arr-fanD)">
+    <path d="M660,140 L660,225 L590,225 L590,270" stroke-dasharray="0"/>
+  </g>
+  <text x="556" y="200" fill="#93C5FD" font-size="10" font-family="sans-serif">[else]</text>
+
+  <!-- Back-edge from Failed -> Idle via back-edge bus -->
+  <g stroke="#F59E0B" stroke-width="1.8" fill="none" marker-end="url(#arr-back)">
+    <path d="M590,320 L590,352 L110,352 L110,150"/>
+  </g>
+  <text x="320" y="370" fill="#FCD34D" font-size="11" font-family="sans-serif">Retry (back-edge bus 経由)</text>
+
+  <!-- Back-edge from Installing -> Failed via back-edge bus segment -->
+  <g stroke="#F59E0B" stroke-width="1.8" fill="none" marker-end="url(#arr-back)">
+    <path d="M920,150 L920,352 L640,352 L640,308" />
+  </g>
+  <text x="700" y="370" fill="#FCD34D" font-size="11" font-family="sans-serif">InstallError</text>
+
+  <!-- Download -> Failed (also through back bus or short detour) -->
+  <g stroke="#3B82F6" stroke-width="1.6" fill="none" marker-end="url(#arr-fanD)">
+    <path d="M390,150 L390,225 L540,225 L540,270"/>
+  </g>
+  <text x="395" y="220" fill="#93C5FD" font-size="10" font-family="sans-serif">NetworkError</text>
+
+  <!-- NoUpdate back-edge: Checking -> Idle (短距離なのでベジェのまま許す) -->
+  <g stroke="#F59E0B" stroke-width="1.6" fill="none" marker-end="url(#arr-back)">
+    <path d="M250,150 Q 200,200 110,150"/>
+  </g>
+  <text x="170" y="195" fill="#FCD34D" font-size="10" font-family="sans-serif">NoUpdate</text>
+</svg>
+
+<div class="legend">
+  <span><span class="pill fwd">forward</span> ランク順方向 — 直線最短</span>
+  <span><span class="pill back">back-edge bus</span> 図の下端の専用通路で大きく迂回</span>
+  <span><span class="pill fan">detour</span> 中段に予約されたチャネルで横切り回避</span>
+</div>
+</div>
+
+<!-- ═══════ Section 3: アルゴリズム概要 ═══════ -->
+<div class="section">
+<h2>3. アルゴリズムの骨子 (擬似コード)</h2>
+
+<div class="schema-note">
+<b>入力:</b> 現在の DSL モデル (states + pseudo + transitions、座標と<code>parent</code>付き)<br>
+<b>出力:</b> 各 transition の polyline 経路 (端点 → ウェイポイント列 → 端点)
+</div>
+
+<pre style="background:#0B1220;padding:12px;border-radius:6px;font-size:12px;line-height:1.5;color:#CBD5E1;overflow-x:auto;">
+# Phase 1: ランク分類とエッジ分類
+ranks = bfs_rank(states, transitions, seeds=initial_pseudo_targets)  # 既存と同じ
+for t in transitions:
+    if rank(t.to) > rank(t.from):
+        t.kind = FORWARD       # 順方向 — チャネル予約不要、直線可
+    elif rank(t.to) < rank(t.from):
+        t.kind = BACKWARD      # 逆方向 — back-edge busへ
+    else:
+        t.kind = LATERAL       # 同ランク — detour channelへ
+
+# Phase 2: チャネル割当
+back_bus_y = max_y_of_any_state + GAP
+detour_channels = []  # ランク間ごと、上下2本ずつ予約
+
+for t in transitions where t.kind == BACKWARD:
+    t.path = [
+        port_out(t.from, side='bottom'),
+        (port_out.x, back_bus_y),
+        (port_in(t.to).x, back_bus_y),
+        port_in(t.to, side='bottom'),
+    ]
+
+for t in transitions where t.kind == FORWARD:
+    if straight_line(t.from, t.to) crosses any unrelated state:
+        # 迂回が必要 — 該当 detour channel を予約
+        ch = nearest_free_detour_channel(t)
+        t.path = [port_out, (port_out.x, ch), (port_in.x, ch), port_in]
+    else:
+        t.path = bezier(port_out, port_in)  # 既存ベジェ
+
+# Phase 3: 同チャネル内のオフセット (チャネル内で線を縦/横に並べる)
+for ch in all_channels:
+    for i, t in enumerate(ch.lines):
+        t.path.shift_perpendicular(i * SPACING)
+
+# Phase 4: 自己ループ (将来拡張)
+for t where t.from == t.to:
+    t.path = top_loop(state, side='top')
+</pre>
+
+<div class="annotation">
+要点:
+<ul style="line-height:1.8">
+<li><b>ベジェは捨てない</b> — 短距離の forward transition は今のベジェのまま。視覚的になめらかな線が消えるのは loss なので使い分ける</li>
+<li><b>back-edge bus は1本</b> — 図の下端に1本だけ予約。垂直オフセットだけで複数の back-edge を共存させる</li>
+<li><b>detour channel は需要があるときだけ</b> — 横切り検出 (ss_validate_layout の <code>route_crosses_block</code>) が反応した行のみ予約する</li>
+<li><b>DSLは無変更</b> — 全部レンダリング時の計算。<code>.sstate</code> ファイルは差分純度を保つ</li>
+</ul>
+</div>
+</div>
+
+<!-- ═══════ Section 4: スコープ ═══════ -->
+<div class="section">
+<h2>4. スコープ &amp; 非スコープ</h2>
+
+<table>
+<tr><th>項目</th><th>状態</th></tr>
+<tr><td>back-edge を専用バスに逃がす</td><td>✅ スコープ</td></tr>
+<tr><td>横切り検出 → detour channel 予約</td><td>✅ スコープ</td></tr>
+<tr><td>fan-out (choice等) を別チャネル分配</td><td>✅ スコープ</td></tr>
+<tr><td>同方向同ポートの線を縦オフセット分配</td><td>✅ スコープ (既存の channel_offset 拡張)</td></tr>
+<tr><td>composite state 内部の transition</td><td>✅ スコープ (親座標系で同じアルゴリズム再帰)</td></tr>
+<tr><td>自己ループ (a → a)</td><td>⚠️ 後回し (別Issue化)</td></tr>
+<tr><td>note接続</td><td>⚠️ 後回し (現状の破線維持)</td></tr>
+<tr><td>A* 全グリッド探索</td><td>❌ 非スコープ (前回失敗の経緯あり)</td></tr>
+<tr><td>ELK/dagre/graphvizへの外注</td><td>❌ 非スコープ (DSL差分純度を崩すため)</td></tr>
+<tr><td>DSL syntax 拡張 (<code>@route=below</code> 等)</td><td>⚠️ escape hatch として将来検討</td></tr>
+</table>
+</div>
+
+<!-- ═══════ Section 5: 実装段取り ═══════ -->
+<div class="section">
+<h2>5. 想定される実装段取り (3スプリント)</h2>
+
+<table>
+<tr><th>Sprint</th><th>内容</th><th>主な成果物</th></tr>
+<tr>
+<td>Sprint 1</td>
+<td>エッジ分類 + back-edge bus 実装<br>(forward/backward/lateral 判定とback専用バス)</td>
+<td>stablestate.html の <code>computePorts</code> + <code>buildRoute</code> 改修。MCP の <code>core/routing.py</code> も対応</td>
+</tr>
+<tr>
+<td>Sprint 2</td>
+<td>横切り検出 + detour channel 予約<br>fan-out別チャネル分配</td>
+<td>polyline 経路生成、チャネル内縦オフセット</td>
+</tr>
+<tr>
+<td>Sprint 3</td>
+<td>composite 内部再帰、視覚調整<br>(コーナー丸め、ラベル位置)</td>
+<td>visual regression テスト (Playwright)、サンプル4種で対比スクショ</td>
+</tr>
+</table>
+
+<div class="annotation" style="margin-top:12px">
+各スプリントごとに <code>examples/automotive-ecu.sstate</code>, <code>tcp-connection.sstate</code>, <code>ota-update-demo.sstate</code> でビジュアル比較を Evaluator (Playwright MCP) で取り、visual regression がないことを確認してから次へ進みます。
+</div>
+</div>
+
+<!-- ═══════ Section 6: 確認事項 ═══════ -->
+<div class="section">
+<h2>6. レビュー観点</h2>
+
+<table>
+<tr>
+<td class="q">a. back-edge bus 1本でいい?</td>
+<td class="a">大規模図でback-edgeが10本超えると bus が混雑する可能性。複数バス (上/下) を許す? → 提案: <b>まず1本で実装、密集したら2本目を自動生成</b>。</td>
+</tr>
+<tr>
+<td class="q">b. 「横切り」の判定基準</td>
+<td class="a">関連状態 (端点ancestors/descendants) はskip対象。pseudo-stateの取り扱いは? → 提案: <b>choice/fork は端点と等価扱い、initial/final は中継禁止</b>。</td>
+</tr>
+<tr>
+<td class="q">c. ベジェ vs polyline の使い分けの基準</td>
+<td class="a">短距離直線forward → ベジェ。bus/detour経由 → polyline (直交)。混在UIが醜くないか? → 提案: <b>すべて一貫してorthogonal polylineに寄せる</b>方が視覚的に整いがち。要レビュー。</td>
+</tr>
+<tr>
+<td class="q">d. アルゴリズムのテスト容易性</td>
+<td class="a">既存 routing.py のユニットテストが activeなので、入出力シグネチャは保ちつつ内部実装を差し替える方針 (TDDで段階的に)。</td>
+</tr>
+<tr>
+<td class="q">e. visualization companion</td>
+<td class="a">この mock は静的SVG。インタラクティブ版 (DSLを貼って即見えるmock) も作る? → 提案: 必要ならSprint 1完了時に <code>docs/specs/channel-routing-playground.html</code> を別途用意。</td>
+</tr>
+</table>
+</div>
+
+<!-- ═══════ Section 7: 次のアクション ═══════ -->
+<div class="section">
+<h2>7. レビュー後の次アクション</h2>
+
+<div class="annotation">
+このmockへの合意が取れたら次:
+<ol style="line-height:1.8">
+<li>spec をこの mock の内容に基づいて <code>docs/specs/2026-05-06-channel-routing-spec.md</code> に書く</li>
+<li>Sprint 1 (back-edge bus) のplanを <code>writing-plans</code> skill で作成</li>
+<li>TDDで実装 → Evaluator で visual verification → 次sprintへ</li>
+</ol>
+
+<b>レビューポイント:</b>
+<ul style="line-height:1.8">
+<li>方向性 (案A=チャネル方式) でよいか? それとも案B (dagre等外注) や案C (ヒント方式) を再検討?</li>
+<li>Section 4 のスコープ判断、特に「自己ループ後回し」「DSL syntax拡張は将来」が妥当か?</li>
+<li>Section 6 の (a)〜(c) について意思決定したい点があれば</li>
+</ul>
+</div>
+</div>
+
+</body>
+</html>

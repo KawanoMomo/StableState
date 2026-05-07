@@ -427,6 +427,42 @@ def test_forward_detour_target_y_centered_when_count_one():
     assert r[-1]["y"] == tgt["y"] + tgt["h"] / 2
 
 
+def test_forward_detour_falls_back_to_bottom_when_riser_crosses_obstacle():
+    """Initial-template `error -> fin` regression: the leading-edge riser
+    (vertical segment from lane to tgt.left) would cross Active, so the
+    route must fall back to entering target from the bottom."""
+    src = {"x": 60,  "y": 360, "w": 160, "h": 100}     # error
+    tgt = {"x": 788, "y": 268, "w": 24,  "h": 24}      # fin (final pseudo)
+    active = {"x": 300, "y": 20, "w": 480, "h": 280}   # obstacle
+    lane_y = 520
+    r = build_forward_detour_route(src, tgt, lane_y, obstacles=[active])
+    # 4-point bottom-entry, not 5-point leading-entry
+    assert len(r) == 4
+    # Last point is tgt.bottom (y = tgt.y + tgt.h)
+    assert r[-1]["y"] == tgt["y"] + tgt["h"]
+    # The riser column is at tgt.x_center (not tgt.left - margin)
+    expected_x = tgt["x"] + tgt["w"] / 2
+    assert abs(r[2]["x"] - expected_x) < 0.01
+
+
+def test_forward_detour_keeps_leading_edge_when_riser_is_clear():
+    """No obstacle blocks the riser → keep the natural 5-point shape."""
+    src = {"x": 60,  "y": 100, "w": 160, "h": 80}
+    tgt = {"x": 600, "y": 100, "w": 160, "h": 80}
+    r = build_forward_detour_route(src, tgt, 240, obstacles=[])
+    assert len(r) == 5
+    assert r[-1]["x"] == tgt["x"]   # tgt.left
+
+
+def test_forward_detour_obstacles_argument_is_optional():
+    """Backward-compatible: callers that don't pass obstacles still get
+    the original 5-point leading-edge route."""
+    src = {"x": 60, "y": 100, "w": 160, "h": 80}
+    tgt = {"x": 600, "y": 100, "w": 160, "h": 80}
+    r = build_forward_detour_route(src, tgt, 240)  # no obstacles
+    assert len(r) == 5
+
+
 def test_derive_pseudo_ranks_choice_inherits_from_incoming():
     """A choice pseudo-state's effective rank should be max rank of incoming
     real states + 1, so its outgoing edges to lower-rank states are

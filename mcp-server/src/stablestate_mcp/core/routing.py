@@ -433,16 +433,25 @@ def build_forward_detour_route(
     src_idx: int = 0, src_count: int = 1,
     tgt_idx: int = 0, tgt_count: int = 1,
     margin: float = 20.0,
+    obstacles: list[dict] | None = None,
 ) -> list[dict]:
-    """5-point polyline for a forward edge that has to detour around an
-    obstacle. Leaves source's bottom edge, drops to the lane, traverses
-    horizontally, rises just before the target's leading edge, then
-    enters the target from its natural front (left when going right,
-    right when going left).
+    """Polyline for a forward edge promoted to the bus.
 
-    This contrasts with `build_back_edge_route` which enters target from
-    the bottom — semantically appropriate for back-edges (return flow)
-    but unnatural for forward edges that have been promoted to the bus.
+    Two shapes are possible:
+
+    - 5-point leading-edge entry (default): leaves src.bottom, drops to
+      the lane, traverses horizontally, rises just before target's
+      leading edge, enters from the natural front (left for going right,
+      right for going left).
+
+    - 4-point bottom-entry fallback: when `obstacles` is given and the
+      leading-edge riser would cross one of them, the route enters
+      target.bottom instead (same shape as a back-edge bus). This avoids
+      having a bend point land inside an unrelated state — the
+      `error -> fin` regression in the initial template.
+
+    The fallback also kicks in when the bottom riser is itself clear,
+    otherwise we keep the 5-point shape as best-effort.
     """
     def _bottom_port(box, idx, count):
         pad = 0.4 if count <= 2 else 0.25 if count <= 4 else 0.15
@@ -457,20 +466,50 @@ def build_forward_detour_route(
         return {"x": box["x"] + box["w"], "y": box["y"] + box["h"] * t}
 
     src_port = _bottom_port(src_box, src_idx, src_count)
-    if tgt_box["x"] > src_box["x"]:
-        tgt_side = "left"
+    going_right = tgt_box["x"] > src_box["x"]
+    if going_right:
+        leading_side = "left"
         approach_x = tgt_box["x"] - margin
     else:
-        tgt_side = "right"
+        leading_side = "right"
         approach_x = tgt_box["x"] + tgt_box["w"] + margin
-    tgt_port = _side_port(tgt_box, tgt_side, tgt_idx, tgt_count)
+    leading_port = _side_port(tgt_box, leading_side, tgt_idx, tgt_count)
 
+    # Decide whether to use the 5-point leading-entry or fall back to the
+    # 4-point bottom-entry when the riser would cross an obstacle.
+    use_leading = True
+    if obstacles:
+        leading_riser_crosses = any(
+            _segment_crosses_box(approach_x, lane_y,
+                                 approach_x, leading_port["y"], obs)
+            for obs in obstacles
+        )
+        if leading_riser_crosses:
+            # Try bottom — only switch if its riser is clearer
+            bottom_port = _bottom_port(tgt_box, tgt_idx, tgt_count)
+            bottom_riser_crosses = any(
+                _segment_crosses_box(bottom_port["x"], lane_y,
+                                     bottom_port["x"], bottom_port["y"], obs)
+                for obs in obstacles
+            )
+            if not bottom_riser_crosses:
+                use_leading = False
+
+    if use_leading:
+        return [
+            src_port,
+            {"x": src_port["x"], "y": lane_y},
+            {"x": approach_x, "y": lane_y},
+            {"x": approach_x, "y": leading_port["y"]},
+            leading_port,
+        ]
+
+    bottom_port = _bottom_port(tgt_box, tgt_idx, tgt_count)
     return [
         src_port,
         {"x": src_port["x"], "y": lane_y},
-        {"x": approach_x, "y": lane_y},
-        {"x": approach_x, "y": tgt_port["y"]},
-        tgt_port,
+        {"x": bottom_port["x"], "y": lane_y},
+        bottom_port,
     ]
 
 

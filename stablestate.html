@@ -2986,11 +2986,43 @@ function renderSVG(parsed) {
       // back-edge → bottom (return-flow semantics), forward-detour →
       // natural leading edge (left when going right, right when going left)
       // so the arrow looks like forward flow despite the bus detour.
+      // Sprint 4 refinement: if the leading-edge riser would cross an
+      // unrelated obstacle (typical when target sits at the edge of a
+      // composite), fall back to bottom-entry so the bend doesn't land
+      // inside another state.
       srcSide = 'bottom';
       if (_kind === 'backward') {
         tgtSide = 'bottom';
       } else {
-        tgtSide = tgtBox.x > srcBox.x ? 'left' : 'right';
+        const goingRight = tgtBox.x > srcBox.x;
+        const leadingSide = goingRight ? 'left' : 'right';
+        const margin = 1.0 * g;
+        const approachX = goingRight ? tgtBox.x - margin
+                                     : tgtBox.x + tgtBox.w + margin;
+        const leadingY = tgtBox.y + tgtBox.h * 0.5;
+        const probeLaneY = _busBaseY + (_laneOf[ti] || 0) * _laneSpacing;
+        let riserCrosses = false;
+        for (const oid in _topLevelBoxes) {
+          if (oid === tr.from || oid === tr.to) continue;
+          if (_segCrossBox(approachX, probeLaneY, approachX, leadingY, _topLevelBoxes[oid])) {
+            riserCrosses = true; break;
+          }
+        }
+        if (riserCrosses) {
+          // Check that bottom riser is clearer before switching
+          const bottomY = tgtBox.y + tgtBox.h;
+          const bottomX = tgtBox.x + tgtBox.w * 0.5;
+          let bottomCrosses = false;
+          for (const oid in _topLevelBoxes) {
+            if (oid === tr.from || oid === tr.to) continue;
+            if (_segCrossBox(bottomX, probeLaneY, bottomX, bottomY, _topLevelBoxes[oid])) {
+              bottomCrosses = true; break;
+            }
+          }
+          tgtSide = bottomCrosses ? leadingSide : 'bottom';
+        } else {
+          tgtSide = leadingSide;
+        }
       }
     } else if (useTopChn) {
       // Top-channel detour: both endpoints attach to top edges
@@ -3063,10 +3095,11 @@ function renderSVG(parsed) {
       const sp = _bottomPort(srcBox, srcIdx, srcEdge.length);
       const laneY = _laneY(_laneOf[ti] != null ? _laneOf[ti] : 0);
       const isForwardDetour = _kind !== 'backward';
-      if (isForwardDetour) {
+      // First-pass picks tgtSide='bottom' when the leading-edge riser
+      // would cross an obstacle. In that case we use the same 4-point
+      // shape as a back-edge — falling through to the else branch below.
+      if (isForwardDetour && tgtSide !== 'bottom') {
         // 5-point forward detour: enters target from leading edge.
-        // Use shared port distribution so adjacent normal-routed edges
-        // entering the same side don't collide on the same y.
         const margin = 1.0 * g;
         const goingRight = tgtBox.x > srcBox.x;
         const approachX = goingRight ? tgtBox.x - margin

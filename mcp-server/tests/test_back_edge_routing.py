@@ -267,6 +267,43 @@ def test_assign_back_edge_lanes_skips_short_clear_back_edges():
     assert ti_c1_idle not in lanes  # short clean back-edge skips bus
 
 
+def test_assign_back_edge_lanes_detects_l_shape_crossing():
+    """OTA regression: installing -> failed's straight centre-to-centre
+    probe is clear, but the actual buildRoute output (L-shape via
+    midX) sweeps a horizontal segment through ready and verifying.
+    The filter must check the L-shape, not just the straight line.
+
+    The DSL mirrors the OTA layout — `downloading -> failed` gives
+    failed a lower rank than installing, so installing -> failed is
+    a true backward edge.
+    """
+    dsl = (
+        "@canvas width=2000 height=600 grid=20\n"
+        "initial ini at 0.5,3\n"
+        'state idle "Idle" at 2,2 size 10x4\n'
+        'state checking "Checking" at 16,2 size 12x4\n'
+        'state downloading "Downloading" at 30,2 size 22x10\n'
+        'state verifying "Verifying" at 57,2 size 10x4\n'
+        'state ready "ReadyToInstall" at 71,2 size 12x4\n'
+        'state installing "Installing" at 87,2 size 10x4\n'
+        'state failed "Failed" at 37,18 size 8x4\n'
+        "ini -> idle\n"
+        "idle -> checking\n"
+        "checking -> downloading\n"
+        "downloading -> verifying\n"
+        "downloading -> failed\n"      # gives failed rank 3
+        "verifying -> ready\n"
+        "ready -> installing\n"
+        "installing -> failed\n"       # this is the L-shape regression case (5 → 3)
+    )
+    d = parse_dsl(dsl)
+    ranks = compute_ranks(d)
+    lanes = assign_back_edge_lanes(d, ranks)
+    ti = next(i for i, t in enumerate(d.transitions)
+              if t.from_id == "installing" and t.to_id == "failed")
+    assert ti in lanes  # buildRoute L-shape crosses ready/verifying → bus
+
+
 def test_assign_back_edge_lanes_keeps_long_crossing_back_edges():
     """Long back-edges whose direct route crosses other states still need
     the bus — must not be excluded by the new direct-route filter."""

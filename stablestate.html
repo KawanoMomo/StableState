@@ -2843,29 +2843,42 @@ function renderSVG(parsed) {
     return t0 < t1;
   }
 
+  // Probe whether the *actual* default route (computePortSide +
+  // getPortPoint + buildRoute) crosses any unrelated top-level box.
+  // The straight centre-to-centre line misses cases where the L/Z
+  // shape sweeps through obstacles that the diagonal slips between
+  // (OTA regression: installing→failed L crosses ready/verifying).
+  function _defaultRouteCrosses(fromId, toId) {
+    const sb = _topLevelBoxes[fromId], tb = _topLevelBoxes[toId];
+    if (!sb || !tb) return false;
+    const sides = computePortSide(sb, tb);
+    const fp = getPortPoint(sb, sides.srcSide, 0, 1);
+    const tp = getPortPoint(tb, sides.tgtSide, 0, 1);
+    const route = buildRoute(fp, tp, sides.srcSide, sides.tgtSide, 0, 0);
+    for (const oid in _topLevelBoxes) {
+      if (oid === fromId || oid === toId) continue;
+      const ob = _topLevelBoxes[oid];
+      for (let i = 0; i < route.length - 1; i++) {
+        if (_segCrossBox(route[i].x, route[i].y, route[i+1].x, route[i+1].y, ob)) {
+          return true;
+        }
+      }
+    }
+    return false;
+  }
+
   const _backList = [];
   for (let ti = 0; ti < parsed.transitions.length; ti++) {
     const tr = parsed.transitions[ti];
     if (_classifyEdge(tr.from, tr.to) !== 'backward') continue;
     const sx = _xOf(tr.from), tx = _xOf(tr.to);
     if (sx == null || tx == null) continue;
-    // Direct-probe filter: short clean back-edges (no unrelated obstacle
-    // between src and tgt centres) skip the bus entirely. Their default
-    // buildRoute output is already clean — bus would be unnecessary
-    // detour and would create the spurious W-?-? bend points the user
-    // saw with c1 -> idle in the initial template.
-    const sb = _topLevelBoxes[tr.from], tb = _topLevelBoxes[tr.to];
-    if (sb && tb) {
-      const cx1 = sb.x + sb.w/2, cy1 = sb.y + sb.h/2;
-      const cx2 = tb.x + tb.w/2, cy2 = tb.y + tb.h/2;
-      let crosses = false;
-      for (const oid in _topLevelBoxes) {
-        if (oid === tr.from || oid === tr.to) continue;
-        if (_segCrossBox(cx1, cy1, cx2, cy2, _topLevelBoxes[oid])) {
-          crosses = true; break;
-        }
-      }
-      if (!crosses) continue;
+    // Skip the bus when the actual default route is already clean.
+    // This keeps short clean back-edges out of the bus (c1→idle,
+    // active→idle in the initial template) but still catches the L-shape
+    // crossings that a straight probe would miss (installing→failed in OTA).
+    if (_topLevelBoxes[tr.from] && _topLevelBoxes[tr.to]) {
+      if (!_defaultRouteCrosses(tr.from, tr.to)) continue;
     }
     _backList.push({ ti, span: Math.abs(sx - tx) });
   }

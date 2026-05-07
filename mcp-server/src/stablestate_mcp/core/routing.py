@@ -246,6 +246,24 @@ def derive_pseudo_ranks(diagram, ranks: dict[str, int]) -> dict[str, int]:
     return out
 
 
+def _default_route_crosses(boxes: dict, from_id: str, to_id: str) -> bool:
+    """Return True if the polyline produced by the default routing
+    (compute_port_side + get_port_point + build_route) crosses any box
+    in `boxes` other than the endpoints themselves."""
+    src_box = boxes[from_id]
+    tgt_box = boxes[to_id]
+    src_side, tgt_side = compute_port_side(src_box, tgt_box)
+    fp = get_port_point(src_box, src_side)
+    tp = get_port_point(tgt_box, tgt_side)
+    points = build_route(fp, tp, src_side, tgt_side)
+    for other_id, other_box in boxes.items():
+        if other_id == from_id or other_id == to_id:
+            continue
+        if polyline_crosses_box(points, other_box):
+            return True
+    return False
+
+
 def assign_back_edge_lanes(diagram, ranks: dict[str, int]) -> dict[int, int]:
     """Assign each *crossing* back-edge a unique lane index so multiple
     back-edges don't overlap on a single horizontal line.
@@ -302,23 +320,15 @@ def assign_back_edge_lanes(diagram, ranks: dict[str, int]) -> dict[int, int]:
         tx = _x_of(t.to_id)
         if sx is None or tx is None:
             continue
-        # Direct-route probe: skip if the straight centre-to-centre line
-        # is already clear of unrelated obstacles. The actual buildRoute
-        # output may differ (L/U shape) but if this probe is clean, the
-        # default routing very likely is too.
+        # Probe the *actual* default route this back-edge would render
+        # as (build_route output via compute_port_side + get_port_point),
+        # not just the straight src→tgt line. The L/Z shape may sweep
+        # through obstacles that the diagonal misses (OTA regression:
+        # installing→failed L crosses ready/verifying although the
+        # straight line slips between them).
         if t.from_id in boxes and t.to_id in boxes:
-            sb, tb = boxes[t.from_id], boxes[t.to_id]
-            cx1, cy1 = sb["x"] + sb["w"] / 2, sb["y"] + sb["h"] / 2
-            cx2, cy2 = tb["x"] + tb["w"] / 2, tb["y"] + tb["h"] / 2
-            crosses = False
-            for other_id, other_box in boxes.items():
-                if other_id == t.from_id or other_id == t.to_id:
-                    continue
-                if _segment_crosses_box(cx1, cy1, cx2, cy2, other_box):
-                    crosses = True
-                    break
-            if not crosses:
-                continue  # back-edge is clean — skip bus, use direct routing
+            if not _default_route_crosses(boxes, t.from_id, t.to_id):
+                continue  # default routing is clean — skip bus
 
         back.append((ti, abs(sx - tx)))
 

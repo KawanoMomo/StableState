@@ -156,3 +156,55 @@ def test_resolve_state_ref_pseudo():
     el = resolve_state_ref("active.ini", d)
     assert el is not None
     assert el.id == "ini"
+
+
+def test_transition_cyclic():
+    d = parse_dsl("a -> b : Tick @cyclic")
+    t = d.transitions[0]
+    assert t.cyclic is True
+    assert t.event == "Tick"
+    assert t.kind == "local"
+
+
+def test_transition_cyclic_with_kind_either_order():
+    d1 = parse_dsl("a -> b : Tick @external @cyclic")
+    d2 = parse_dsl("a -> b : Tick @cyclic @external")
+    for d in (d1, d2):
+        t = d.transitions[0]
+        assert t.cyclic is True
+        assert t.kind == "external"
+        assert t.event == "Tick"
+
+
+def test_transition_default_target():
+    d = parse_dsl("c1 -> b : default=fallback")
+    t = d.transitions[0]
+    assert t.default_target == "fallback"
+    assert t.event is None
+
+
+def test_transition_full_attrs():
+    dsl = "a -> b : EvGo [Ready] / Init @external @cyclic style=dashed color=#FF0000 width=2 default=fb"
+    d = parse_dsl(dsl)
+    t = d.transitions[0]
+    assert t.event == "EvGo"
+    assert t.guard == "Ready"
+    assert t.action == "Init"
+    assert t.kind == "external"
+    assert t.cyclic is True
+    assert t.style == "dashed"
+    assert t.color == "#FF0000"
+    assert t.width == 2
+    assert t.default_target == "fb"
+
+
+def test_generator_emits_cyclic_and_default():
+    dsl = "a -> b : Tick @cyclic\nc -> d : default=fb"
+    d = parse_dsl(dsl)
+    out = generate_dsl(d)
+    assert "@cyclic" in out
+    assert "default=fb" in out
+    # Round-trip
+    d2 = parse_dsl(out)
+    assert d2.transitions[0].cyclic is True
+    assert d2.transitions[1].default_target == "fb"

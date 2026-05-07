@@ -17,6 +17,9 @@ sed -i "s/\"version\": \"[^\"]*\"/\"version\": \"${VER}\"/" vscode-stablestate/p
 # 3. stablestate.html — badge
 sed -i "s/v[0-9.]\+<\/span>/v${VER}<\/span>/" stablestate.html
 
+# 4. mcp-server/pyproject.toml
+sed -i "s/^version = \"[^\"]*\"/version = \"${VER}\"/" mcp-server/pyproject.toml
+
 echo "Done. Updated files:"
-grep -n "v${VER}\|\"${VER}\"" \
-  VERSION vscode-stablestate/package.json stablestate.html 2>/dev/null || true
+grep -n "v${VER}\|\"${VER}\"\|version = \"${VER}\"" \
+  VERSION vscode-stablestate/package.json stablestate.html mcp-server/pyproject.toml 2>/dev/null || true

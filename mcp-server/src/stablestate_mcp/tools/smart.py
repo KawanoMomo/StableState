@@ -380,3 +380,104 @@ def ss_suggest_position(w: float = 8, h: float = 4) -> str:
             if not any(_boxes_overlap(c, o) for o in occupied):
                 return f"Suggested: at {x},{y} size {int(w)}x{int(h)}"
     return "No free position found."
+
+
+def ss_summary() -> str:
+    """High-level diagram health snapshot for the LLM to decide whether to
+    refactor before adding more states. Returns JSON with:
+
+    - counts: states/pseudo/groups/notes/transitions
+    - density: occupied_area / canvas_area (rule of thumb: >0.55 is busy)
+    - busiest: state ids with the highest fan-in + fan-out, capped to top 3
+    - unconnected: state ids with no incoming and no outgoing transition
+    - composite_overpacked: composite states whose children fill >70% of
+      their interior — candidates for `ss_pack_children` or split
+    - role_coverage: how many states have a `role=` set (input for
+      `ss_apply_palette`)
+    - suggestions: short actionable hints derived from the above
+    """
+    import json as _json
+    d = state.get()
+    g = d.canvas.grid
+    cw, ch = d.canvas.width / g, d.canvas.height / g
+    canvas_area = cw * ch
+
+    occupied_area = 0.0
+    for s in d.states:
+        if s.parent is None:
+            occupied_area += s.w * s.h
+    for grp in d.groups:
+        occupied_area += grp.w * grp.h
+    density = occupied_area / canvas_area if canvas_area > 0 else 0.0
+
+    fan = {s.id: 0 for s in d.states}
+    for t in d.transitions:
+        fan[t.from_id] = fan.get(t.from_id, 0) + 1
+        fan[t.to_id] = fan.get(t.to_id, 0) + 1
+    busiest = sorted(fan.items(), key=lambda kv: -kv[1])[:3]
+    busiest = [{"id": sid, "fan": n} for sid, n in busiest if n > 0]
+
+    referenced = {t.from_id for t in d.transitions} | {t.to_id for t in d.transitions}
+    unconnected = [s.id for s in d.states if s.id not in referenced]
+
+    overpacked = []
+    sm = {s.id: s for s in d.states}
+    for parent in d.states:
+        if not parent.children:
+            continue
+        interior = parent.w * parent.h
+        used = 0.0
+        for cid in parent.children:
+            c = sm.get(cid)
+            if c:
+                used += c.w * c.h
+        if interior > 0 and used / interior > 0.7:
+            overpacked.append({
+                "id": parent.id,
+                "fill_ratio": round(used / interior, 2),
+            })
+
+    role_count = sum(1 for s in d.states if s.role)
+    total_themable = len(d.states) + len(d.groups) + len(d.notes)
+
+    suggestions = []
+    if density > 0.55:
+        suggestions.append(
+            "Density >0.55: consider grouping related states into a composite or expanding canvas"
+        )
+    if busiest and busiest[0]["fan"] >= 6:
+        suggestions.append(
+            f"State '{busiest[0]['id']}' has fan={busiest[0]['fan']}: split or extract sub-flow"
+        )
+    if unconnected:
+        suggestions.append(
+            f"{len(unconnected)} unconnected state(s): {unconnected[:3]} — wire transitions or remove"
+        )
+    if overpacked:
+        suggestions.append(
+            f"{len(overpacked)} composite(s) >70% full: ss_pack_children to retidy or expand parent"
+        )
+    if total_themable > 0 and role_count == 0:
+        suggestions.append(
+            "No roles set: ss_set_role + ss_apply_palette gives a cohesive look in 2 calls"
+        )
+    if len(d.transitions) > 0 and not any(ps.type == "initial" for ps in d.pseudo_states):
+        suggestions.append(
+            "No initial pseudo-state: ss_auto_layout=hierarchical needs one for a clean BFS root"
+        )
+
+    return _json.dumps({
+        "counts": {
+            "states": len(d.states),
+            "pseudo_states": len(d.pseudo_states),
+            "groups": len(d.groups),
+            "notes": len(d.notes),
+            "transitions": len(d.transitions),
+        },
+        "canvas": {"width_grid": cw, "height_grid": ch, "density": round(density, 3)},
+        "busiest": busiest,
+        "unconnected": unconnected,
+        "composite_overpacked": overpacked,
+        "role_coverage": {"set": role_count, "themable_total": total_themable},
+        "suggestions": suggestions,
+    }, indent=2)

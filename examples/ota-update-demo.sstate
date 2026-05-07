@@ -1,0 +1,29 @@
+@canvas width=2200 height=700 grid=20
+state idle "Idle" at 2,2 size 10x4 do=WaitForTrigger role=idle color=#1e293b border=#64748B text=#CBD5E1
+state checking "Checking" at 16,2 size 10x4 entry=HttpGetManifest do=ParseResponse role=transient color=#1e293b border=#A78BFA text=#DDD6FE
+state downloading "Downloading" at 30,2 size 23x10 do=FetchChunks role=active color=#1e293b border=#22C55E text=#BBF7D0 {
+  state receiving "Receiving" at 1.5,2 size 8x4 do=ReadChunk role=transient color=#1e293b border=#A78BFA text=#DDD6FE
+  state buffering "Buffering" at 13.5,2 size 8x4 do=WriteToFlashBuf role=transient color=#1e293b border=#A78BFA text=#DDD6FE
+}
+state verifying "Verifying" at 57,2 size 10x4 do=VerifySignature role=transient color=#1e293b border=#A78BFA text=#DDD6FE
+state ready "ReadyToInstall" at 71,2 size 12x4 do=WaitConfirm role=warning color=#1e293b border=#F59E0B text=#FDE68A
+state installing "Installing" at 87,2 size 10x4 do=ApplyPatch role=active color=#1e293b border=#22C55E text=#BBF7D0
+state failed "Failed" at 37,18 size 8x4 do=HoldDiagnostics role=error color=#1e293b border=#EF4444 text=#FCA5A5
+initial ini at 0.5,4
+final fin_ok at 110,4
+choice verify_branch at 70,4
+ini -> idle
+idle -> checking : Tick
+checking -> idle : NoUpdate
+checking -> downloading : UpdateAvailable
+downloading -> verifying : DownloadComplete
+downloading -> failed : NetworkError
+verifying -> verify_branch
+verify_branch -> ready
+verify_branch -> failed
+ready -> installing : Confirm
+installing -> fin_ok : Success
+installing -> failed : InstallError
+failed -> idle : Retry
+receiving -> buffering
+buffering -> receiving

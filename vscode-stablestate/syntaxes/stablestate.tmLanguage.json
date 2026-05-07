@@ -204,7 +204,7 @@
     },
     "property": {
       "name": "support.other.property.stablestate",
-      "match": "\\b(entry|do|exit|color|text|border|round|style|width|height|grid|transition|orthogonal|history)="
+      "match": "\\b(entry|do|exit|color|text|border|round|style|width|height|grid|transition|orthogonal|history|default|role)="
     },
     "kind-keyword": {
       "patterns": [
@@ -219,6 +219,10 @@
         {
           "name": "keyword.other.kind.stablestate",
           "match": "@internal\\b"
+        },
+        {
+          "name": "keyword.other.cyclic.stablestate",
+          "match": "@cyclic\\b"
         },
         {
           "name": "keyword.other.at.stablestate",

@@ -35,6 +35,8 @@ def generate_dsl(d: Diagram) -> str:
             props += f" style={st.style}"
         if st.round is not None:
             props += f" round={st.round}"
+        if st.role:
+            props += f" role={st.role}"
 
         size = f" size {st.w}x{st.h}" if st.w or st.h else ""
         if st.children:
@@ -64,6 +66,8 @@ def generate_dsl(d: Diagram) -> str:
             props += f" color={g.color}"
         if g.border_color:
             props += f" border={g.border_color}"
+        if g.role:
+            props += f" role={g.role}"
         lines.append(f'group {g.id} "{g.label}" at {g.x},{g.y} size {g.w}x{g.h}{props}')
 
     # Notes
@@ -73,12 +77,20 @@ def generate_dsl(d: Diagram) -> str:
             props += f" color={n.color}"
         if n.text_color:
             props += f" text={n.text_color}"
+        if n.role:
+            props += f" role={n.role}"
         lines.append(f'note {n.id} "{n.label}" at {n.x},{n.y} size {n.w}x{n.h}{props}')
 
     # Transitions
     for t in d.transitions:
+        has_label = (
+            t.event or t.guard or t.action
+            or t.kind != d.config.transition
+            or t.cyclic or t.default_target
+            or t.width or t.style or t.color
+        )
         label = ""
-        if t.event or t.guard or t.action or t.kind != d.config.transition or t.width or t.style or t.color:
+        if has_label:
             parts = []
             if t.event:
                 parts.append(t.event)
@@ -88,6 +100,8 @@ def generate_dsl(d: Diagram) -> str:
                 parts.append(f"/ {t.action}")
             if t.kind != d.config.transition:
                 parts.append(f"@{t.kind}")
+            if t.cyclic:
+                parts.append("@cyclic")
             attrs = []
             if t.style:
                 attrs.append(f"style={t.style}")
@@ -95,6 +109,8 @@ def generate_dsl(d: Diagram) -> str:
                 attrs.append(f"color={t.color}")
             if t.width:
                 attrs.append(f"width={t.width}")
+            if t.default_target:
+                attrs.append(f"default={t.default_target}")
             if attrs:
                 parts.extend(attrs)
             if parts:

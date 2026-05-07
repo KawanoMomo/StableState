@@ -30,6 +30,52 @@ def test_add_state():
     assert d.states[0].id == "idle"
 
 
+def test_add_state_with_parent_converts_leaf_to_composite():
+    ss_add_state("outer", "Outer", 1, 1, w=20, h=10)
+    ss_add_state("inner", "Inner", 2, 2, parent="outer")
+    d = state.get()
+    outer = next(s for s in d.states if s.id == "outer")
+    inner = next(s for s in d.states if s.id == "inner")
+    assert inner.parent == "outer"
+    assert "inner" in outer.children
+    # DSL should now contain a brace block
+    dsl = state.get_dsl()
+    assert "outer" in dsl
+    assert "{" in dsl and "}" in dsl
+
+
+def test_add_state_with_existing_composite_parent():
+    ss_add_state("outer", "Outer", 1, 1, w=20, h=10)
+    ss_add_state("a", "A", 2, 2, parent="outer")
+    ss_add_state("b", "B", 11, 2, parent="outer")
+    d = state.get()
+    outer = next(s for s in d.states if s.id == "outer")
+    assert sorted(outer.children) == ["a", "b"]
+    a = next(s for s in d.states if s.id == "a")
+    b = next(s for s in d.states if s.id == "b")
+    assert a.parent == "outer" and b.parent == "outer"
+
+
+def test_add_state_unknown_parent_errors():
+    msg = ss_add_state("orphan", "Orphan", 1, 1, parent="nope")
+    assert "Error" in msg or "not found" in msg
+
+
+def test_modify_composite_state_preserves_brace():
+    """update_prop on a composite must insert before { so children remain
+    recognised after re-parse."""
+    ss_add_state("outer", "Outer", 1, 1, w=20, h=10)
+    ss_add_state("inner", "Inner", 2, 2, parent="outer")
+    # Apply a color via ss_modify (which uses update_prop internally)
+    ss_modify("outer", color="#0F172A")
+    d = state.get()
+    outer = next(s for s in d.states if s.id == "outer")
+    inner = next(s for s in d.states if s.id == "inner")
+    assert outer.color == "#0F172A"
+    assert inner.parent == "outer"  # children must still be recognised
+    assert "inner" in outer.children
+
+
 def test_add_state_duplicate():
     ss_add_state("idle", "Idle", 2, 3)
     result = ss_add_state("idle", "Idle2", 5, 5)

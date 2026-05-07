@@ -147,7 +147,7 @@ input[type=number]::-webkit-inner-spin-button { -webkit-appearance:none; }
   <div class="logo">
     <div class="logo-icon">S</div>
     <span class="logo-text">StableState</span>
-    <span class="badge">v0.1.0</span>
+    <span class="badge">v0.2.0</span>
   </div>
 
   <div class="tab-group">
@@ -166,6 +166,7 @@ input[type=number]::-webkit-inner-spin-button { -webkit-appearance:none; }
     <button class="tb" id="btn-actions" onclick="toggleActions()">Actions</button>
     <button class="tb" id="btn-annotations" onclick="toggleAnnotations()">Notes</button>
     <button class="tb" id="btn-highlight" onclick="toggleHighlight()" title="Highlight connected (H)">&#9678; HL</button>
+    <button class="tb" id="btn-debug" onclick="toggleDebug()" title="Show routing channels / lanes / classifications (D)">&#128027; DBG</button>
     <!-- Frozen: AutoRoute / SmartRoute hidden from UI pending rework. Functions retained in code. -->
     <!-- <button class="tb" onclick="autoRoute()" title="遷移線の交差を最小化">AutoRoute</button> -->
     <!-- <button class="tb" onclick="smartRoute()" title="幾何ルーティング (I/L/Z/U)">SmartRoute</button> -->
@@ -357,6 +358,7 @@ let snapGuides = [];       // [{axis:'x'|'y', pos:number}] for rendering
 let searchFilter = '';     // ADR-026: search/filter string
 let searchMatchIds = null; // Set of matching IDs, or null if no filter
 let highlight = false;
+let debugRouting = false;  // toggled by toggleDebug() / D key
 
 function getConnectedIds() {
   if (!parsed) return new Set();
@@ -368,6 +370,13 @@ function getConnectedIds() {
     if (toEl) ids.add(toEl.id);
   }
   return ids;
+}
+
+function toggleDebug() {
+  debugRouting = !debugRouting;
+  const btn = document.getElementById('btn-debug');
+  if (btn) btn.classList.toggle('active', debugRouting);
+  refresh();
 }
 
 function toggleHighlight() {
@@ -2674,11 +2683,281 @@ function renderSVG(parsed) {
   // Collect all polyline routes for crossing detection
   const allRoutes = [];
 
+  // ─── Sprint 1 (channel routing): rank-based back-edge detection ───
+  // Goal: route "back-edges" (transitions that go against BFS rank, e.g.
+  //       a Retry from Failed back to Idle) through a dedicated horizontal
+  //       bus below all top-level states, instead of cutting through them.
+  // Spec: docs/specs/2026-05-06-channel-routing-moc.html section 3.
+  const _topLevelIds = new Set(parsed.states.filter(s => !s.parent).map(s => s.id));
+  const _pseudoIds   = new Set(parsed.pseudoStates.map(p => p.id));
+  const _outEdges = {};
+  for (const t of parsed.transitions) {
+    if (!_outEdges[t.from]) _outEdges[t.from] = [];
+    _outEdges[t.from].push(t.to);
+  }
+  function _resolveReal(start, seen) {
+    seen = seen || new Set();
+    if (seen.has(start)) return [];
+    seen.add(start);
+    if (_topLevelIds.has(start)) return [start];
+    if (!_pseudoIds.has(start)) return [];
+    const out = [];
+    for (const nxt of (_outEdges[start] || [])) {
+      for (const r of _resolveReal(nxt, seen)) out.push(r);
+    }
+    return out;
+  }
+  // Pseudo-collapsed adjacency on top-level states only
+  const _adj = {};
+  for (const t of parsed.transitions) {
+    if (!_topLevelIds.has(t.from)) continue;
+    for (const r of _resolveReal(t.to)) {
+      if (r === t.from) continue;
+      if (!_adj[t.from]) _adj[t.from] = [];
+      _adj[t.from].push(r);
+    }
+  }
+  // Seeds: initial-pseudo targets (resolved through pseudo chain)
+  const _seeds = [];
+  for (const ps of parsed.pseudoStates) {
+    if (ps.type !== 'initial' || ps.parent) continue;
+    for (const nxt of (_outEdges[ps.id] || [])) {
+      for (const r of _resolveReal(nxt)) if (!_seeds.includes(r)) _seeds.push(r);
+    }
+  }
+  if (!_seeds.length) {
+    // Fallback: states without pseudo-resolved incoming edges
+    const _incoming = new Set();
+    for (const src in _adj) for (const dst of _adj[src]) _incoming.add(dst);
+    for (const id of _topLevelIds) if (!_incoming.has(id)) _seeds.push(id);
+  }
+  // BFS shortest-path ranking — longest-path relaxation diverges on cycles
+  // (e.g. idle ⇄ checking in retry loops). Shortest-path is sufficient for
+  // back-edge classification.
+  const _ranks = {};
+  const _q = [];
+  for (const s of _seeds) {
+    if (_ranks[s] == null) { _ranks[s] = 0; _q.push(s); }
+  }
+  while (_q.length) {
+    const node = _q.shift();
+    for (const nxt of (_adj[node] || [])) {
+      if (_ranks[nxt] == null) { _ranks[nxt] = _ranks[node] + 1; _q.push(nxt); }
+    }
+  }
+  // Unranked: assign trailing ranks
+  let _base = -1;
+  for (const v of Object.values(_ranks)) if (v > _base) _base = v;
+  _base += 1;
+  for (const s of parsed.states) {
+    if (s.parent) continue;
+    if (_ranks[s.id] == null) { _ranks[s.id] = _base; _base += 1; }
+  }
+  // Sprint 1.5: derive pseudo-state ranks from incoming real-state edges
+  // so back-edges sourced at choice/fork/etc. (e.g. verify_branch -> failed)
+  // are classified correctly instead of falling to 'lateral'.
+  const _pseudoIncoming = {};
+  for (const t of parsed.transitions) {
+    if (!_pseudoIncoming[t.to]) _pseudoIncoming[t.to] = [];
+    _pseudoIncoming[t.to].push(t.from);
+  }
+  const _pseudoRanks = {};
+  for (const ps of parsed.pseudoStates) {
+    if (ps.parent) continue;
+    const fromIds = _pseudoIncoming[ps.id] || [];
+    const rs = fromIds.map(fid => _ranks[fid]).filter(r => r != null);
+    if (rs.length) _pseudoRanks[ps.id] = Math.max(...rs) + 1;
+  }
+  // Merged rank lookup: real states + pseudo derivations
+  const _allRanks = Object.assign({}, _ranks, _pseudoRanks);
+
+  // Back-edge bus y position: below the deepest top-level *state* bottom edge.
+  // Groups are not counted — they're typically large decorative containers
+  // that would push the bus off-canvas without representing routing-relevant
+  // obstacles.
+  let _deepest = 0;
+  for (const s of parsed.states) {
+    if (!s.parent) _deepest = Math.max(_deepest, s.y + s.h);
+  }
+  const _busBaseY = (_deepest > 0 ? _deepest + 3.0 : 2.0) * g;
+  const _laneSpacing = 1.5 * g; // 1.5 grid units between lanes
+
+  // Classify edge by rank delta. Top-level state→state and
+  // pseudo-derived back-edges qualify for bus routing.
+  function _classifyEdge(from, to) {
+    if (from === to) return 'self';
+    if (_allRanks[from] == null || _allRanks[to] == null) return 'lateral';
+    const rf = _allRanks[from], rt = _allRanks[to];
+    if (rt > rf) return 'forward';
+    if (rt < rf) return 'backward';
+    return 'lateral';
+  }
+
+  // Sprint 1.5: assign each back-edge its own lane so horizontal segments
+  // don't overlap. Sort by horizontal span ascending → shortest lane 0
+  // (closest to states), longest lane N-1 (deepest).
+  function _xOf(id) {
+    for (const s of parsed.states) {
+      if (s.id === id && !s.parent) return s.x + s.w / 2;
+    }
+    for (const ps of parsed.pseudoStates) {
+      if (ps.id === id && !ps.parent) return ps.x;
+    }
+    return null;
+  }
+  // Obstacle/endpoint boxes — top-level states + top-level pseudo-states.
+  // Pseudos use a small box centred on their declared point so they
+  // participate in crossing detection without dominating it.
+  const _topLevelBoxes = {};
+  for (const s of parsed.states) {
+    if (!s.parent) {
+      _topLevelBoxes[s.id] = { x: s.x * g, y: s.y * g, w: s.w * g, h: s.h * g };
+    }
+  }
+  for (const ps of parsed.pseudoStates) {
+    if (ps.parent) continue;
+    const side = (ps.w || 1) * g;
+    _topLevelBoxes[ps.id] = {
+      x: ps.x * g - side / 2,
+      y: ps.y * g - side / 2,
+      w: side, h: side,
+    };
+  }
+  // Liang-Barsky segment-vs-box, used by both the back-edge filter and
+  // the forward-detour detector below.
+  function _segCrossBox(x1, y1, x2, y2, box) {
+    const bx2 = box.x + box.w, by2 = box.y + box.h;
+    const dx = x2 - x1, dy = y2 - y1;
+    const p = [-dx, dx, -dy, dy];
+    const q = [x1 - box.x, bx2 - x1, y1 - box.y, by2 - y1];
+    let t0 = 0.0, t1 = 1.0;
+    for (let i = 0; i < 4; i++) {
+      if (Math.abs(p[i]) < 1e-10) { if (q[i] < 0) return false; }
+      else {
+        const r = q[i] / p[i];
+        if (p[i] < 0) t0 = Math.max(t0, r);
+        else          t1 = Math.min(t1, r);
+        if (t0 > t1) return false;
+      }
+    }
+    return t0 < t1;
+  }
+
+  // Probe whether the *actual* default route (computePortSide +
+  // getPortPoint + buildRoute) crosses any unrelated top-level box.
+  // The straight centre-to-centre line misses cases where the L/Z
+  // shape sweeps through obstacles that the diagonal slips between
+  // (OTA regression: installing→failed L crosses ready/verifying).
+  function _defaultRouteCrosses(fromId, toId) {
+    const sb = _topLevelBoxes[fromId], tb = _topLevelBoxes[toId];
+    if (!sb || !tb) return false;
+    const sides = computePortSide(sb, tb);
+    const fp = getPortPoint(sb, sides.srcSide, 0, 1);
+    const tp = getPortPoint(tb, sides.tgtSide, 0, 1);
+    const route = buildRoute(fp, tp, sides.srcSide, sides.tgtSide, 0, 0);
+    for (const oid in _topLevelBoxes) {
+      if (oid === fromId || oid === toId) continue;
+      const ob = _topLevelBoxes[oid];
+      for (let i = 0; i < route.length - 1; i++) {
+        if (_segCrossBox(route[i].x, route[i].y, route[i+1].x, route[i+1].y, ob)) {
+          return true;
+        }
+      }
+    }
+    return false;
+  }
+
+  const _backList = [];
+  for (let ti = 0; ti < parsed.transitions.length; ti++) {
+    const tr = parsed.transitions[ti];
+    if (_classifyEdge(tr.from, tr.to) !== 'backward') continue;
+    const sx = _xOf(tr.from), tx = _xOf(tr.to);
+    if (sx == null || tx == null) continue;
+    // Skip the bus when the actual default route is already clean.
+    // This keeps short clean back-edges out of the bus (c1→idle,
+    // active→idle in the initial template) but still catches the L-shape
+    // crossings that a straight probe would miss (installing→failed in OTA).
+    if (_topLevelBoxes[tr.from] && _topLevelBoxes[tr.to]) {
+      if (!_defaultRouteCrosses(tr.from, tr.to)) continue;
+    }
+    _backList.push({ ti, span: Math.abs(sx - tx) });
+  }
+  _backList.sort((a, b) => a.span - b.span);
+  const _laneOf = {};
+  _backList.forEach((e, i) => { _laneOf[e.ti] = i; });
+  const _laneY = i => _busBaseY + i * _laneSpacing;
+
+  // ─── Sprint 2: detour channel for forward edges that cross obstacles ───
+  // Top channel runs above all top-level states; forward/lateral edges
+  // whose center-to-center probe would cross an unrelated state get
+  // routed via the top channel with their own lane.
+  // If the top channel has no room (states near canvas top edge) the
+  // detour silently routes through the bottom bus instead, so we never
+  // produce off-canvas arrows.
+  let _topMost = Infinity;
+  for (const s of parsed.states) if (!s.parent) _topMost = Math.min(_topMost, s.y);
+  for (const grp of parsed.groups) _topMost = Math.min(_topMost, grp.y);
+  if (!isFinite(_topMost)) _topMost = 0;
+  const _topChannelBaseY = (_topMost - 1.5) * g;
+  const _topLaneSpacing = 1.5 * g;
+
+  // _topLevelBoxes and _segCrossBox were defined earlier (above the
+  // back-edge filter) and are reused here for the forward-detour probe.
+  const _detourList = [];
+  for (let ti = 0; ti < parsed.transitions.length; ti++) {
+    const tr = parsed.transitions[ti];
+    const cls = _classifyEdge(tr.from, tr.to);
+    if (cls === 'self' || cls === 'backward') continue;
+    const sb = _topLevelBoxes[tr.from], tb = _topLevelBoxes[tr.to];
+    if (!sb || !tb) continue;
+    const sx = sb.x + sb.w / 2, sy = sb.y + sb.h / 2;
+    const tx = tb.x + tb.w / 2, ty = tb.y + tb.h / 2;
+    let crosses = false;
+    for (const oid in _topLevelBoxes) {
+      if (oid === tr.from || oid === tr.to) continue;
+      if (_segCrossBox(sx, sy, tx, ty, _topLevelBoxes[oid])) { crosses = true; break; }
+    }
+    if (crosses) {
+      _detourList.push({ ti, span: Math.abs(tx - sx) + Math.abs(ty - sy) });
+    }
+  }
+  _detourList.sort((a, b) => a.span - b.span);
+  // Top channel needs (N + 1) * spacing of clear space above the topmost
+  // state. If we don't have it, fall back to bus routing for those edges.
+  const _topAvailable = (_topMost) * g; // distance from canvas top y=0 to topmost state
+  const _detourSpaceNeeded = (_detourList.length + 1) * _topLaneSpacing;
+  const _useTopChannel = _detourList.length > 0 && _topAvailable >= _detourSpaceNeeded;
+  const _detourLaneOf = {};
+  if (_useTopChannel) {
+    _detourList.forEach((e, i) => { _detourLaneOf[e.ti] = i; });
+  } else {
+    // Promote forward-detour edges into the back-edge bus so they still
+    // get a non-crossing route. They are appended after existing back-
+    // edges, with lane indices continuing the sequence (so back-edges
+    // keep their assignments and detour-forwards stack below).
+    for (const e of _detourList) {
+      const lane = Object.keys(_laneOf).length + (_detourLaneOf[e.ti] != null ? 0 : 0);
+      _laneOf[e.ti] = Object.keys(_laneOf).length;
+    }
+  }
+  const _topLaneY = i => _topChannelBaseY - i * _topLaneSpacing; // ascending lanes go further up
+  function _topPort(box, idx, count) {
+    const pad = count <= 2 ? 0.4 : count <= 4 ? 0.25 : 0.15;
+    const t = count <= 1 ? 0.5 : pad + (1 - 2 * pad) * idx / (count - 1);
+    return { x: box.x + box.w * t, y: box.y };
+  }
+  // Bottom-edge port distribution for back-edges (mirrors getPortPoint)
+  function _bottomPort(box, idx, count) {
+    const pad = count <= 2 ? 0.4 : count <= 4 ? 0.25 : 0.15;
+    const t = count <= 1 ? 0.5 : pad + (1 - 2 * pad) * idx / (count - 1);
+    return { x: box.x + box.w * t, y: box.y + box.h };
+  }
+
   // Pre-compute port distribution
   // UNIFIED edge groups: merge incoming and outgoing transitions on the same edge
   // so they share the same port space and don't overlap at the connection point.
   const edgeGroups = {}; // key: "stateId:side" -> [{ti, dir:'src'|'tgt'}]
-  const transitionSides = []; // per-transition: {srcSide, tgtSide, srcBox, tgtBox, isSelf, isReverse}
+  const transitionSides = []; // per-transition: {srcSide, tgtSide, srcBox, tgtBox, isSelf, isReverse, isBackEdge}
 
   // Build bidirectional pair lookup: detect A→B / B→A pairs
   const pairKey = (a, b) => [a, b].sort().join('\u2194');
@@ -2721,9 +3000,64 @@ function renderSVG(parsed) {
     }
     const isSelf = tr.from === tr.to;
     const isReverse = reverseSet.has(ti);
+    // Sprint 1/2: bus routing covers (a) back-edges and (b) forward edges
+    //   that can't fit in the top channel detour. Top channel detour is
+    //   used only when there's clear space above all states.
+    const _kind = _classifyEdge(tr.from, tr.to);
+    const useBus    = !isSelf && _laneOf[ti] != null;
+    const useTopChn = !isSelf && !useBus && _useTopChannel && _detourLaneOf[ti] != null;
+    const isBackEdge = useBus;   // legacy alias for downstream code
+    const isDetour   = useTopChn;
     let srcSide, tgtSide;
     if (isSelf) {
       srcSide = 'right';
+      tgtSide = 'top';
+    } else if (useBus) {
+      // Bus: src always leaves from bottom. Target side depends on kind:
+      // back-edge → bottom (return-flow semantics), forward-detour →
+      // natural leading edge (left when going right, right when going left)
+      // so the arrow looks like forward flow despite the bus detour.
+      // Sprint 4 refinement: if the leading-edge riser would cross an
+      // unrelated obstacle (typical when target sits at the edge of a
+      // composite), fall back to bottom-entry so the bend doesn't land
+      // inside another state.
+      srcSide = 'bottom';
+      if (_kind === 'backward') {
+        tgtSide = 'bottom';
+      } else {
+        const goingRight = tgtBox.x > srcBox.x;
+        const leadingSide = goingRight ? 'left' : 'right';
+        const margin = 1.0 * g;
+        const approachX = goingRight ? tgtBox.x - margin
+                                     : tgtBox.x + tgtBox.w + margin;
+        const leadingY = tgtBox.y + tgtBox.h * 0.5;
+        const probeLaneY = _busBaseY + (_laneOf[ti] || 0) * _laneSpacing;
+        let riserCrosses = false;
+        for (const oid in _topLevelBoxes) {
+          if (oid === tr.from || oid === tr.to) continue;
+          if (_segCrossBox(approachX, probeLaneY, approachX, leadingY, _topLevelBoxes[oid])) {
+            riserCrosses = true; break;
+          }
+        }
+        if (riserCrosses) {
+          // Check that bottom riser is clearer before switching
+          const bottomY = tgtBox.y + tgtBox.h;
+          const bottomX = tgtBox.x + tgtBox.w * 0.5;
+          let bottomCrosses = false;
+          for (const oid in _topLevelBoxes) {
+            if (oid === tr.from || oid === tr.to) continue;
+            if (_segCrossBox(bottomX, probeLaneY, bottomX, bottomY, _topLevelBoxes[oid])) {
+              bottomCrosses = true; break;
+            }
+          }
+          tgtSide = bottomCrosses ? leadingSide : 'bottom';
+        } else {
+          tgtSide = leadingSide;
+        }
+      }
+    } else if (useTopChn) {
+      // Top-channel detour: both endpoints attach to top edges
+      srcSide = 'top';
       tgtSide = 'top';
     } else if (isReverse) {
       const fwdSides = computePortSide(srcBox, tgtBox);
@@ -2741,7 +3075,7 @@ function renderSVG(parsed) {
     }
     // Legacy _autoRouteFromSide/_autoRouteToSide removed — A* router now
     // provides full waypoint arrays via _autoRouteWaypoints (read in 2nd pass).
-    transitionSides.push({ srcSide, tgtSide, srcBox, tgtBox, isSelf, isReverse });
+    transitionSides.push({ srcSide, tgtSide, srcBox, tgtBox, isSelf, isReverse, isBackEdge, isDetour, kind: _kind });
 
     // Add to unified edge groups (both source and target edges)
     const srcKey = tr.from + ':' + srcSide;
@@ -2762,6 +3096,9 @@ function renderSVG(parsed) {
   }
 
   // Second pass: compute routes and render
+  // transitionRoutes[ti] holds the final polyline so the debug overlay
+  // can mark every bend point with a citable ID.
+  const transitionRoutes = [];
   for (let ti = 0; ti < parsed.transitions.length; ti++) {
     const tr = parsed.transitions[ti];
     const info = transitionSides[ti];
@@ -2769,7 +3106,7 @@ function renderSVG(parsed) {
     const dimTr = searchMatchIds && !searchMatchIds.has(tr.from) && !searchMatchIds.has(tr.to) ? ' opacity="0.2"' : '';
     svg += `<g${dimTr}>`;
 
-    const { srcSide, tgtSide, srcBox, tgtBox, isSelf } = info;
+    const { srcSide, tgtSide, srcBox, tgtBox, isSelf, isBackEdge, isDetour, kind: _kind } = info;
     let route;
 
     // A* autoRoute override: use pre-computed waypoints directly
@@ -2777,6 +3114,71 @@ function renderSVG(parsed) {
       route = tr._autoRouteWaypoints;
     } else if (isSelf) {
       route = buildSelfRoute(srcBox);
+    } else if (isBackEdge) {
+      // Sprint 1: 4-point bus polyline. Sprint 1.5 adds per-edge lane.
+      // Sprint 3: forward edges promoted to the bus (no top-channel space)
+      // use a 5-point polyline that enters target from its leading side
+      // (left when going right, right when going left), so they look
+      // semantically forward rather than like a back-edge.
+      const srcKey = tr.from + ':bottom';
+      const srcEdge = edgeGroups[srcKey];
+      const srcIdx = edgeIndexMap[srcKey + ':' + ti];
+      const sp = _bottomPort(srcBox, srcIdx, srcEdge.length);
+      const laneY = _laneY(_laneOf[ti] != null ? _laneOf[ti] : 0);
+      const isForwardDetour = _kind !== 'backward';
+      // First-pass picks tgtSide='bottom' when the leading-edge riser
+      // would cross an obstacle. In that case we use the same 4-point
+      // shape as a back-edge — falling through to the else branch below.
+      if (isForwardDetour && tgtSide !== 'bottom') {
+        // 5-point forward detour: enters target from leading edge.
+        const margin = 1.0 * g;
+        const goingRight = tgtBox.x > srcBox.x;
+        const approachX = goingRight ? tgtBox.x - margin
+                                     : tgtBox.x + tgtBox.w + margin;
+        const fdSide = goingRight ? 'left' : 'right';
+        const tgtKey = tr.to + ':' + fdSide;
+        const tgtEdge = edgeGroups[tgtKey] || [{ ti, dir: 'tgt' }];
+        const tgtIdx = edgeIndexMap[tgtKey + ':' + ti] != null
+                       ? edgeIndexMap[tgtKey + ':' + ti] : 0;
+        const tp = getPortPoint(tgtBox, fdSide, tgtIdx, tgtEdge.length);
+        route = [
+          sp,
+          { x: sp.x, y: laneY },
+          { x: approachX, y: laneY },
+          { x: approachX, y: tp.y },
+          tp,
+        ];
+      } else {
+        // 4-point back-edge bus
+        const tgtKey = tr.to + ':bottom';
+        const tgtEdge = edgeGroups[tgtKey];
+        const tgtIdx = edgeIndexMap[tgtKey + ':' + ti];
+        const tp = _bottomPort(tgtBox, tgtIdx, tgtEdge.length);
+        route = [
+          sp,
+          { x: sp.x, y: laneY },
+          { x: tp.x, y: laneY },
+          tp,
+        ];
+      }
+    } else if (isDetour) {
+      // Sprint 2: top-channel polyline for forward/lateral edges that
+      // would cross an unrelated block on the direct route.
+      const srcKey = tr.from + ':top';
+      const tgtKey = tr.to + ':top';
+      const srcEdge = edgeGroups[srcKey];
+      const tgtEdge = edgeGroups[tgtKey];
+      const srcIdx = edgeIndexMap[srcKey + ':' + ti];
+      const tgtIdx = edgeIndexMap[tgtKey + ':' + ti];
+      const sp = _topPort(srcBox, srcIdx, srcEdge.length);
+      const tp = _topPort(tgtBox, tgtIdx, tgtEdge.length);
+      const laneY = _topLaneY(_detourLaneOf[ti] != null ? _detourLaneOf[ti] : 0);
+      route = [
+        sp,
+        { x: sp.x, y: laneY },
+        { x: tp.x, y: laneY },
+        tp,
+      ];
     } else {
       const srcKey = tr.from + ':' + srcSide;
       const tgtKey = tr.to + ':' + tgtSide;
@@ -2875,6 +3277,8 @@ function renderSVG(parsed) {
 
     // Store route for future crossing detection
     allRoutes.push(route);
+    // Store final route per transition for debug-overlay bend labels
+    transitionRoutes[ti] = route;
 
     // Labels — positioned at each route's own midpoint (routes are separated by port distribution)
     const isChoiceElse = !tr.event && !tr.guard && parsed.pseudoMap[tr.from] && parsed.pseudoMap[tr.from].type === 'choice';
@@ -3013,6 +3417,161 @@ function renderSVG(parsed) {
     svg += `<g id="annotation-banner" style="pointer-events:none">`;
     svg += `<rect x="0" y="0" width="${canvas.width}" height="24" fill="#F59E0B" fill-opacity="0.15"/>`;
     svg += `<text x="${canvas.width/2}" y="16" text-anchor="middle" font-family="${sans}" font-size="11" font-weight="600" fill="#F59E0B" style="pointer-events:none">ANNOTATION MODE — states are locked, press N to exit</text>`;
+    svg += `</g>`;
+  }
+
+  // ─── 10. Debug overlay (D key) — visualises the channel-routing decisions ───
+  if (debugRouting) {
+    svg += `<defs>`;
+    svg += `<pattern id="dbg-bus" width="8" height="8" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><line x1="0" y1="0" x2="0" y2="8" stroke="#F59E0B" stroke-width="1.2" opacity="0.55"/></pattern>`;
+    svg += `<pattern id="dbg-top" width="8" height="8" patternUnits="userSpaceOnUse" patternTransform="rotate(-45)"><line x1="0" y1="0" x2="0" y2="8" stroke="#3B82F6" stroke-width="1.2" opacity="0.55"/></pattern>`;
+    svg += `</defs>`;
+
+    const dbgFont = "'IBM Plex Mono',monospace";
+    const numBackLanes = Object.keys(_laneOf).length;
+    const numTopLanes = _useTopChannel ? Object.keys(_detourLaneOf).length : 0;
+
+    // Stable IDs for citing in feedback. Format:
+    //   #BUS, #TOPCH, #BUS-L0/L1/..., #TOPCH-T0/T1/...
+    //   #R-<state_id>           rank chip
+    //   #PR-<pseudo_id>         pseudo derived rank
+    //   #E-<ti> (also #E-<from>→<to>)  edge classification chip
+    //   #PR0BE-<from>→<to>      crossing-probe segment
+
+    // Back-edge bus band  →  #BUS, #BUS-L<i>
+    if (numBackLanes > 0) {
+      const busTop = _busBaseY - _laneSpacing * 0.4;
+      const busBot = _busBaseY + numBackLanes * _laneSpacing + _laneSpacing * 0.4;
+      svg += `<rect data-dbg-id="BUS" x="0" y="${busTop}" width="${canvas.width}" height="${busBot - busTop}" fill="url(#dbg-bus)" stroke="#F59E0B" stroke-width="0.6" stroke-dasharray="6,4" opacity="0.85"/>`;
+      svg += `<text x="6" y="${busTop - 4}" font-family="${dbgFont}" font-size="10" fill="#F59E0B">#BUS · back-edge bus (${numBackLanes} lane${numBackLanes>1?'s':''})</text>`;
+      // Lane center lines + indices
+      for (let i = 0; i < numBackLanes; i++) {
+        const ly = _busBaseY + i * _laneSpacing;
+        svg += `<line data-dbg-id="BUS-L${i}" x1="0" y1="${ly}" x2="${canvas.width}" y2="${ly}" stroke="#F59E0B" stroke-width="0.5" stroke-dasharray="2,3" opacity="0.6"/>`;
+        svg += `<text x="${canvas.width - 4}" y="${ly + 3}" text-anchor="end" font-family="${dbgFont}" font-size="9" fill="#F59E0B" opacity="0.85">#BUS-L${i}</text>`;
+      }
+    }
+
+    // Top channel band  →  #TOPCH, #TOPCH-T<i>
+    if (_useTopChannel && numTopLanes > 0) {
+      const topTop = _topChannelBaseY - numTopLanes * _topLaneSpacing - _topLaneSpacing * 0.4;
+      const topBot = _topChannelBaseY + _topLaneSpacing * 0.4;
+      svg += `<rect data-dbg-id="TOPCH" x="0" y="${topTop}" width="${canvas.width}" height="${topBot - topTop}" fill="url(#dbg-top)" stroke="#3B82F6" stroke-width="0.6" stroke-dasharray="6,4" opacity="0.85"/>`;
+      svg += `<text x="6" y="${topBot + 12}" font-family="${dbgFont}" font-size="10" fill="#3B82F6">#TOPCH · top channel (${numTopLanes} lane${numTopLanes>1?'s':''})</text>`;
+      for (let i = 0; i < numTopLanes; i++) {
+        const ly = _topChannelBaseY - i * _topLaneSpacing;
+        svg += `<line data-dbg-id="TOPCH-T${i}" x1="0" y1="${ly}" x2="${canvas.width}" y2="${ly}" stroke="#3B82F6" stroke-width="0.5" stroke-dasharray="2,3" opacity="0.6"/>`;
+        svg += `<text x="${canvas.width - 4}" y="${ly + 3}" text-anchor="end" font-family="${dbgFont}" font-size="9" fill="#3B82F6" opacity="0.85">#TOPCH-T${i}</text>`;
+      }
+    }
+
+    // Rank labels on top-level states  →  #R-<state_id>
+    for (const s of parsed.states) {
+      if (s.parent) continue;
+      const r = _ranks[s.id];
+      if (r == null) continue;
+      const x = s.x * g + 6;
+      const y = s.y * g + 12;
+      const text = `#R-${s.id} r=${r}`;
+      const w = text.length * 5.5 + 6;
+      svg += `<g data-dbg-id="R-${esc(s.id)}">`;
+      svg += `<rect x="${x - 3}" y="${y - 9}" width="${w}" height="13" fill="#0F172A" stroke="#64748B" stroke-width="0.5" rx="2"/>`;
+      svg += `<text x="${x}" y="${y}" font-family="${dbgFont}" font-size="9" fill="#94A3B8">${esc(text)}</text>`;
+      svg += `</g>`;
+    }
+
+    // Pseudo-state derived ranks  →  #PR-<pseudo_id>
+    for (const ps of parsed.pseudoStates) {
+      if (ps.parent) continue;
+      const r = _pseudoRanks[ps.id];
+      if (r == null) continue;
+      const x = ps.x * g + 6;
+      const y = ps.y * g - 4;
+      svg += `<text data-dbg-id="PR-${esc(ps.id)}" x="${x}" y="${y}" font-family="${dbgFont}" font-size="9" fill="#A78BFA">#PR-${esc(ps.id)} ~${r}</text>`;
+    }
+
+    // Edge classification badges  →  #E-<ti>  (also tagged with from→to)
+    const classColors = {
+      forward: '#22C55E', backward: '#F59E0B',
+      lateral: '#3B82F6', self: '#A78BFA'
+    };
+    for (let ti = 0; ti < parsed.transitions.length; ti++) {
+      const tr = parsed.transitions[ti];
+      const info = transitionSides[ti];
+      if (!info) continue;
+      const cls = info.kind || _classifyEdge(tr.from, tr.to);
+      const color = classColors[cls] || '#94A3B8';
+      const sb = info.srcBox, tb = info.tgtBox;
+      const mx = (sb.x + sb.w/2 + tb.x + tb.w/2) / 2;
+      const my = (sb.y + sb.h/2 + tb.y + tb.h/2) / 2;
+      let suffix = '';
+      if (_laneOf[ti] != null) suffix = ` →BUS-L${_laneOf[ti]}`;
+      else if (_useTopChannel && _detourLaneOf[ti] != null) suffix = ` →TOPCH-T${_detourLaneOf[ti]}`;
+      const idLabel = `#E-${ti}`;
+      const text = `${idLabel} ${cls}${suffix}`;
+      const w = text.length * 5.5 + 8;
+      svg += `<g data-dbg-id="E-${ti}" data-edge="${esc(tr.from)}→${esc(tr.to)}" style="pointer-events:none" opacity="0.95">`;
+      svg += `<rect x="${mx - w/2}" y="${my - 6}" width="${w}" height="12" fill="${color}" fill-opacity="0.18" stroke="${color}" stroke-width="0.6" rx="2"/>`;
+      svg += `<text x="${mx}" y="${my + 3}" text-anchor="middle" font-family="${dbgFont}" font-size="8" fill="${color}">${esc(text)}</text>`;
+      svg += `</g>`;
+    }
+
+    // Bend points  →  #W-<ti>-<i>  (waypoints between endpoints)
+    // For each transition, mark every intermediate corner so the user
+    // can ask "why does the line bend here?" with a stable reference.
+    for (let ti = 0; ti < parsed.transitions.length; ti++) {
+      const route = transitionRoutes[ti];
+      if (!route || route.length < 3) continue;
+      // Skip endpoints; only intermediate waypoints count as bends
+      for (let i = 1; i < route.length - 1; i++) {
+        const wp = route[i];
+        // Skip degenerate (collinear) waypoints — those that lie on the
+        // line between prev and next aren't real bends.
+        const prev = route[i - 1], next = route[i + 1];
+        const collinear = Math.abs((next.x - prev.x) * (wp.y - prev.y)
+                                   - (next.y - prev.y) * (wp.x - prev.x)) < 0.5;
+        if (collinear) continue;
+        const wid = `W-${ti}-${i}`;
+        // Marker dot
+        svg += `<circle data-dbg-id="${wid}" cx="${wp.x}" cy="${wp.y}" r="3" fill="#06B6D4" stroke="#0F172A" stroke-width="0.5" opacity="0.95"/>`;
+        // Label slightly offset (up-right). Distance based on segment direction
+        // to reduce overlap; here a fixed 6px offset is enough in practice.
+        svg += `<text x="${wp.x + 5}" y="${wp.y - 5}" font-family="${dbgFont}" font-size="8" fill="#06B6D4" opacity="0.9" style="pointer-events:none">#${wid}</text>`;
+      }
+    }
+
+    // Crossing-probe segments  →  #PROBE-<from>→<to>
+    for (let ti = 0; ti < parsed.transitions.length; ti++) {
+      if (_detourLaneOf[ti] == null && (_laneOf[ti] == null || transitionSides[ti]?.kind === 'backward')) continue;
+      const info = transitionSides[ti];
+      if (!info) continue;
+      if (info.kind === 'backward') continue;
+      const tr = parsed.transitions[ti];
+      const sb = info.srcBox, tb = info.tgtBox;
+      const cx1 = sb.x + sb.w/2, cy1 = sb.y + sb.h/2;
+      const cx2 = tb.x + tb.w/2, cy2 = tb.y + tb.h/2;
+      const probeId = `PROBE-${tr.from}→${tr.to}`;
+      svg += `<line data-dbg-id="${esc(probeId)}" x1="${cx1}" y1="${cy1}" x2="${cx2}" y2="${cy2}" stroke="#EC4899" stroke-width="1" stroke-dasharray="3,4" opacity="0.6"/>`;
+      // Probe label at midpoint, offset slightly so it doesn't sit on the edge chip
+      const pmx = (cx1 + cx2) / 2;
+      const pmy = (cy1 + cy2) / 2 + 12;
+      svg += `<text x="${pmx}" y="${pmy}" text-anchor="middle" font-family="${dbgFont}" font-size="8" fill="#EC4899" opacity="0.85">#${esc(probeId)}</text>`;
+    }
+
+    // Debug-mode banner with ID summary
+    const totalEdges = parsed.transitions.length;
+    const totalProbes = (() => {
+      let n = 0;
+      for (let ti = 0; ti < parsed.transitions.length; ti++) {
+        if (transitionSides[ti] && transitionSides[ti].kind !== 'backward'
+            && (_detourLaneOf[ti] != null || (_laneOf[ti] != null))) n++;
+      }
+      return n;
+    })();
+    svg += `<g style="pointer-events:none">`;
+    svg += `<rect x="0" y="0" width="${canvas.width}" height="22" fill="#0F172A" fill-opacity="0.85"/>`;
+    const banner = `ROUTING DEBUG · D to toggle · IDs: #BUS · #TOPCH · #R-<state> · #PR-<pseudo> · #E-<index> · #W-<ti>-<i> (bend) · #PROBE-<from>→<to>  ·  forward=green · backward=amber · lateral=blue · self=purple · cyan=bend`;
+    svg += `<text x="${canvas.width/2}" y="15" text-anchor="middle" font-family="${dbgFont}" font-size="10" font-weight="600" fill="#94A3B8">${esc(banner)}</text>`;
     svg += `</g>`;
   }
 
@@ -6546,6 +7105,8 @@ document.addEventListener('keydown', function(e) {
   }
   // H: Toggle highlight
   if (e.key === 'h' || e.key === 'H') { e.preventDefault(); toggleHighlight(); return; }
+  // D: Toggle routing-debug overlay
+  if (e.key === 'd' || e.key === 'D') { e.preventDefault(); toggleDebug(); return; }
   // N: Toggle annotations
   if (e.key === 'n' || e.key === 'N') { e.preventDefault(); toggleAnnotations(); return; }
 });

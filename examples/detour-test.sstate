@@ -1,0 +1,12 @@
+@canvas width=1400 height=400 grid=20
+initial ini at 0.5,3
+state s1 "S1" at 5,2 size 8x4 do=Init
+state s2 "S2" at 18,2 size 8x4 do=Process
+state s3 "S3" at 31,2 size 8x4 do=Verify
+state s4 "S4" at 44,2 size 8x4 do=Done
+ini -> s1
+s1 -> s2 : Step
+s2 -> s3 : Step
+s3 -> s4 : Step
+s1 -> s3 : SkipS2
+s2 -> s4 : SkipS3

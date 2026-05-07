@@ -18,28 +18,87 @@ def ss_add_state(
     entry: str | None = None, do: str | None = None, exit: str | None = None,
     color: str | None = None,
 ) -> str:
-    """Add a new state to the diagram."""
+    """Add a new state to the diagram. When parent is given, the new state
+    is inserted inside the parent's composite-block (the parent is converted
+    to a composite if it was a leaf state)."""
     d = state.get()
     if any(s.id == id for s in d.states):
         return f"Error: state '{id}' already exists"
+    if parent is not None and not any(s.id == parent for s in d.states):
+        return f"Error: parent state '{parent}' not found"
+
     state.push_history()
     sx = str(int(x)) if x == int(x) else str(x)
     sy = str(int(y)) if y == int(y) else str(y)
     sw = str(int(w)) if w == int(w) else str(w)
     sh = str(int(h)) if h == int(h) else str(h)
-    line = f'state {id} "{label}" at {sx},{sy} size {sw}x{sh}'
+    body = f'state {id} "{label}" at {sx},{sy} size {sw}x{sh}'
     if entry:
-        line += f" entry={entry}"
+        body += f" entry={entry}"
     if do:
-        line += f" do={do}"
+        body += f" do={do}"
     if exit:
-        line += f" exit={exit}"
+        body += f" exit={exit}"
     if color:
-        line += f" color={color}"
-    dsl = add_line(line, state.get_dsl())
+        body += f" color={color}"
+
+    if parent is None:
+        dsl = add_line(body, state.get_dsl())
+    else:
+        dsl = _insert_inside(parent, body, state.get_dsl())
+
     state.set_dsl(dsl)
     _refresh()
-    return f"Added state '{id}' at ({x},{y})"
+    parent_msg = f" inside '{parent}'" if parent else ""
+    return f"Added state '{id}' at ({x},{y}){parent_msg}"
+
+
+def _insert_inside(parent_id: str, child_body: str, dsl: str) -> str:
+    """Insert child_body as a nested state inside parent_id's brace block.
+    If parent has no { } block yet, convert parent's line to a composite
+    by appending { and adding a matching } afterwards. Indentation is
+    inferred from the parent line so nested composites stay readable."""
+    import re
+    lines = dsl.split("\n")
+    # Locate parent line
+    parent_re = re.compile(rf"^(\s*)state\s+{re.escape(parent_id)}\b")
+    p_idx = None
+    p_indent = ""
+    for i, ln in enumerate(lines):
+        m = parent_re.match(ln)
+        if m:
+            p_idx = i
+            p_indent = m.group(1)
+            break
+    if p_idx is None:
+        return dsl  # caller already validated; defensive
+
+    child_indent = p_indent + "  "
+    child_line = child_indent + child_body
+
+    parent_line = lines[p_idx].rstrip()
+    if parent_line.endswith("{"):
+        # Already composite — insert just before the matching }
+        depth = 1
+        for j in range(p_idx + 1, len(lines)):
+            stripped = lines[j].strip()
+            if stripped.endswith("{"):
+                depth += 1
+            elif stripped.startswith("}"):
+                depth -= 1
+                if depth == 0:
+                    lines.insert(j, child_line)
+                    return "\n".join(lines)
+        # No matching } found — append at end
+        lines.append(child_line)
+        lines.append(p_indent + "}")
+        return "\n".join(lines)
+
+    # Convert leaf to composite: append ` {` to parent line, then child, then `}`
+    lines[p_idx] = parent_line + " {"
+    lines.insert(p_idx + 1, child_line)
+    lines.insert(p_idx + 2, p_indent + "}")
+    return "\n".join(lines)
 
 
 def ss_add_pseudo(

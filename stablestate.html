@@ -2983,43 +2983,46 @@ function renderSVG(parsed) {
       tgtSide = 'top';
     } else if (useBus) {
       // Bus: src always leaves from bottom. Target side depends on kind:
-      // back-edge → bottom (return-flow semantics), forward-detour →
-      // natural leading edge (left when going right, right when going left)
-      // so the arrow looks like forward flow despite the bus detour.
-      // Sprint 4 refinement: if the leading-edge riser would cross an
-      // unrelated obstacle (typical when target sits at the edge of a
-      // composite), fall back to bottom-entry so the bend doesn't land
-      // inside another state.
+      //   back-edge → bottom by default (return-flow semantics)
+      //   forward-detour → leading edge by default (forward-flow semantics)
+      // Both apply a riser-cross check and flip to the opposite shape if
+      // the default riser column would slice through an unrelated state.
       srcSide = 'bottom';
-      if (_kind === 'backward') {
-        tgtSide = 'bottom';
-      } else {
-        const goingRight = tgtBox.x > srcBox.x;
-        const leadingSide = goingRight ? 'left' : 'right';
-        const margin = 1.0 * g;
-        const approachX = goingRight ? tgtBox.x - margin
-                                     : tgtBox.x + tgtBox.w + margin;
-        const leadingY = tgtBox.y + tgtBox.h * 0.5;
-        const probeLaneY = _busBaseY + (_laneOf[ti] || 0) * _laneSpacing;
-        let riserCrosses = false;
+      const probeLaneY = _busBaseY + (_laneOf[ti] || 0) * _laneSpacing;
+      const margin = 1.0 * g;
+      const goingRight = tgtBox.x > srcBox.x;
+      const leadingSide = goingRight ? 'left' : 'right';
+      const facingSide = srcBox.x > tgtBox.x ? 'right' : 'left'; // for back-edges
+      const leadingApproachX = goingRight ? tgtBox.x - margin
+                                          : tgtBox.x + tgtBox.w + margin;
+      const facingApproachX = facingSide === 'right'
+                            ? tgtBox.x + tgtBox.w + margin
+                            : tgtBox.x - margin;
+      const sideY = tgtBox.y + tgtBox.h * 0.5;
+      const bottomX = tgtBox.x + tgtBox.w * 0.5;
+      const bottomY = tgtBox.y + tgtBox.h;
+      function _crosses(x1, y1, x2, y2) {
         for (const oid in _topLevelBoxes) {
           if (oid === tr.from || oid === tr.to) continue;
-          if (_segCrossBox(approachX, probeLaneY, approachX, leadingY, _topLevelBoxes[oid])) {
-            riserCrosses = true; break;
-          }
+          if (_segCrossBox(x1, y1, x2, y2, _topLevelBoxes[oid])) return true;
         }
-        if (riserCrosses) {
-          // Check that bottom riser is clearer before switching
-          const bottomY = tgtBox.y + tgtBox.h;
-          const bottomX = tgtBox.x + tgtBox.w * 0.5;
-          let bottomCrosses = false;
-          for (const oid in _topLevelBoxes) {
-            if (oid === tr.from || oid === tr.to) continue;
-            if (_segCrossBox(bottomX, probeLaneY, bottomX, bottomY, _topLevelBoxes[oid])) {
-              bottomCrosses = true; break;
-            }
-          }
-          tgtSide = bottomCrosses ? leadingSide : 'bottom';
+        return false;
+      }
+      if (_kind === 'backward') {
+        // Default: bottom. Fall back to facing-side when bottom riser crosses.
+        const bottomCross = _crosses(bottomX, probeLaneY, bottomX, bottomY);
+        if (bottomCross) {
+          const facingCross = _crosses(facingApproachX, probeLaneY, facingApproachX, sideY);
+          tgtSide = facingCross ? 'bottom' : facingSide;
+        } else {
+          tgtSide = 'bottom';
+        }
+      } else {
+        // Forward-detour: default leading-edge. Fall back to bottom.
+        const leadingCross = _crosses(leadingApproachX, probeLaneY, leadingApproachX, sideY);
+        if (leadingCross) {
+          const bottomCross = _crosses(bottomX, probeLaneY, bottomX, bottomY);
+          tgtSide = bottomCross ? leadingSide : 'bottom';
         } else {
           tgtSide = leadingSide;
         }
@@ -3094,22 +3097,21 @@ function renderSVG(parsed) {
       const srcIdx = edgeIndexMap[srcKey + ':' + ti];
       const sp = _bottomPort(srcBox, srcIdx, srcEdge.length);
       const laneY = _laneY(_laneOf[ti] != null ? _laneOf[ti] : 0);
-      const isForwardDetour = _kind !== 'backward';
-      // First-pass picks tgtSide='bottom' when the leading-edge riser
-      // would cross an obstacle. In that case we use the same 4-point
-      // shape as a back-edge — falling through to the else branch below.
-      if (isForwardDetour && tgtSide !== 'bottom') {
-        // 5-point forward detour: enters target from leading edge.
+      // tgtSide is decided in the first pass and now drives the route shape:
+      //   'left' / 'right' → 5-point side-entry
+      //   'bottom'         → 4-point bottom-entry (back-edge bus shape)
+      // Forward-detour and backward both share this branch since we may
+      // pick either side regardless of edge kind (riser-cross fallback).
+      if (tgtSide === 'left' || tgtSide === 'right') {
         const margin = 1.0 * g;
-        const goingRight = tgtBox.x > srcBox.x;
-        const approachX = goingRight ? tgtBox.x - margin
-                                     : tgtBox.x + tgtBox.w + margin;
-        const fdSide = goingRight ? 'left' : 'right';
-        const tgtKey = tr.to + ':' + fdSide;
+        const approachX = tgtSide === 'left'
+          ? tgtBox.x - margin
+          : tgtBox.x + tgtBox.w + margin;
+        const tgtKey = tr.to + ':' + tgtSide;
         const tgtEdge = edgeGroups[tgtKey] || [{ ti, dir: 'tgt' }];
         const tgtIdx = edgeIndexMap[tgtKey + ':' + ti] != null
                        ? edgeIndexMap[tgtKey + ':' + ti] : 0;
-        const tp = getPortPoint(tgtBox, fdSide, tgtIdx, tgtEdge.length);
+        const tp = getPortPoint(tgtBox, tgtSide, tgtIdx, tgtEdge.length);
         route = [
           sp,
           { x: sp.x, y: laneY },

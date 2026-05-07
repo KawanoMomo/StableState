@@ -166,6 +166,7 @@ input[type=number]::-webkit-inner-spin-button { -webkit-appearance:none; }
     <button class="tb" id="btn-actions" onclick="toggleActions()">Actions</button>
     <button class="tb" id="btn-annotations" onclick="toggleAnnotations()">Notes</button>
     <button class="tb" id="btn-highlight" onclick="toggleHighlight()" title="Highlight connected (H)">&#9678; HL</button>
+    <button class="tb" id="btn-debug" onclick="toggleDebug()" title="Show routing channels / lanes / classifications (D)">&#128027; DBG</button>
     <!-- Frozen: AutoRoute / SmartRoute hidden from UI pending rework. Functions retained in code. -->
     <!-- <button class="tb" onclick="autoRoute()" title="遷移線の交差を最小化">AutoRoute</button> -->
     <!-- <button class="tb" onclick="smartRoute()" title="幾何ルーティング (I/L/Z/U)">SmartRoute</button> -->
@@ -357,6 +358,7 @@ let snapGuides = [];       // [{axis:'x'|'y', pos:number}] for rendering
 let searchFilter = '';     // ADR-026: search/filter string
 let searchMatchIds = null; // Set of matching IDs, or null if no filter
 let highlight = false;
+let debugRouting = false;  // toggled by toggleDebug() / D key
 
 function getConnectedIds() {
   if (!parsed) return new Set();
@@ -368,6 +370,13 @@ function getConnectedIds() {
     if (toEl) ids.add(toEl.id);
   }
   return ids;
+}
+
+function toggleDebug() {
+  debugRouting = !debugRouting;
+  const btn = document.getElementById('btn-debug');
+  if (btn) btn.classList.toggle('active', debugRouting);
+  refresh();
 }
 
 function toggleHighlight() {
@@ -3326,6 +3335,113 @@ function renderSVG(parsed) {
     svg += `<g id="annotation-banner" style="pointer-events:none">`;
     svg += `<rect x="0" y="0" width="${canvas.width}" height="24" fill="#F59E0B" fill-opacity="0.15"/>`;
     svg += `<text x="${canvas.width/2}" y="16" text-anchor="middle" font-family="${sans}" font-size="11" font-weight="600" fill="#F59E0B" style="pointer-events:none">ANNOTATION MODE — states are locked, press N to exit</text>`;
+    svg += `</g>`;
+  }
+
+  // ─── 10. Debug overlay (D key) — visualises the channel-routing decisions ───
+  if (debugRouting) {
+    svg += `<defs>`;
+    svg += `<pattern id="dbg-bus" width="8" height="8" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><line x1="0" y1="0" x2="0" y2="8" stroke="#F59E0B" stroke-width="1.2" opacity="0.55"/></pattern>`;
+    svg += `<pattern id="dbg-top" width="8" height="8" patternUnits="userSpaceOnUse" patternTransform="rotate(-45)"><line x1="0" y1="0" x2="0" y2="8" stroke="#3B82F6" stroke-width="1.2" opacity="0.55"/></pattern>`;
+    svg += `</defs>`;
+
+    const dbgFont = "'IBM Plex Mono',monospace";
+    const numBackLanes = Object.keys(_laneOf).length;
+    const numTopLanes = _useTopChannel ? Object.keys(_detourLaneOf).length : 0;
+
+    // Back-edge bus band
+    if (numBackLanes > 0) {
+      const busTop = _busBaseY - _laneSpacing * 0.4;
+      const busBot = _busBaseY + numBackLanes * _laneSpacing + _laneSpacing * 0.4;
+      svg += `<rect x="0" y="${busTop}" width="${canvas.width}" height="${busBot - busTop}" fill="url(#dbg-bus)" stroke="#F59E0B" stroke-width="0.6" stroke-dasharray="6,4" opacity="0.85"/>`;
+      svg += `<text x="6" y="${busTop - 4}" font-family="${dbgFont}" font-size="10" fill="#F59E0B">back-edge bus (${numBackLanes} lane${numBackLanes>1?'s':''})</text>`;
+      // Lane center lines + indices
+      for (let i = 0; i < numBackLanes; i++) {
+        const ly = _busBaseY + i * _laneSpacing;
+        svg += `<line x1="0" y1="${ly}" x2="${canvas.width}" y2="${ly}" stroke="#F59E0B" stroke-width="0.5" stroke-dasharray="2,3" opacity="0.6"/>`;
+        svg += `<text x="${canvas.width - 4}" y="${ly + 3}" text-anchor="end" font-family="${dbgFont}" font-size="9" fill="#F59E0B" opacity="0.85">L${i}</text>`;
+      }
+    }
+
+    // Top channel band (only when active)
+    if (_useTopChannel && numTopLanes > 0) {
+      const topTop = _topChannelBaseY - numTopLanes * _topLaneSpacing - _topLaneSpacing * 0.4;
+      const topBot = _topChannelBaseY + _topLaneSpacing * 0.4;
+      svg += `<rect x="0" y="${topTop}" width="${canvas.width}" height="${topBot - topTop}" fill="url(#dbg-top)" stroke="#3B82F6" stroke-width="0.6" stroke-dasharray="6,4" opacity="0.85"/>`;
+      svg += `<text x="6" y="${topBot + 12}" font-family="${dbgFont}" font-size="10" fill="#3B82F6">top channel (${numTopLanes} lane${numTopLanes>1?'s':''})</text>`;
+      for (let i = 0; i < numTopLanes; i++) {
+        const ly = _topChannelBaseY - i * _topLaneSpacing;
+        svg += `<line x1="0" y1="${ly}" x2="${canvas.width}" y2="${ly}" stroke="#3B82F6" stroke-width="0.5" stroke-dasharray="2,3" opacity="0.6"/>`;
+        svg += `<text x="${canvas.width - 4}" y="${ly + 3}" text-anchor="end" font-family="${dbgFont}" font-size="9" fill="#3B82F6" opacity="0.85">T${i}</text>`;
+      }
+    }
+
+    // Rank labels on top-level states
+    for (const s of parsed.states) {
+      if (s.parent) continue;
+      const r = _ranks[s.id];
+      if (r == null) continue;
+      const x = s.x * g + 6;
+      const y = s.y * g + 12;
+      svg += `<rect x="${x - 3}" y="${y - 9}" width="38" height="13" fill="#0F172A" stroke="#64748B" stroke-width="0.5" rx="2"/>`;
+      svg += `<text x="${x}" y="${y}" font-family="${dbgFont}" font-size="9" fill="#94A3B8">rank=${r}</text>`;
+    }
+
+    // Pseudo-state derived ranks
+    for (const ps of parsed.pseudoStates) {
+      if (ps.parent) continue;
+      const r = _pseudoRanks[ps.id];
+      if (r == null) continue;
+      const x = ps.x * g + 6;
+      const y = ps.y * g - 4;
+      svg += `<text x="${x}" y="${y}" font-family="${dbgFont}" font-size="9" fill="#A78BFA">~${r}</text>`;
+    }
+
+    // Edge classification badges (small chip near midpoint)
+    const classColors = {
+      forward: '#22C55E', backward: '#F59E0B',
+      lateral: '#3B82F6', self: '#A78BFA'
+    };
+    for (let ti = 0; ti < parsed.transitions.length; ti++) {
+      const tr = parsed.transitions[ti];
+      const info = transitionSides[ti];
+      if (!info) continue;
+      const cls = info.kind || _classifyEdge(tr.from, tr.to);
+      const color = classColors[cls] || '#94A3B8';
+      // Find route midpoint from rebuilt info
+      const sb = info.srcBox, tb = info.tgtBox;
+      const mx = (sb.x + sb.w/2 + tb.x + tb.w/2) / 2;
+      const my = (sb.y + sb.h/2 + tb.y + tb.h/2) / 2;
+      // Mark whether this edge was actually re-routed (bus or top)
+      let suffix = '';
+      if (_laneOf[ti] != null) suffix = `→bus L${_laneOf[ti]}`;
+      else if (_useTopChannel && _detourLaneOf[ti] != null) suffix = `→top T${_detourLaneOf[ti]}`;
+      const text = cls + (suffix ? ' ' + suffix : '');
+      const w = text.length * 5.5 + 8;
+      svg += `<g style="pointer-events:none" opacity="0.95">`;
+      svg += `<rect x="${mx - w/2}" y="${my - 6}" width="${w}" height="12" fill="${color}" fill-opacity="0.18" stroke="${color}" stroke-width="0.6" rx="2"/>`;
+      svg += `<text x="${mx}" y="${my + 3}" text-anchor="middle" font-family="${dbgFont}" font-size="8" fill="${color}">${text}</text>`;
+      svg += `</g>`;
+    }
+
+    // Crossing-probe segments: dashed line from src center to tgt center
+    // for transitions that triggered detour, so the user can see *why*.
+    for (let ti = 0; ti < parsed.transitions.length; ti++) {
+      if (_detourLaneOf[ti] == null && (_laneOf[ti] == null || transitionSides[ti]?.kind === 'backward')) continue;
+      const info = transitionSides[ti];
+      if (!info) continue;
+      // Only show probe for forward-detour cases (already qualified above)
+      if (info.kind === 'backward') continue;
+      const sb = info.srcBox, tb = info.tgtBox;
+      const cx1 = sb.x + sb.w/2, cy1 = sb.y + sb.h/2;
+      const cx2 = tb.x + tb.w/2, cy2 = tb.y + tb.h/2;
+      svg += `<line x1="${cx1}" y1="${cy1}" x2="${cx2}" y2="${cy2}" stroke="#EC4899" stroke-width="1" stroke-dasharray="3,4" opacity="0.6"/>`;
+    }
+
+    // Debug-mode banner
+    svg += `<g style="pointer-events:none">`;
+    svg += `<rect x="0" y="0" width="${canvas.width}" height="22" fill="#0F172A" fill-opacity="0.85"/>`;
+    svg += `<text x="${canvas.width/2}" y="15" text-anchor="middle" font-family="${dbgFont}" font-size="11" font-weight="600" fill="#94A3B8">ROUTING DEBUG — D to toggle · forward=green · backward=amber · lateral=blue · self=purple · pink=crossing-probe</text>`;
     svg += `</g>`;
   }
 
@@ -6859,6 +6975,8 @@ document.addEventListener('keydown', function(e) {
   }
   // H: Toggle highlight
   if (e.key === 'h' || e.key === 'H') { e.preventDefault(); toggleHighlight(); return; }
+  // D: Toggle routing-debug overlay
+  if (e.key === 'd' || e.key === 'D') { e.preventDefault(); toggleDebug(); return; }
   // N: Toggle annotations
   if (e.key === 'n' || e.key === 'N') { e.preventDefault(); toggleAnnotations(); return; }
 });

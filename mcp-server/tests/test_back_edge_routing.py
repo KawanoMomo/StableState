@@ -454,41 +454,6 @@ def test_forward_detour_keeps_leading_edge_when_riser_is_clear():
     assert r[-1]["x"] == tgt["x"]   # tgt.left
 
 
-def test_back_edge_falls_back_to_side_when_bottom_riser_crosses():
-    """Initial-template `c1 -> idle` regression: idle is at the top row,
-    error is directly below it. The default bottom-bottom bus riser at
-    idle.center_x (=140) cuts through error (x=60-220, y=360-460).
-    Should fall back to entering idle from the side facing the source."""
-    src = {"x": 228, "y": 268, "w": 24,  "h": 24}     # c1 (choice pseudo)
-    tgt = {"x": 60,  "y": 60,  "w": 160, "h": 100}    # idle
-    error = {"x": 60, "y": 360, "w": 160, "h": 100}   # obstacle directly below idle
-    lane_y = 520
-    r = build_back_edge_route(src, tgt, lane_y, obstacles=[error])
-    # Should be 5-point side-entry instead of 4-point bottom-entry
-    assert len(r) == 5
-    # Last point must be on idle's right edge (since c1 is to the right
-    # of idle, the side facing source = right)
-    assert r[-1]["x"] == tgt["x"] + tgt["w"]
-
-
-def test_back_edge_keeps_bottom_when_riser_is_clear():
-    """Normal back-edge with no obstacle below the target: keep 4-point shape."""
-    src = {"x": 800, "y": 60, "w": 100, "h": 50}
-    tgt = {"x": 100, "y": 60, "w": 100, "h": 50}
-    r = build_back_edge_route(src, tgt, 240, obstacles=[])
-    assert len(r) == 4
-    assert r[-1]["y"] == tgt["y"] + tgt["h"]
-
-
-def test_back_edge_obstacles_argument_is_optional():
-    """Backward-compatible: omitting obstacles preserves the original
-    4-point bottom-bottom bus shape."""
-    src = {"x": 800, "y": 60, "w": 100, "h": 50}
-    tgt = {"x": 100, "y": 60, "w": 100, "h": 50}
-    r = build_back_edge_route(src, tgt, 240)
-    assert len(r) == 4
-
-
 def test_forward_detour_obstacles_argument_is_optional():
     """Backward-compatible: callers that don't pass obstacles still get
     the original 5-point leading-edge route."""

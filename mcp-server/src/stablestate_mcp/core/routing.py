@@ -517,72 +517,22 @@ def build_back_edge_route(
     src_box: dict, tgt_box: dict, bus_y: float,
     src_idx: int = 0, src_count: int = 1,
     tgt_idx: int = 0, tgt_count: int = 1,
-    margin: float = 20.0,
-    obstacles: list[dict] | None = None,
 ) -> list[dict]:
     """Route a back-edge through the bus.
 
-    Default shape (4 points):
+    Path shape (4 points):
         src.bottom → (src_port.x, bus_y) → (tgt_port.x, bus_y) → tgt.bottom
 
-    When `obstacles` is given and the bottom riser at the target would
-    cross one of them, the route falls back to entering target's side
-    facing the source — same 5-point shape used by forward-detour. This
-    mirrors the user-reported `c1 -> idle` regression where idle's
-    bottom riser threaded through error.
-
-    Port distribution on the entry edge mirrors get_port_point so
-    multiple back-edges sharing the same source/target spread out
-    instead of overlapping.
+    Port distribution on the bottom edge mirrors get_port_point so multiple
+    back-edges sharing the same source/target spread out instead of overlapping.
     """
     def _bottom_port(box, idx, count):
         pad = 0.4 if count <= 2 else 0.25 if count <= 4 else 0.15
         t = 0.5 if count <= 1 else pad + (1 - 2 * pad) * idx / (count - 1)
         return {"x": box["x"] + box["w"] * t, "y": box["y"] + box["h"]}
 
-    def _side_port(box, side: str, idx, count):
-        pad = 0.4 if count <= 2 else 0.25 if count <= 4 else 0.15
-        t = 0.5 if count <= 1 else pad + (1 - 2 * pad) * idx / (count - 1)
-        if side == "left":
-            return {"x": box["x"], "y": box["y"] + box["h"] * t}
-        return {"x": box["x"] + box["w"], "y": box["y"] + box["h"] * t}
-
     src_port = _bottom_port(src_box, src_idx, src_count)
     tgt_port = _bottom_port(tgt_box, tgt_idx, tgt_count)
-
-    use_bottom = True
-    if obstacles:
-        bottom_riser_crosses = any(
-            _segment_crosses_box(tgt_port["x"], bus_y,
-                                 tgt_port["x"], tgt_port["y"], obs)
-            for obs in obstacles
-        )
-        if bottom_riser_crosses:
-            # Try the side facing the source. For back-edges the source
-            # is conceptually "after" target in flow, so the facing side
-            # is the one pointing toward src.x.
-            facing_side = "right" if src_box["x"] > tgt_box["x"] else "left"
-            approach_x = (
-                tgt_box["x"] + tgt_box["w"] + margin
-                if facing_side == "right"
-                else tgt_box["x"] - margin
-            )
-            facing_port = _side_port(tgt_box, facing_side, tgt_idx, tgt_count)
-            facing_riser_crosses = any(
-                _segment_crosses_box(approach_x, bus_y,
-                                     approach_x, facing_port["y"], obs)
-                for obs in obstacles
-            )
-            if not facing_riser_crosses:
-                return [
-                    src_port,
-                    {"x": src_port["x"], "y": bus_y},
-                    {"x": approach_x, "y": bus_y},
-                    {"x": approach_x, "y": facing_port["y"]},
-                    facing_port,
-                ]
-            # All options blocked — accept default bottom-bottom
-
     return [
         src_port,
         {"x": src_port["x"], "y": bus_y},

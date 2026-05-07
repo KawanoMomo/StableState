@@ -344,6 +344,29 @@ def test_assign_detour_lanes_skips_clear_edges():
     assert ti_ab not in lanes
 
 
+def test_assign_detour_lanes_handles_pseudo_state_target():
+    """Forward edge into a pseudo (final) on the far side of the diagram
+    must still trigger detour when the direct route would cross an
+    unrelated state — initial-template `error -> fin` regression."""
+    dsl = (
+        "@canvas width=960 height=600 grid=20\n"
+        "initial ini at 1,5\n"
+        'state idle "Idle" at 3,3 size 8x5\n'
+        'state active "Active" at 15,1 size 24x14\n'
+        'state error "Error" at 3,18 size 8x5\n'
+        "final fin at 40,14\n"
+        "ini -> idle\n"
+        "idle -> active\n"
+        "error -> fin\n"
+    )
+    d = parse_dsl(dsl)
+    ranks = compute_ranks(d)
+    lanes = assign_detour_lanes(d, ranks)
+    ti_ef = next(i for i, t in enumerate(d.transitions)
+                 if t.from_id == "error" and t.to_id == "fin")
+    assert ti_ef in lanes  # error -> fin should be flagged for detour
+
+
 def test_assign_detour_lanes_skips_back_edges():
     """Back-edges already handled by bus; detour shouldn't double-route."""
     dsl = (

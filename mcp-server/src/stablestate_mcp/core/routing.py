@@ -209,16 +209,16 @@ def compute_bus_y(diagram) -> float:
     """Pixel y of the back-edge bus.
 
     The bus runs horizontally below every top-level state. We pick the
-    lowest bottom edge among top-level states/groups, plus a fixed margin.
-    Empty / state-less diagrams fall back to a small positive value.
+    lowest bottom edge among top-level *states* (groups are excluded —
+    they are decorative containers and would otherwise push the bus
+    off-canvas), plus a fixed margin. Empty / state-less diagrams fall
+    back to a small positive value.
     """
     g = diagram.canvas.grid
     bottoms_grid: list[float] = []
     for s in diagram.states:
         if s.parent is None:
             bottoms_grid.append(s.y + s.h)
-    for grp in diagram.groups:
-        bottoms_grid.append(grp.y + grp.h)
     if not bottoms_grid:
         return _BUS_DEFAULT_Y * g
     deepest = max(bottoms_grid)
@@ -365,27 +365,41 @@ def build_top_channel_route(
 
 def assign_detour_lanes(diagram, ranks: dict[str, int]) -> dict[int, int]:
     """Detect forward / lateral edges whose direct route would cross an
-    unrelated top-level state, and assign each a top-channel lane index.
+    unrelated top-level box, and assign each a top-channel lane index.
 
     Algorithm:
-      1. Skip self / backward / pseudo-only transitions.
+      1. Skip self / backward transitions (already handled by the bus).
       2. For each candidate, compute a tentative straight route from
          src center to tgt center (acts as a coarse crossing probe).
-      3. If the segment crosses any unrelated top-level state's box,
-         flag for detour.
+      3. If the segment crosses any unrelated top-level box (state OR
+         pseudo-state), flag for detour. Pseudo-states use a 1-grid box
+         centered on their declared coordinate so they participate in
+         crossing detection without dominating it.
       4. Assign lanes by span ascending (short = lane 0, long = deeper).
 
     Returns {transition_index: lane_index}.
     """
-    # Pre-compute boxes for top-level states
-    boxes: dict[str, dict] = {}
     g = diagram.canvas.grid
+
+    # Boxes for endpoints AND obstacles. Pseudo-states get a small synthetic
+    # box centered on their declared point so the probe still works when an
+    # endpoint is a pseudo, and so pseudos themselves block other routes.
+    boxes: dict[str, dict] = {}
     for s in diagram.states:
         if s.parent is None:
             boxes[s.id] = {
                 "x": s.x * g, "y": s.y * g,
                 "w": s.w * g, "h": s.h * g,
             }
+    for ps in diagram.pseudo_states:
+        if ps.parent is not None:
+            continue
+        side = (ps.w if ps.w else 1.0) * g
+        boxes[ps.id] = {
+            "x": ps.x * g - side / 2,
+            "y": ps.y * g - side / 2,
+            "w": side, "h": side,
+        }
 
     candidates: list[tuple[int, float]] = []
     for ti, t in enumerate(diagram.transitions):

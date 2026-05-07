@@ -2771,13 +2771,13 @@ function renderSVG(parsed) {
   // Merged rank lookup: real states + pseudo derivations
   const _allRanks = Object.assign({}, _ranks, _pseudoRanks);
 
-  // Back-edge bus y position: below the deepest top-level bottom edge
+  // Back-edge bus y position: below the deepest top-level *state* bottom edge.
+  // Groups are not counted — they're typically large decorative containers
+  // that would push the bus off-canvas without representing routing-relevant
+  // obstacles.
   let _deepest = 0;
   for (const s of parsed.states) {
     if (!s.parent) _deepest = Math.max(_deepest, s.y + s.h);
-  }
-  for (const grp of parsed.groups) {
-    _deepest = Math.max(_deepest, grp.y + grp.h);
   }
   const _busBaseY = (_deepest > 0 ? _deepest + 3.0 : 2.0) * g;
   const _laneSpacing = 1.5 * g; // 1.5 grid units between lanes
@@ -2852,12 +2852,25 @@ function renderSVG(parsed) {
   }
 
   // Identify forward/lateral edges whose center-to-center probe crosses
-  // an unrelated top-level state. Skip self / backward (already handled).
+  // an unrelated top-level box. Skip self / backward (already handled).
+  // Pseudo-states are included as both potential endpoints AND obstacles,
+  // each with a 1-grid box centered on their declared point — so a
+  // forward edge into a pseudo-state on the far side still detects when
+  // its straight L-route slices through an unrelated state.
   const _topLevelBoxes = {};
   for (const s of parsed.states) {
     if (!s.parent) {
       _topLevelBoxes[s.id] = { x: s.x * g, y: s.y * g, w: s.w * g, h: s.h * g };
     }
+  }
+  for (const ps of parsed.pseudoStates) {
+    if (ps.parent) continue;
+    const side = (ps.w || 1) * g;
+    _topLevelBoxes[ps.id] = {
+      x: ps.x * g - side / 2,
+      y: ps.y * g - side / 2,
+      w: side, h: side,
+    };
   }
   const _detourList = [];
   for (let ti = 0; ti < parsed.transitions.length; ti++) {
@@ -3020,6 +3033,9 @@ function renderSVG(parsed) {
   }
 
   // Second pass: compute routes and render
+  // transitionRoutes[ti] holds the final polyline so the debug overlay
+  // can mark every bend point with a citable ID.
+  const transitionRoutes = [];
   for (let ti = 0; ti < parsed.transitions.length; ti++) {
     const tr = parsed.transitions[ti];
     const info = transitionSides[ti];
@@ -3197,6 +3213,8 @@ function renderSVG(parsed) {
 
     // Store route for future crossing detection
     allRoutes.push(route);
+    // Store final route per transition for debug-overlay bend labels
+    transitionRoutes[ti] = route;
 
     // Labels — positioned at each route's own midpoint (routes are separated by port distribution)
     const isChoiceElse = !tr.event && !tr.guard && parsed.pseudoMap[tr.from] && parsed.pseudoMap[tr.from].type === 'choice';
@@ -3434,6 +3452,30 @@ function renderSVG(parsed) {
       svg += `</g>`;
     }
 
+    // Bend points  →  #W-<ti>-<i>  (waypoints between endpoints)
+    // For each transition, mark every intermediate corner so the user
+    // can ask "why does the line bend here?" with a stable reference.
+    for (let ti = 0; ti < parsed.transitions.length; ti++) {
+      const route = transitionRoutes[ti];
+      if (!route || route.length < 3) continue;
+      // Skip endpoints; only intermediate waypoints count as bends
+      for (let i = 1; i < route.length - 1; i++) {
+        const wp = route[i];
+        // Skip degenerate (collinear) waypoints — those that lie on the
+        // line between prev and next aren't real bends.
+        const prev = route[i - 1], next = route[i + 1];
+        const collinear = Math.abs((next.x - prev.x) * (wp.y - prev.y)
+                                   - (next.y - prev.y) * (wp.x - prev.x)) < 0.5;
+        if (collinear) continue;
+        const wid = `W-${ti}-${i}`;
+        // Marker dot
+        svg += `<circle data-dbg-id="${wid}" cx="${wp.x}" cy="${wp.y}" r="3" fill="#06B6D4" stroke="#0F172A" stroke-width="0.5" opacity="0.95"/>`;
+        // Label slightly offset (up-right). Distance based on segment direction
+        // to reduce overlap; here a fixed 6px offset is enough in practice.
+        svg += `<text x="${wp.x + 5}" y="${wp.y - 5}" font-family="${dbgFont}" font-size="8" fill="#06B6D4" opacity="0.9" style="pointer-events:none">#${wid}</text>`;
+      }
+    }
+
     // Crossing-probe segments  →  #PROBE-<from>→<to>
     for (let ti = 0; ti < parsed.transitions.length; ti++) {
       if (_detourLaneOf[ti] == null && (_laneOf[ti] == null || transitionSides[ti]?.kind === 'backward')) continue;
@@ -3464,7 +3506,7 @@ function renderSVG(parsed) {
     })();
     svg += `<g style="pointer-events:none">`;
     svg += `<rect x="0" y="0" width="${canvas.width}" height="22" fill="#0F172A" fill-opacity="0.85"/>`;
-    const banner = `ROUTING DEBUG · D to toggle · IDs: #BUS · #TOPCH · #R-<state> · #PR-<pseudo> · #E-<index> · #PROBE-<from>→<to>  ·  forward=green · backward=amber · lateral=blue · self=purple`;
+    const banner = `ROUTING DEBUG · D to toggle · IDs: #BUS · #TOPCH · #R-<state> · #PR-<pseudo> · #E-<index> · #W-<ti>-<i> (bend) · #PROBE-<from>→<to>  ·  forward=green · backward=amber · lateral=blue · self=purple · cyan=bend`;
     svg += `<text x="${canvas.width/2}" y="15" text-anchor="middle" font-family="${dbgFont}" font-size="10" font-weight="600" fill="#94A3B8">${esc(banner)}</text>`;
     svg += `</g>`;
   }

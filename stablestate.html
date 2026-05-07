@@ -2805,12 +2805,68 @@ function renderSVG(parsed) {
     }
     return null;
   }
+  // Obstacle/endpoint boxes — top-level states + top-level pseudo-states.
+  // Pseudos use a small box centred on their declared point so they
+  // participate in crossing detection without dominating it.
+  const _topLevelBoxes = {};
+  for (const s of parsed.states) {
+    if (!s.parent) {
+      _topLevelBoxes[s.id] = { x: s.x * g, y: s.y * g, w: s.w * g, h: s.h * g };
+    }
+  }
+  for (const ps of parsed.pseudoStates) {
+    if (ps.parent) continue;
+    const side = (ps.w || 1) * g;
+    _topLevelBoxes[ps.id] = {
+      x: ps.x * g - side / 2,
+      y: ps.y * g - side / 2,
+      w: side, h: side,
+    };
+  }
+  // Liang-Barsky segment-vs-box, used by both the back-edge filter and
+  // the forward-detour detector below.
+  function _segCrossBox(x1, y1, x2, y2, box) {
+    const bx2 = box.x + box.w, by2 = box.y + box.h;
+    const dx = x2 - x1, dy = y2 - y1;
+    const p = [-dx, dx, -dy, dy];
+    const q = [x1 - box.x, bx2 - x1, y1 - box.y, by2 - y1];
+    let t0 = 0.0, t1 = 1.0;
+    for (let i = 0; i < 4; i++) {
+      if (Math.abs(p[i]) < 1e-10) { if (q[i] < 0) return false; }
+      else {
+        const r = q[i] / p[i];
+        if (p[i] < 0) t0 = Math.max(t0, r);
+        else          t1 = Math.min(t1, r);
+        if (t0 > t1) return false;
+      }
+    }
+    return t0 < t1;
+  }
+
   const _backList = [];
   for (let ti = 0; ti < parsed.transitions.length; ti++) {
     const tr = parsed.transitions[ti];
     if (_classifyEdge(tr.from, tr.to) !== 'backward') continue;
     const sx = _xOf(tr.from), tx = _xOf(tr.to);
     if (sx == null || tx == null) continue;
+    // Direct-probe filter: short clean back-edges (no unrelated obstacle
+    // between src and tgt centres) skip the bus entirely. Their default
+    // buildRoute output is already clean — bus would be unnecessary
+    // detour and would create the spurious W-?-? bend points the user
+    // saw with c1 -> idle in the initial template.
+    const sb = _topLevelBoxes[tr.from], tb = _topLevelBoxes[tr.to];
+    if (sb && tb) {
+      const cx1 = sb.x + sb.w/2, cy1 = sb.y + sb.h/2;
+      const cx2 = tb.x + tb.w/2, cy2 = tb.y + tb.h/2;
+      let crosses = false;
+      for (const oid in _topLevelBoxes) {
+        if (oid === tr.from || oid === tr.to) continue;
+        if (_segCrossBox(cx1, cy1, cx2, cy2, _topLevelBoxes[oid])) {
+          crosses = true; break;
+        }
+      }
+      if (!crosses) continue;
+    }
     _backList.push({ ti, span: Math.abs(sx - tx) });
   }
   _backList.sort((a, b) => a.span - b.span);
@@ -2832,46 +2888,8 @@ function renderSVG(parsed) {
   const _topChannelBaseY = (_topMost - 1.5) * g;
   const _topLaneSpacing = 1.5 * g;
 
-  // Liang-Barsky segment vs box intersection
-  function _segCrossBox(x1, y1, x2, y2, box) {
-    const bx2 = box.x + box.w, by2 = box.y + box.h;
-    const dx = x2 - x1, dy = y2 - y1;
-    const p = [-dx, dx, -dy, dy];
-    const q = [x1 - box.x, bx2 - x1, y1 - box.y, by2 - y1];
-    let t0 = 0.0, t1 = 1.0;
-    for (let i = 0; i < 4; i++) {
-      if (Math.abs(p[i]) < 1e-10) { if (q[i] < 0) return false; }
-      else {
-        const r = q[i] / p[i];
-        if (p[i] < 0) t0 = Math.max(t0, r);
-        else          t1 = Math.min(t1, r);
-        if (t0 > t1) return false;
-      }
-    }
-    return t0 < t1;
-  }
-
-  // Identify forward/lateral edges whose center-to-center probe crosses
-  // an unrelated top-level box. Skip self / backward (already handled).
-  // Pseudo-states are included as both potential endpoints AND obstacles,
-  // each with a 1-grid box centered on their declared point — so a
-  // forward edge into a pseudo-state on the far side still detects when
-  // its straight L-route slices through an unrelated state.
-  const _topLevelBoxes = {};
-  for (const s of parsed.states) {
-    if (!s.parent) {
-      _topLevelBoxes[s.id] = { x: s.x * g, y: s.y * g, w: s.w * g, h: s.h * g };
-    }
-  }
-  for (const ps of parsed.pseudoStates) {
-    if (ps.parent) continue;
-    const side = (ps.w || 1) * g;
-    _topLevelBoxes[ps.id] = {
-      x: ps.x * g - side / 2,
-      y: ps.y * g - side / 2,
-      w: side, h: side,
-    };
-  }
+  // _topLevelBoxes and _segCrossBox were defined earlier (above the
+  // back-edge filter) and are reused here for the forward-detour probe.
   const _detourList = [];
   for (let ti = 0; ti < parsed.transitions.length; ti++) {
     const tr = parsed.transitions[ti];

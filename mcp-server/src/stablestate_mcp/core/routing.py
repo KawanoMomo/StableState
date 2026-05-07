@@ -247,16 +247,41 @@ def derive_pseudo_ranks(diagram, ranks: dict[str, int]) -> dict[str, int]:
 
 
 def assign_back_edge_lanes(diagram, ranks: dict[str, int]) -> dict[int, int]:
-    """Assign each back-edge a unique lane index so multiple back-edges
-    don't overlap on a single horizontal line.
+    """Assign each *crossing* back-edge a unique lane index so multiple
+    back-edges don't overlap on a single horizontal line.
 
-    Strategy: sort back-edges by horizontal span (|src.x - tgt.x|) descending,
-    then assign lane 0, 1, 2, ... so the LONGEST span goes deepest. This
-    prevents short edges from being covered by long ones.
+    Strategy:
+      1. Skip back-edges whose direct centre-to-centre probe doesn't
+         cross any unrelated top-level box. These render fine via
+         the existing buildRoute path and don't need the bus.
+      2. For the remaining (truly crossing) back-edges, sort by
+         horizontal span ascending and assign lanes 0..N-1 so the
+         shortest spans take the shallowest lanes and the longest
+         take the deepest.
 
     Returns {transition_index: lane_index}. Transitions that are not
-    back-edges are absent from the dict.
+    crossing back-edges are absent from the dict.
     """
+    g = diagram.canvas.grid
+
+    # Build obstacle/endpoint boxes (states + top-level pseudo-states)
+    boxes: dict[str, dict] = {}
+    for s in diagram.states:
+        if s.parent is None:
+            boxes[s.id] = {
+                "x": s.x * g, "y": s.y * g,
+                "w": s.w * g, "h": s.h * g,
+            }
+    for ps in diagram.pseudo_states:
+        if ps.parent is not None:
+            continue
+        side = (ps.w if ps.w else 1.0) * g
+        boxes[ps.id] = {
+            "x": ps.x * g - side / 2,
+            "y": ps.y * g - side / 2,
+            "w": side, "h": side,
+        }
+
     state_x: dict[str, float] = {}
     for s in diagram.states:
         if s.parent is None:
@@ -277,11 +302,28 @@ def assign_back_edge_lanes(diagram, ranks: dict[str, int]) -> dict[int, int]:
         tx = _x_of(t.to_id)
         if sx is None or tx is None:
             continue
+        # Direct-route probe: skip if the straight centre-to-centre line
+        # is already clear of unrelated obstacles. The actual buildRoute
+        # output may differ (L/U shape) but if this probe is clean, the
+        # default routing very likely is too.
+        if t.from_id in boxes and t.to_id in boxes:
+            sb, tb = boxes[t.from_id], boxes[t.to_id]
+            cx1, cy1 = sb["x"] + sb["w"] / 2, sb["y"] + sb["h"] / 2
+            cx2, cy2 = tb["x"] + tb["w"] / 2, tb["y"] + tb["h"] / 2
+            crosses = False
+            for other_id, other_box in boxes.items():
+                if other_id == t.from_id or other_id == t.to_id:
+                    continue
+                if _segment_crosses_box(cx1, cy1, cx2, cy2, other_box):
+                    crosses = True
+                    break
+            if not crosses:
+                continue  # back-edge is clean — skip bus, use direct routing
+
         back.append((ti, abs(sx - tx)))
 
-    # Sort by span descending; assign lanes 0..N-1 (longest = deepest = highest index)
-    # We want: longest span → lane N-1 (deepest), shortest → lane 0 (shallowest).
-    back.sort(key=lambda p: p[1])  # ascending span
+    # Sort by span ascending; assign lanes 0..N-1
+    back.sort(key=lambda p: p[1])
     return {ti: idx for idx, (ti, _) in enumerate(back)}
 
 

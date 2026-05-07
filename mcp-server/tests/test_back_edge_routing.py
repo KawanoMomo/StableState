@@ -184,57 +184,111 @@ def test_back_edge_route_supports_port_offset_for_fan_in():
 
 # ─────────────── Sprint 1.5: lane assignment ───────────────
 
-def test_assign_lanes_gives_each_back_edge_a_unique_lane():
-    """Three back-edges → three distinct lane indices (0, 1, 2)."""
+def test_assign_lanes_gives_each_crossing_back_edge_a_unique_lane():
+    """Three crossing back-edges → three distinct lane indices (0, 1, 2).
+
+    All three back-edges' direct probes cross the inline obstacles
+    (mid / b / c), so all three need the bus.
+    """
     dsl = (
         "@canvas width=2000 height=400 grid=20\n"
         "initial ini at 0.5,3\n"
         'state a "A" at 5,2 size 8x4\n'
-        'state b "B" at 15,2 size 8x4\n'
-        'state c "C" at 25,2 size 8x4\n'
-        'state d "D" at 35,2 size 8x4\n'
+        'state mid "Mid" at 18,2 size 4x4\n'
+        'state b "B" at 28,2 size 8x4\n'
+        'state c "C" at 45,2 size 8x4\n'
+        'state d "D" at 62,2 size 8x4\n'
         "ini -> a\n"
-        "a -> b\n"
+        "a -> mid\n"
+        "mid -> b\n"
         "b -> c\n"
         "c -> d\n"
-        "d -> a\n"      # back-edge 1 (long)
-        "c -> b\n"      # back-edge 2 (medium)
-        "b -> a\n"      # back-edge 3 (short)
+        "d -> a\n"      # crosses mid, b, c
+        "c -> a\n"      # crosses mid, b
+        "b -> a\n"      # crosses mid
     )
     d = parse_dsl(dsl)
     ranks = compute_ranks(d)
     lanes = assign_back_edge_lanes(d, ranks)
-    # Three back-edges → three lanes
     assert len(lanes) == 3
     assert sorted(lanes.values()) == [0, 1, 2]
 
 
 def test_assign_lanes_longest_span_gets_deepest_lane():
-    """When sorted by span descending, the longest back-edge gets the
+    """When all back-edges cross obstacles, the longest span gets the
     highest lane index (deepest = most distant from the states)."""
     dsl = (
         "@canvas width=2000 height=400 grid=20\n"
         "initial ini at 0.5,3\n"
         'state a "A" at 5,2 size 8x4\n'
-        'state b "B" at 15,2 size 8x4\n'
-        'state c "C" at 25,2 size 8x4\n'
-        'state d "D" at 35,2 size 8x4\n'
+        'state mid "Mid" at 18,2 size 4x4\n'
+        'state b "B" at 28,2 size 8x4\n'
+        'state c "C" at 45,2 size 8x4\n'
+        'state d "D" at 62,2 size 8x4\n'
         "ini -> a\n"
-        "a -> b\n"
+        "a -> mid\n"
+        "mid -> b\n"
         "b -> c\n"
         "c -> d\n"
-        "b -> a\n"      # short
-        "d -> a\n"      # longest
-        "c -> b\n"      # medium
+        "b -> a\n"      # short, crosses mid
+        "d -> a\n"      # longest, crosses mid/b/c
+        "c -> a\n"      # medium, crosses mid/b
     )
     d = parse_dsl(dsl)
     ranks = compute_ranks(d)
     lanes = assign_back_edge_lanes(d, ranks)
-    # Find transition indices for b->a and d->a
     ti_short = next(i for i, t in enumerate(d.transitions) if t.from_id == "b" and t.to_id == "a")
     ti_long  = next(i for i, t in enumerate(d.transitions) if t.from_id == "d" and t.to_id == "a")
-    # Longest span gets the deepest (highest) lane
     assert lanes[ti_long] > lanes[ti_short]
+
+
+def test_assign_back_edge_lanes_skips_short_clear_back_edges():
+    """Initial-template `c1 -> idle` regression: when the direct route
+    from src centre to tgt centre doesn't cross any unrelated obstacle,
+    the back-edge should NOT be assigned a bus lane (its visual route
+    via buildRoute is already clean — bus would be unnecessary detour)."""
+    dsl = (
+        "@canvas width=960 height=600 grid=20\n"
+        "initial ini at 1,5\n"
+        'state idle "Idle" at 3,3 size 8x5\n'
+        'state active "Active" at 15,1 size 24x14\n'
+        "choice c1 at 12,14\n"
+        "ini -> idle\n"
+        "idle -> active\n"
+        "active -> c1\n"
+        "c1 -> idle\n"   # back-edge that should skip bus (direct is clean)
+    )
+    d = parse_dsl(dsl)
+    ranks = compute_ranks(d)
+    merged = {**ranks, **derive_pseudo_ranks(d, ranks)}
+    lanes = assign_back_edge_lanes(d, merged)
+    ti_c1_idle = next(i for i, t in enumerate(d.transitions)
+                      if t.from_id == "c1" and t.to_id == "idle")
+    assert ti_c1_idle not in lanes  # short clean back-edge skips bus
+
+
+def test_assign_back_edge_lanes_keeps_long_crossing_back_edges():
+    """Long back-edges whose direct route crosses other states still need
+    the bus — must not be excluded by the new direct-route filter."""
+    dsl = (
+        "@canvas width=2000 height=400 grid=20\n"
+        "initial ini at 0.5,3\n"
+        'state a "A" at 5,2 size 8x4\n'
+        'state b "B" at 18,2 size 8x4\n'
+        'state c "C" at 31,2 size 8x4\n'
+        'state d "D" at 44,2 size 8x4\n'
+        "ini -> a\n"
+        "a -> b\n"
+        "b -> c\n"
+        "c -> d\n"
+        "d -> a\n"  # long back-edge — direct line crosses b and c
+    )
+    d = parse_dsl(dsl)
+    ranks = compute_ranks(d)
+    lanes = assign_back_edge_lanes(d, ranks)
+    ti_d_a = next(i for i, t in enumerate(d.transitions)
+                  if t.from_id == "d" and t.to_id == "a")
+    assert ti_d_a in lanes  # crossing back-edge still uses bus
 
 
 def test_assign_lanes_returns_empty_when_no_back_edges():

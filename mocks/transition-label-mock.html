@@ -1,0 +1,482 @@
+<!--
+  StableState モバイルUI - 遷移ラベル編集 3案比較モック
+
+  目的: event[guard]/action の編集UIを3パターン用意し、
+        実機で操作感を比較してもらう。
+
+  3つの案:
+    A) タップでボトムシート起動  (一貫性重視)
+    B) ダブルタップでインライン編集 (操作即時性重視)
+    C) ポップアップ・インスペクタ (図と同時表示)
+
+  画面上部のセグメントで切替。図は共通の3状態+2遷移サンプル。
+-->
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,user-scalable=no">
+<meta name="theme-color" content="#1a1a2e">
+<title>StableState - 遷移ラベル編集 3案比較</title>
+<style>
+* { margin:0; padding:0; box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
+:root {
+  --bg:#1a1a2e; --panel:#16213e; --canvas:#0f0f23; --border:#2a2a4a;
+  --text:#E2E8F0; --muted:#64748B; --dim:#475569;
+  --accent:#818CF8; --accent2:#4338CA; --accent-bg:#312E81;
+  --green:#22C55E; --amber:#F59E0B; --red:#EF4444;
+  --safe-bot:env(safe-area-inset-bottom,0px);
+}
+html,body { height:100%; overflow:hidden; }
+body {
+  background:var(--bg); color:var(--text);
+  font-family:-apple-system,BlinkMacSystemFont,"Hiragino Sans","Noto Sans JP",sans-serif;
+  display:flex; flex-direction:column;
+  user-select:none; -webkit-user-select:none;
+}
+
+/* ─── ヘッダ + 案切替 ─── */
+#header {
+  padding:8px 12px; background:var(--panel); border-bottom:1px solid var(--border);
+  flex-shrink:0;
+}
+#title { font-size:11px; color:var(--muted); margin-bottom:6px; text-transform:uppercase; letter-spacing:0.05em; }
+.seg {
+  display:flex; gap:2px; background:var(--canvas); border-radius:8px; padding:2px;
+}
+.seg button {
+  flex:1; padding:8px 4px; font-size:12px; font-weight:600;
+  background:transparent; border:0; color:var(--muted); border-radius:6px;
+  font-family:inherit; cursor:pointer;
+}
+.seg button.active { background:var(--accent2); color:#fff; }
+
+/* ─── 説明バナー ─── */
+#desc {
+  padding:8px 12px; background:rgba(67,56,202,0.15); border-bottom:1px solid var(--border);
+  font-size:11px; color:#A5B4FC; line-height:1.5; flex-shrink:0;
+}
+#desc b { color:#FBBF24; }
+
+/* ─── キャンバス ─── */
+#canvas-wrap {
+  flex:1; position:relative; overflow:hidden;
+  background:radial-gradient(circle, #2a2a4a 1px, transparent 1px) 0 0/24px 24px, var(--canvas);
+  touch-action:none;
+}
+#svg { position:absolute; left:0; top:0; width:100%; height:100%; }
+
+.state-rect { fill:var(--panel); stroke:var(--accent); stroke-width:2; }
+.state-label { fill:var(--text); font-size:14px; font-weight:600; text-anchor:middle; dominant-baseline:central; pointer-events:none; }
+.tr-line { fill:none; stroke:#A5B4FC; stroke-width:2; }
+.tr-line.selected { stroke:var(--amber); stroke-width:3; filter:drop-shadow(0 0 6px var(--amber)); }
+.tr-hit { fill:none; stroke:transparent; stroke-width:24; cursor:pointer; }
+.tr-label-bg { fill:var(--panel); stroke:var(--border); stroke-width:1; rx:4; }
+.tr-label-bg.selected { stroke:var(--amber); }
+.tr-label-text { fill:var(--text); font-size:12px; font-family:'IBM Plex Mono',Consolas,monospace; dominant-baseline:central; pointer-events:none; }
+
+/* ───── A案: ボトムシート ───── */
+#sheet-bd { position:absolute; inset:0; background:rgba(0,0,0,0.4); display:none; z-index:9; }
+#sheet-bd.show { display:block; }
+#sheet {
+  position:absolute; left:0; right:0; bottom:0;
+  background:var(--panel); border-radius:16px 16px 0 0;
+  transform:translateY(100%); transition:transform 0.25s ease-out;
+  z-index:10; max-height:70vh; overflow:hidden;
+  display:flex; flex-direction:column; padding-bottom:var(--safe-bot);
+}
+#sheet.show { transform:translateY(0); }
+.grabber { width:36px; height:4px; background:var(--dim); border-radius:2px; margin:8px auto; flex-shrink:0; }
+#sheet h3 { padding:0 16px 8px; font-size:13px; color:var(--accent); font-weight:600; text-transform:uppercase; letter-spacing:0.05em; }
+#sheet .hint { padding:0 16px 12px; font-size:11px; color:var(--muted); }
+#sheet .body { overflow-y:auto; padding:0 16px 16px; }
+.field { margin-bottom:14px; }
+.field label { display:block; font-size:10px; color:var(--muted); margin-bottom:4px; text-transform:uppercase; letter-spacing:0.05em; }
+.field input, .field textarea {
+  width:100%; background:var(--canvas); border:1px solid var(--border); border-radius:8px;
+  color:var(--text); padding:10px 12px; font-size:14px;
+  font-family:'IBM Plex Mono',Consolas,monospace; outline:none;
+}
+.field textarea { resize:vertical; min-height:60px; }
+.field input:focus, .field textarea:focus { border-color:var(--accent); }
+.preview-bar {
+  background:var(--canvas); border:1px solid var(--border); border-radius:8px;
+  padding:10px 12px; font-family:'IBM Plex Mono',Consolas,monospace; font-size:12px;
+  color:#A5B4FC; line-height:1.5; word-break:break-all;
+}
+
+/* ───── B案: インライン編集 ───── */
+#inline-edit {
+  position:absolute; display:none; z-index:8;
+  background:var(--panel); border:2px solid var(--amber); border-radius:6px;
+  padding:4px; box-shadow:0 4px 16px rgba(0,0,0,0.5);
+}
+#inline-edit.show { display:block; }
+#inline-edit input {
+  background:transparent; border:0; color:var(--text);
+  font-family:'IBM Plex Mono',Consolas,monospace; font-size:14px;
+  outline:none; min-width:160px; padding:4px 6px;
+}
+#inline-edit .row { display:flex; gap:6px; align-items:center; }
+#inline-edit .tag {
+  font-size:9px; color:var(--amber); font-weight:600;
+  text-transform:uppercase; letter-spacing:0.05em;
+}
+
+/* ───── C案: ポップアップ・インスペクタ ───── */
+#popup {
+  position:absolute; display:none; z-index:8;
+  background:var(--panel); border:1px solid var(--accent); border-radius:10px;
+  padding:8px; box-shadow:0 6px 20px rgba(0,0,0,0.6);
+  width:240px;
+}
+#popup.show { display:block; }
+#popup .pop-row { display:flex; align-items:center; gap:6px; margin-bottom:6px; }
+#popup .pop-row:last-child { margin-bottom:0; }
+#popup .pop-tag {
+  font-size:9px; color:var(--muted); font-weight:600; min-width:36px;
+  text-transform:uppercase; letter-spacing:0.05em;
+}
+#popup .pop-tag.event { color:var(--accent); }
+#popup .pop-tag.guard { color:var(--green); }
+#popup .pop-tag.action { color:var(--amber); }
+#popup input {
+  flex:1; background:var(--canvas); border:1px solid var(--border); border-radius:5px;
+  color:var(--text); padding:5px 7px; font-size:12px;
+  font-family:'IBM Plex Mono',Consolas,monospace; outline:none; min-width:0;
+}
+#popup input:focus { border-color:var(--accent); }
+#popup .pop-tail {
+  position:absolute; left:50%; transform:translateX(-50%);
+  width:0; height:0; bottom:-7px;
+  border-left:7px solid transparent; border-right:7px solid transparent;
+  border-top:7px solid var(--accent);
+}
+#popup .pop-actions {
+  display:flex; gap:6px; justify-content:flex-end; margin-top:8px;
+  border-top:1px solid var(--border); padding-top:6px;
+}
+#popup .pop-actions button {
+  background:transparent; border:1px solid var(--border); color:var(--text);
+  font-size:11px; padding:4px 10px; border-radius:5px; font-family:inherit;
+}
+#popup .pop-actions button.primary { background:var(--accent2); border-color:var(--accent); color:#fff; }
+
+/* トースト */
+#toast {
+  position:absolute; left:50%; bottom:calc(80px + var(--safe-bot));
+  transform:translateX(-50%); background:rgba(0,0,0,0.85);
+  color:#fff; padding:8px 16px; border-radius:20px; font-size:12px;
+  z-index:20; opacity:0; transition:opacity 0.2s; pointer-events:none;
+}
+#toast.show { opacity:1; }
+</style>
+</head>
+<body>
+
+<div id="header">
+  <div id="title">遷移ラベル編集 - 3案比較</div>
+  <div class="seg">
+    <button data-mode="A" class="active">A: シート</button>
+    <button data-mode="B">B: インライン</button>
+    <button data-mode="C">C: ポップアップ</button>
+  </div>
+</div>
+
+<div id="desc"></div>
+
+<div id="canvas-wrap">
+  <svg id="svg" viewBox="0 0 360 480" preserveAspectRatio="xMidYMid meet"></svg>
+
+  <!-- A案: ボトムシート -->
+  <div id="sheet-bd"></div>
+  <div id="sheet">
+    <div class="grabber"></div>
+    <h3>遷移を編集</h3>
+    <div class="hint" id="sheet-hint">idle → active</div>
+    <div class="body">
+      <div class="field">
+        <label>Event (イベント)</label>
+        <input type="text" id="a-event" placeholder="例: EvStart">
+      </div>
+      <div class="field">
+        <label>Guard (ガード条件)</label>
+        <input type="text" id="a-guard" placeholder="例: IsReady">
+      </div>
+      <div class="field">
+        <label>Action (アクション)</label>
+        <textarea id="a-action" placeholder="例: ActInit"></textarea>
+      </div>
+      <div class="field">
+        <label>プレビュー (DSL)</label>
+        <div class="preview-bar" id="a-preview">EvStart [IsReady] / ActInit</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- B案: インライン -->
+  <div id="inline-edit">
+    <div class="row">
+      <span class="tag" id="b-tag">EVENT</span>
+      <input type="text" id="b-input">
+    </div>
+  </div>
+
+  <!-- C案: ポップアップ -->
+  <div id="popup">
+    <div class="pop-row">
+      <span class="pop-tag event">event</span>
+      <input type="text" id="c-event">
+    </div>
+    <div class="pop-row">
+      <span class="pop-tag guard">[guard]</span>
+      <input type="text" id="c-guard">
+    </div>
+    <div class="pop-row">
+      <span class="pop-tag action">/ act</span>
+      <input type="text" id="c-action">
+    </div>
+    <div class="pop-actions">
+      <button id="c-cancel">Cancel</button>
+      <button id="c-ok" class="primary">OK</button>
+    </div>
+    <div class="pop-tail"></div>
+  </div>
+
+  <div id="toast"></div>
+</div>
+
+<script>
+// ============== Sample Data ==============
+const states = [
+  { id:'idle',   x:30,  y:60,  w:90, h:50, label:'Idle' },
+  { id:'active', x:230, y:60,  w:100, h:50, label:'Active' },
+  { id:'error',  x:130, y:240, w:90, h:50, label:'Error' },
+];
+const transitions = [
+  { id:'t1', from:'idle',   to:'active', event:'EvStart', guard:'IsReady', action:'ActInit' },
+  { id:'t2', from:'active', to:'error',  event:'EvFail',  guard:'',        action:'LogErr'  },
+  { id:'t3', from:'error',  to:'idle',   event:'EvReset', guard:'',        action:''        },
+];
+
+let mode = 'A';
+let selectedTr = null;
+
+// ============== Render ==============
+const svg = document.getElementById('svg');
+function center(s) { return { cx: s.x + s.w/2, cy: s.y + s.h/2 }; }
+function getState(id) { return states.find(s=>s.id===id); }
+
+function dslLabel(t) {
+  let s = t.event || '';
+  if (t.guard)  s += (s ? ' ' : '') + `[${t.guard}]`;
+  if (t.action) s += (s ? ' ' : '') + `/ ${t.action}`;
+  return s;
+}
+
+function render() {
+  let html = '';
+  // transitions (lines + label backgrounds)
+  for (const t of transitions) {
+    const a = getState(t.from), b = getState(t.to);
+    if (!a || !b) continue;
+    const ca = center(a), cb = center(b);
+    // adjust endpoints to rect edges (simple horizontal/vertical bias)
+    const dx = cb.cx - ca.cx, dy = cb.cy - ca.cy;
+    const len = Math.hypot(dx,dy) || 1;
+    const ux = dx/len, uy = dy/len;
+    const ax = ca.cx + ux * (a.w/2), ay = ca.cy + uy * (a.h/2);
+    const bx = cb.cx - ux * (b.w/2 + 8), by = cb.cy - uy * (b.h/2 + 8);
+    const mx = (ax + bx)/2, my = (ay + by)/2;
+    const sel = (selectedTr === t.id) ? 'selected' : '';
+    const label = dslLabel(t) || '(empty)';
+    const lw = label.length * 7 + 16;
+    html += `
+      <g>
+        <line class="tr-line ${sel}" x1="${ax}" y1="${ay}" x2="${bx}" y2="${by}"/>
+        <line class="tr-hit" data-tr="${t.id}" x1="${ax}" y1="${ay}" x2="${bx}" y2="${by}"/>
+        <rect class="tr-label-bg ${sel}" data-tr="${t.id}" x="${mx-lw/2}" y="${my-12}" width="${lw}" height="22" rx="4"/>
+        <text class="tr-label-text" x="${mx}" y="${my-1}" text-anchor="middle">${escapeHtml(label)}</text>
+      </g>`;
+  }
+  // states
+  for (const s of states) {
+    html += `
+      <g>
+        <rect class="state-rect" x="${s.x}" y="${s.y}" width="${s.w}" height="${s.h}" rx="8"/>
+        <text class="state-label" x="${s.x + s.w/2}" y="${s.y + s.h/2}">${escapeHtml(s.label)}</text>
+      </g>`;
+  }
+  svg.innerHTML = html;
+}
+function escapeHtml(s) { return String(s).replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+
+// ============== Toast ==============
+const toastEl = document.getElementById('toast');
+let toastTimer;
+function toast(m) {
+  toastEl.textContent = m; toastEl.classList.add('show');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(()=>toastEl.classList.remove('show'), 1600);
+}
+
+// ============== Mode switching ==============
+const desc = document.getElementById('desc');
+const modeText = {
+  A: '<b>A案: ボトムシート</b><br>遷移をタップ → ボトムシートが開いて event/guard/action を1画面で編集。広いキーボード領域、フィールド分離、プレビュー付き。',
+  B: '<b>B案: インライン編集</b><br>遷移ラベルをダブルタップ → ラベル位置にミニ入力欄が出現。連続編集が早い。各フィールドは個別タップで切替（タグで現在編集中を示す）。',
+  C: '<b>C案: ポップアップ</b><br>遷移をタップ → ラベル付近に240px幅のカードが浮かぶ。図を見たまま3フィールドを同時編集。OKで確定、Cancelで破棄。',
+};
+
+document.querySelectorAll('.seg button').forEach(b => {
+  b.addEventListener('click', () => {
+    document.querySelectorAll('.seg button').forEach(x=>x.classList.remove('active'));
+    b.classList.add('active');
+    mode = b.dataset.mode;
+    desc.innerHTML = modeText[mode];
+    closeAll();
+    selectedTr = null;
+    render();
+  });
+});
+desc.innerHTML = modeText.A;
+
+function closeAll() {
+  document.getElementById('sheet').classList.remove('show');
+  document.getElementById('sheet-bd').classList.remove('show');
+  document.getElementById('inline-edit').classList.remove('show');
+  document.getElementById('popup').classList.remove('show');
+}
+
+// ============== SVG Click ==============
+svg.addEventListener('click', e => {
+  const t = e.target.closest('[data-tr]');
+  if (!t) {
+    selectedTr = null; render(); closeAll();
+    return;
+  }
+  const trId = t.getAttribute('data-tr');
+  selectedTr = trId; render();
+  const tr = transitions.find(x=>x.id===trId);
+
+  if (mode === 'A') openSheet(tr);
+  else if (mode === 'C') openPopup(tr, e);
+  // B案は単タップでは開かない (ダブルタップ待ち)
+});
+
+// B案: ダブルタップ検出
+let lastTapTime = 0, lastTapTr = null;
+svg.addEventListener('pointerdown', e => {
+  if (mode !== 'B') return;
+  const t = e.target.closest('[data-tr]'); if (!t) return;
+  const trId = t.getAttribute('data-tr');
+  const now = Date.now();
+  if (now - lastTapTime < 320 && lastTapTr === trId) {
+    const tr = transitions.find(x=>x.id===trId);
+    openInline(tr, e);
+  }
+  lastTapTime = now; lastTapTr = trId;
+});
+
+// ============== A案: Sheet ==============
+function openSheet(tr) {
+  document.getElementById('sheet-hint').textContent = `${tr.from} → ${tr.to}`;
+  document.getElementById('a-event').value  = tr.event;
+  document.getElementById('a-guard').value  = tr.guard;
+  document.getElementById('a-action').value = tr.action;
+  updatePreview();
+  document.getElementById('sheet').classList.add('show');
+  document.getElementById('sheet-bd').classList.add('show');
+}
+function updatePreview() {
+  const tr = {
+    event:  document.getElementById('a-event').value,
+    guard:  document.getElementById('a-guard').value,
+    action: document.getElementById('a-action').value,
+  };
+  document.getElementById('a-preview').textContent = dslLabel(tr) || '(empty)';
+}
+['a-event','a-guard','a-action'].forEach(id => {
+  document.getElementById(id).addEventListener('input', () => {
+    updatePreview();
+    if (!selectedTr) return;
+    const tr = transitions.find(x=>x.id===selectedTr);
+    tr.event  = document.getElementById('a-event').value;
+    tr.guard  = document.getElementById('a-guard').value;
+    tr.action = document.getElementById('a-action').value;
+    render();
+  });
+});
+document.getElementById('sheet-bd').addEventListener('click', closeAll);
+
+// ============== B案: Inline ==============
+let inlineField = 'event';
+function openInline(tr, ev) {
+  inlineField = 'event';
+  showInlineField(tr);
+  const ie = document.getElementById('inline-edit');
+  const r = document.getElementById('canvas-wrap').getBoundingClientRect();
+  const ix = (ev.clientX - r.left), iy = (ev.clientY - r.top);
+  ie.style.left = Math.max(8, Math.min(ix - 100, r.width - 220)) + 'px';
+  ie.style.top  = Math.max(8, iy - 50) + 'px';
+  ie.classList.add('show');
+  setTimeout(()=>document.getElementById('b-input').focus(), 50);
+}
+function showInlineField(tr) {
+  const tag = document.getElementById('b-tag');
+  const inp = document.getElementById('b-input');
+  if (inlineField === 'event')      { tag.textContent = 'EVENT';  tag.style.color='var(--accent)'; inp.value=tr.event;  inp.placeholder='EvStart'; }
+  else if (inlineField === 'guard') { tag.textContent = 'GUARD';  tag.style.color='var(--green)';  inp.value=tr.guard;  inp.placeholder='IsReady'; }
+  else                              { tag.textContent = 'ACTION'; tag.style.color='var(--amber)';  inp.value=tr.action; inp.placeholder='ActInit'; }
+}
+document.getElementById('b-input').addEventListener('input', e => {
+  if (!selectedTr) return;
+  const tr = transitions.find(x=>x.id===selectedTr);
+  tr[inlineField] = e.target.value;
+  render();
+});
+document.getElementById('b-input').addEventListener('keydown', e => {
+  if (e.key === 'Tab' || e.key === 'Enter') {
+    e.preventDefault();
+    if (inlineField === 'event') inlineField = 'guard';
+    else if (inlineField === 'guard') inlineField = 'action';
+    else { closeAll(); return; }
+    const tr = transitions.find(x=>x.id===selectedTr);
+    showInlineField(tr);
+    document.getElementById('b-input').focus();
+  } else if (e.key === 'Escape') {
+    closeAll();
+  }
+});
+
+// ============== C案: Popup ==============
+function openPopup(tr, ev) {
+  document.getElementById('c-event').value  = tr.event;
+  document.getElementById('c-guard').value  = tr.guard;
+  document.getElementById('c-action').value = tr.action;
+  const pop = document.getElementById('popup');
+  const r = document.getElementById('canvas-wrap').getBoundingClientRect();
+  const ix = (ev.clientX - r.left), iy = (ev.clientY - r.top);
+  // 240幅、できるだけ画面内に
+  pop.style.left = Math.max(8, Math.min(ix - 120, r.width - 248)) + 'px';
+  pop.style.top  = Math.max(8, iy - 140) + 'px';
+  pop.classList.add('show');
+}
+['c-event','c-guard','c-action'].forEach(id => {
+  document.getElementById(id).addEventListener('input', () => {
+    if (!selectedTr) return;
+    const tr = transitions.find(x=>x.id===selectedTr);
+    tr.event  = document.getElementById('c-event').value;
+    tr.guard  = document.getElementById('c-guard').value;
+    tr.action = document.getElementById('c-action').value;
+    render();
+  });
+});
+document.getElementById('c-cancel').addEventListener('click', closeAll);
+document.getElementById('c-ok').addEventListener('click', () => { toast('保存'); closeAll(); });
+
+// ============== Boot ==============
+render();
+</script>
+</body>
+</html>

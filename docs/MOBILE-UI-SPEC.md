@@ -22,13 +22,33 @@ PC版と同等の表現力を持ちつつ、モバイル特有の制約に最適
 
 ## 2. プラットフォーム / 配信
 
+**モバイル版は独立したネイティブアプリとして配信する**。PC版（`stablestate.html`）とは
+別物として扱い、URL/ブレークポイントによる自動切替は行わない。
+
 | 区分 | 方針 |
 |---|---|
-| 第一形態 | **PWA**：`manifest.json` + Service Worker でホーム画面追加・オフライン動作 |
-| 第二形態 | Capacitor 等で iOS/Android アプリ化（ストア配布する場合） |
-| ターゲット | iOS Safari 16+, Android Chrome 110+ |
-| 画面サイズ | 360×640 〜 430×932（iPhone Pro系で確認） |
+| 主形態 | **Android APK**（Capacitor で `stablestate-mobile.html` をラップ） |
+| 副形態 | iOS（同 Capacitor プロジェクト）、PWA は副次成果物 |
+| 開発形態 | ブラウザで `stablestate-mobile.html` 単体を実行できる（開発・モック確認用） |
+| ターゲット | Android 10+ (API 29+), iOS 16+ |
+| 画面サイズ | 360×640 〜 430×932（iPhone Pro / Pixel系で確認） |
 | 横向き | 対応（キャンバスのみ拡大、UIは同一） |
+
+### 2.1 ビルドパイプライン (Capacitor)
+
+```
+stablestate-mobile.html ──┐
+manifest.json             │
+sw.js                     ├─→ Capacitor (web/) ─→ Android Studio ─→ APK
+icons/                    │                  └─→ Xcode         ─→ IPA
+core.js (parseDSL等)      ┘
+```
+
+- `npx cap init StableState com.stablestate.mobile`
+- `npx cap add android` / `npx cap add ios`
+- web資産は `web/` または `dist/` に配置、`capacitor.config.ts` で `webDir` 指定
+- ファイル入出力は `@capacitor/filesystem` を経由（PWAでは `<input type=file>` フォールバック）
+- 共有は `@capacitor/share`（PNG/SVGをOSの共有シートへ）
 
 ## 3. 設計原則
 
@@ -134,6 +154,42 @@ PC版と同等の表現力を持ちつつ、モバイル特有の制約に最適
   - State / Group / Initial / Final / Choice / Note
   - 各アイコンに指をスワイプして離すと、その要素を中央に作成
 
+## 6.5 遷移ラベル編集UI（3案・要選定）
+
+`event[guard] / action` の編集UIを 3案でモック化（`mocks/transition-label-mock.html`）。
+最終的に1案を採用する。
+
+### A案: ボトムシート起動（推奨案）
+- 遷移をタップ → ボトムシートが開いて 3フィールド + DSLプレビューを表示
+- メリット：状態編集と同じパターンで一貫性、入力エリアが広い、プレビュー可
+- デメリット：シートが画面の半分を占有して図が見えにくい
+
+### B案: インライン編集
+- 遷移ラベルをダブルタップ → ラベル位置にミニ入力欄（タグで現在のフィールドを表示）
+- Tab/Enterで event → guard → action へ循環
+- メリット：操作が早い、現在地から動かない
+- デメリット：ソフトキーボードで隠れる、フィールド切替が直感的でない
+
+### C案: ポップアップ・インスペクタ
+- 遷移をタップ → 240px幅のフローティングカードがラベル付近に出現
+- 3フィールドを同時表示、OK/Cancelで確定
+- メリット：図と同時に見える、3フィールドを並列編集
+- デメリット：240px幅が小さめのスマホ（iPhone SE 375px）でぎりぎり
+
+### 比較表
+
+| 項目 | A: シート | B: インライン | C: ポップアップ |
+|---|---|---|---|
+| 学習コスト | 低（一貫） | 中 | 中 |
+| 入力速度 | 中 | 速 | 中 |
+| 図の見やすさ | △ | ◎ | ○ |
+| 小型端末対応 | ◎ | ◎ | △ |
+| プレビュー | ◎ | △ | ○ |
+| 連続編集 | △ | ◎ | ○ |
+| **推奨** | ★ | | |
+
+実機で `mocks/transition-label-mock.html` を開いて3案を切替比較し、最終決定する。
+
 ## 7. プロパティ表示の階層化
 
 「軽いUI」のため、**画面に出る情報量を3段階** で制御：
@@ -144,10 +200,34 @@ PC版と同等の表現力を持ちつつ、モバイル特有の制約に最適
 
 ## 8. ファイル/データ
 
-- LocalStorage に最終編集状態を自動保存（30秒間隔）
+### 8.1 ファイル入出力
 - 「Save」で `.sstate` ダウンロード（現行と同じDSLフォーマット）
 - 「Open」でファイル選択 → DSL読込 → 図に反映
-- 内部表現は PC版の parseDSL/serializeDSL を流用（コアロジック共通）
+- Capacitor版は `@capacitor/filesystem` で端末ストレージへ、PWA/ブラウザ版は `<input type=file>` / `<a download>`
+- 内部表現は PC版の `parseDSL` / `serializeDSL` を流用（コアロジック共通）
+
+### 8.2 自動保存戦略
+
+2層構成。一定容量を超えたら IndexedDB にフォールバック：
+
+```
+┌─ LocalStorage (default) ─┐    超過 (~5MB)    ┌─ IndexedDB ─┐
+│  key: ss-mobile.current  │ ────────────────→ │ store: docs │
+│  key: ss-mobile.recent[] │   QuotaExceeded   │  - id, name │
+└──────────────────────────┘                   │  - dsl, ts  │
+                                               └─────────────┘
+```
+
+| 項目 | 値 |
+|---|---|
+| 保存間隔 | 編集後 5秒 debounce（タイマーではなく操作トリガ） |
+| 保存対象 | DSL文字列のみ（パース後ASTは保存しない） |
+| 履歴本数 | 直近 10件をローテーション（最古を削除） |
+| LocalStorage超過判定 | `setItem` の `QuotaExceededError` を捕捉して IndexedDB へ移行 |
+| 起動時復元 | `current` を読んで自動ロード、エラー時は空ドキュメントで起動 |
+| 移行後の挙動 | LocalStorageに移行済みフラグを置き、以降は IndexedDB を一次ストアとする |
+
+実装は `storage.js` に抽象化し、 `save(key, value)` / `load(key)` インタフェースで隠蔽。
 
 ## 9. PWA要件
 
@@ -205,13 +285,43 @@ PC版と同等の表現力を持ちつつ、モバイル特有の制約に最適
 | 状態遷移表閲覧（read-only） | | ✅ |
 | Capacitorラッパ | | ✅ |
 
-## 12. 未決事項
+## 12. 確定事項とアイコン仕様
 
-- [ ] アイコンセットを SVG inline / icon font / 絵文字 のどれにするか（軽量重視なら SVG inline）
-- [ ] LocalStorage 容量超過時の挙動（IndexedDBへ移行か）
-- [ ] iPadなどタブレットでの扱い（モバイルUIで十分か、専用UIが必要か）
-- [ ] PC/モバイル自動切替のしきい値（現案：768px、ただしユーザー切替も用意）
-- [ ] 遷移ラベル（イベント/ガード/アクション）のインライン編集UI
+### 12.1 アイコン
+
+すべて **SVGインライン** で実装する。CSSの `currentColor` で配色制御。
+
+```html
+<!-- 例: + アイコン -->
+<svg viewBox="0 0 24 24" width="24" height="24" fill="none"
+     stroke="currentColor" stroke-width="2" stroke-linecap="round">
+  <path d="M12 5v14M5 12h14"/>
+</svg>
+```
+
+| 用途 | アイコン | viewBox |
+|---|---|---|
+| メニュー | hamburger | 24×24 |
+| その他 | dots-vertical | 24×24 |
+| 追加(FAB) | plus | 24×24 |
+| Undo/Redo | curved-arrow | 24×24 |
+| Fit | crosshair | 24×24 |
+| 削除 | trash | 24×24 |
+| 改名 | pencil | 24×24 |
+| 色 | palette | 24×24 |
+
+`mocks/mobile-mock.html` 内の絵文字を v1 実装で SVG 置換する。
+
+### 12.2 切替方針（再掲）
+
+PC/モバイルの自動切替は行わない。モバイル版は独立アプリ（APK/IPA）として配信。
+ブラウザで `stablestate-mobile.html` を直接開けば動作するが、これは開発確認用と位置付ける。
+
+### 12.3 残課題
+
+- [ ] iPad 等大画面タブレットの扱い（横向き時の余白活用、サイドにシートを常駐させるか）
+- [ ] アクセシビリティ（VoiceOver / TalkBack 対応の優先度）
+- [ ] 多言語化（現状は日本語UI、英語化の要否）
 
 ## 13. 関連
 

@@ -1,0 +1,592 @@
+<!--
+  StableState モバイルUI モック (Draft)
+
+  目的: docs/MOBILE-UI-SPEC.md の挙動を体感するための静的プロトタイプ。
+  実装範囲:
+    - レイアウト (ヘッダ / キャンバス / コマンドバー / FAB)
+    - 状態の追加 (FABタップ、空白ダブルタップ)
+    - ドラッグ移動 / 選択 / セレクションバブル
+    - ピンチズーム / 1本指パン
+    - ボトムシート開閉
+  範囲外: 遷移作成、リサイズ、グループ、ファイルI/O
+-->
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,user-scalable=no">
+<meta name="theme-color" content="#1a1a2e">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<title>StableState Mobile (Mock)</title>
+<style>
+* { margin:0; padding:0; box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
+:root {
+  --bg:#1a1a2e; --panel:#16213e; --canvas:#0f0f23; --border:#2a2a4a;
+  --text:#E2E8F0; --muted:#64748B; --dim:#475569;
+  --accent:#818CF8; --accent2:#4338CA; --accent-bg:#312E81;
+  --green:#22C55E; --amber:#F59E0B; --red:#EF4444;
+  --safe-top:env(safe-area-inset-top,0px);
+  --safe-bot:env(safe-area-inset-bottom,0px);
+}
+html,body { height:100%; overflow:hidden; }
+body {
+  background:var(--bg); color:var(--text);
+  font-family:-apple-system,BlinkMacSystemFont,"Hiragino Sans","Noto Sans JP",sans-serif;
+  display:flex; flex-direction:column;
+  user-select:none; -webkit-user-select:none;
+}
+
+/* ─── ヘッダ ─── */
+#header {
+  height:calc(44px + var(--safe-top)); padding-top:var(--safe-top);
+  display:flex; align-items:center; justify-content:space-between;
+  padding-left:8px; padding-right:8px;
+  background:var(--panel); border-bottom:1px solid var(--border);
+  flex-shrink:0;
+}
+.icon-btn {
+  width:40px; height:40px; border:0; background:transparent; color:var(--text);
+  font-size:20px; cursor:pointer; border-radius:8px;
+  display:flex; align-items:center; justify-content:center;
+}
+.icon-btn:active { background:var(--accent-bg); }
+#title {
+  flex:1; text-align:center; font-size:14px; font-weight:600;
+  color:var(--text); overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+}
+#title small { color:var(--muted); font-weight:400; font-size:10px; margin-left:6px; }
+
+/* ─── キャンバス ─── */
+#canvas-wrap {
+  flex:1; position:relative; overflow:hidden;
+  background:
+    radial-gradient(circle, #2a2a4a 1px, transparent 1px) 0 0/24px 24px,
+    var(--canvas);
+  touch-action:none;
+}
+#canvas-svg { position:absolute; left:0; top:0; width:100%; height:100%; display:block; }
+
+.state-rect { fill:var(--panel); stroke:var(--accent); stroke-width:2; rx:8; }
+.state-rect.selected { stroke:var(--amber); stroke-width:3; filter:drop-shadow(0 0 8px var(--amber)); }
+.state-label { fill:var(--text); font-size:14px; font-weight:600; text-anchor:middle; dominant-baseline:central; pointer-events:none; }
+
+/* セレクションバブル (HTML overlay) */
+#sel-bubble {
+  position:absolute; display:none; z-index:5;
+  background:var(--panel); border:1px solid var(--accent); border-radius:20px;
+  padding:4px; gap:2px; box-shadow:0 4px 16px rgba(0,0,0,0.5);
+  display:none;
+}
+#sel-bubble.show { display:flex; }
+#sel-bubble button {
+  width:36px; height:36px; border:0; background:transparent; color:var(--text);
+  font-size:16px; border-radius:50%;
+}
+#sel-bubble button:active { background:var(--accent-bg); }
+#sel-bubble::after {
+  content:''; position:absolute; bottom:-7px; left:50%; transform:translateX(-50%);
+  width:0;height:0; border-left:7px solid transparent; border-right:7px solid transparent;
+  border-top:7px solid var(--accent);
+}
+
+/* ─── コマンドバー ─── */
+#cmdbar {
+  height:calc(56px + var(--safe-bot)); padding-bottom:var(--safe-bot);
+  background:var(--panel); border-top:1px solid var(--border);
+  display:flex; align-items:center; justify-content:space-around;
+  flex-shrink:0; position:relative;
+}
+#cmdbar .icon-btn { width:48px; height:48px; font-size:22px; color:var(--muted); }
+#cmdbar .icon-btn:active { color:var(--accent); }
+
+/* FAB (中央) */
+#fab {
+  position:absolute; left:50%; bottom:calc(28px + var(--safe-bot));
+  transform:translateX(-50%);
+  width:56px; height:56px; border-radius:50%;
+  background:linear-gradient(135deg,var(--accent),var(--accent2));
+  color:#fff; font-size:28px; border:0; box-shadow:0 4px 16px rgba(67,56,202,0.5);
+  display:flex; align-items:center; justify-content:center; font-weight:300;
+}
+#fab:active { transform:translateX(-50%) scale(0.92); }
+
+/* ─── ボトムシート ─── */
+#sheet-backdrop {
+  position:absolute; inset:0; background:rgba(0,0,0,0.4);
+  display:none; z-index:9;
+}
+#sheet-backdrop.show { display:block; }
+#sheet {
+  position:absolute; left:0; right:0; bottom:0;
+  background:var(--panel); border-radius:16px 16px 0 0;
+  transform:translateY(100%); transition:transform 0.25s ease-out;
+  z-index:10; max-height:60vh; overflow:hidden;
+  display:flex; flex-direction:column;
+  padding-bottom:var(--safe-bot);
+}
+#sheet.show { transform:translateY(0); }
+#sheet .grabber { width:36px; height:4px; background:var(--dim); border-radius:2px; margin:8px auto; flex-shrink:0; }
+#sheet h3 { padding:0 16px 12px; font-size:13px; color:var(--accent); font-weight:600; text-transform:uppercase; letter-spacing:0.05em; }
+#sheet .body { overflow-y:auto; padding:0 16px 16px; }
+.field { margin-bottom:14px; }
+.field label { display:block; font-size:10px; color:var(--muted); margin-bottom:4px; text-transform:uppercase; letter-spacing:0.05em; }
+.field input, .field textarea, .field select {
+  width:100%; background:var(--canvas); border:1px solid var(--border); border-radius:8px;
+  color:var(--text); padding:10px 12px; font-size:14px; font-family:inherit; outline:none;
+}
+.field input:focus, .field textarea:focus { border-color:var(--accent); }
+.color-row { display:flex; gap:8px; flex-wrap:wrap; }
+.color-row span {
+  width:32px; height:32px; border-radius:8px; border:2px solid var(--border);
+}
+.color-row span.active { border-color:#fff; box-shadow:0 0 0 2px var(--accent); }
+
+/* ─── 長押しメニュー (パイメニューは未実装、リスト形式で代替) ─── */
+#ctx-menu {
+  position:absolute; display:none; z-index:8;
+  background:var(--panel); border:1px solid var(--border); border-radius:12px;
+  box-shadow:0 8px 24px rgba(0,0,0,0.6); padding:6px; min-width:160px;
+}
+#ctx-menu.show { display:block; }
+#ctx-menu button {
+  display:flex; width:100%; align-items:center; gap:10px;
+  padding:10px 12px; background:transparent; border:0; color:var(--text);
+  font-size:14px; border-radius:8px; cursor:pointer; font-family:inherit;
+  text-align:left;
+}
+#ctx-menu button:active { background:var(--accent-bg); }
+
+/* ─── トースト ─── */
+#toast {
+  position:absolute; left:50%; bottom:calc(120px + var(--safe-bot));
+  transform:translateX(-50%); background:rgba(0,0,0,0.8);
+  color:#fff; padding:8px 16px; border-radius:20px; font-size:12px;
+  z-index:20; opacity:0; transition:opacity 0.2s; pointer-events:none;
+}
+#toast.show { opacity:1; }
+
+/* ヒントバナー (初回のみ) */
+#hint {
+  position:absolute; top:12px; left:12px; right:12px;
+  background:rgba(67,56,202,0.95); color:#fff; padding:10px 14px; border-radius:10px;
+  font-size:11px; line-height:1.5; z-index:6; box-shadow:0 4px 12px rgba(0,0,0,0.4);
+}
+#hint b { color:#FBBF24; }
+#hint .close { float:right; margin-left:8px; opacity:0.8; }
+</style>
+</head>
+<body>
+
+<!-- ヘッダ -->
+<div id="header">
+  <button class="icon-btn" id="btn-menu" aria-label="メニュー">&#9776;</button>
+  <div id="title">untitled.sstate <small>mock</small></div>
+  <button class="icon-btn" id="btn-more" aria-label="その他">&#8943;</button>
+</div>
+
+<!-- キャンバス -->
+<div id="canvas-wrap">
+  <svg id="canvas-svg"></svg>
+
+  <div id="sel-bubble">
+    <button data-act="color" title="色">&#127912;</button>
+    <button data-act="rename" title="改名">&#9998;</button>
+    <button data-act="delete" title="削除">&#128465;</button>
+    <button data-act="more" title="詳細">&#8943;</button>
+  </div>
+
+  <div id="ctx-menu">
+    <button data-type="state">&#9634; 状態 (State)</button>
+    <button data-type="group">&#9707; グループ (Group)</button>
+    <button data-type="initial">&#9679; 初期状態 (Initial)</button>
+    <button data-type="final">&#9678; 終了状態 (Final)</button>
+    <button data-type="choice">&#9670; 分岐 (Choice)</button>
+  </div>
+
+  <div id="toast"></div>
+
+  <div id="hint">
+    <span class="close" onclick="document.getElementById('hint').remove()">&times;</span>
+    <b>操作</b>: タップで選択 / ドラッグで移動 / 空白を<b>長押し</b>でメニュー / <b>ダブルタップ</b>で追加 / 2本指でズーム
+  </div>
+</div>
+
+<!-- コマンドバー -->
+<div id="cmdbar">
+  <button class="icon-btn" id="btn-undo" aria-label="元に戻す">&#8630;</button>
+  <button class="icon-btn" id="btn-redo" aria-label="やり直し">&#8631;</button>
+  <button id="fab" aria-label="追加">+</button>
+  <button class="icon-btn" id="btn-fit" aria-label="フィット">&#9974;</button>
+  <button class="icon-btn" id="btn-overflow" aria-label="メニュー">&#8943;</button>
+</div>
+
+<!-- ボトムシート -->
+<div id="sheet-backdrop"></div>
+<div id="sheet">
+  <div class="grabber"></div>
+  <h3 id="sheet-title">プロパティ</h3>
+  <div class="body" id="sheet-body">
+    <div class="field">
+      <label>名前</label>
+      <input type="text" id="f-name" value="">
+    </div>
+    <div class="field">
+      <label>ラベル</label>
+      <input type="text" id="f-label" value="">
+    </div>
+    <div class="field">
+      <label>カラー</label>
+      <div class="color-row">
+        <span style="background:#16213e" class="active"></span>
+        <span style="background:#1e3a8a"></span>
+        <span style="background:#7F1D1D"></span>
+        <span style="background:#14532D"></span>
+        <span style="background:#713F12"></span>
+        <span style="background:#581C87"></span>
+      </div>
+    </div>
+    <div class="field">
+      <label>Entry アクション</label>
+      <textarea id="f-entry" rows="2"></textarea>
+    </div>
+    <div class="field">
+      <label>Do アクション</label>
+      <textarea id="f-do" rows="2"></textarea>
+    </div>
+    <div class="field">
+      <label>Exit アクション</label>
+      <textarea id="f-exit" rows="2"></textarea>
+    </div>
+  </div>
+</div>
+
+<script>
+// ========== State ==========
+const state = {
+  states: [
+    { id:'idle',   x:60,  y:120, w:120, h:60, label:'Idle' },
+    { id:'active', x:200, y:240, w:120, h:60, label:'Active' },
+  ],
+  selectedId: null,
+  // viewport (pan/zoom)
+  vx: 0, vy: 0, scale: 1,
+  // gesture
+  pinchStart: null,
+  drag: null,
+  longPressTimer: null,
+  lastTapTime: 0, lastTapX: 0, lastTapY: 0,
+  idCounter: 1,
+};
+
+const svg = document.getElementById('canvas-svg');
+const canvas = document.getElementById('canvas-wrap');
+const bubble = document.getElementById('sel-bubble');
+const ctxMenu = document.getElementById('ctx-menu');
+const sheet = document.getElementById('sheet');
+const sheetBackdrop = document.getElementById('sheet-backdrop');
+
+// ========== Render ==========
+function render() {
+  const parts = [];
+  for (const s of state.states) {
+    const sel = (state.selectedId === s.id) ? 'selected' : '';
+    parts.push(`<g data-id="${s.id}">
+      <rect class="state-rect ${sel}" x="${s.x}" y="${s.y}" width="${s.w}" height="${s.h}"/>
+      <text class="state-label" x="${s.x + s.w/2}" y="${s.y + s.h/2}">${escapeHtml(s.label)}</text>
+    </g>`);
+  }
+  svg.innerHTML = `<g transform="translate(${state.vx},${state.vy}) scale(${state.scale})">${parts.join('')}</g>`;
+  updateBubblePos();
+}
+function escapeHtml(s) { return s.replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+
+function updateBubblePos() {
+  if (!state.selectedId) { bubble.classList.remove('show'); return; }
+  const s = state.states.find(x => x.id === state.selectedId);
+  if (!s) { bubble.classList.remove('show'); return; }
+  const sx = s.x * state.scale + state.vx;
+  const sy = s.y * state.scale + state.vy;
+  const sw = s.w * state.scale;
+  bubble.style.left = (sx + sw/2 - 90) + 'px';
+  bubble.style.top  = (sy - 56) + 'px';
+  bubble.classList.add('show');
+}
+
+// ========== Hit Test ==========
+function clientToCanvas(cx, cy) {
+  const r = canvas.getBoundingClientRect();
+  return {
+    x: (cx - r.left - state.vx) / state.scale,
+    y: (cy - r.top  - state.vy) / state.scale,
+    rx: cx - r.left, ry: cy - r.top,
+  };
+}
+function hitTest(x, y) {
+  for (let i = state.states.length - 1; i >= 0; i--) {
+    const s = state.states[i];
+    if (x >= s.x && x <= s.x + s.w && y >= s.y && y <= s.y + s.h) return s;
+  }
+  return null;
+}
+
+// ========== Toast ==========
+const toastEl = document.getElementById('toast');
+let toastTimer = null;
+function toast(msg) {
+  toastEl.textContent = msg;
+  toastEl.classList.add('show');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => toastEl.classList.remove('show'), 1500);
+}
+
+// ========== Add State ==========
+function addStateAt(x, y, type='state') {
+  const id = `s${state.idCounter++}`;
+  const label = ({state:'NewState', group:'Group', initial:'init', final:'final', choice:'?'}[type]) || 'NewState';
+  const w = type === 'group' ? 200 : (type === 'state' ? 120 : 40);
+  const h = type === 'group' ? 140 : (type === 'state' ? 60 : 40);
+  state.states.push({ id, x: x - w/2, y: y - h/2, w, h, label });
+  state.selectedId = id;
+  render();
+  toast(`+ ${type}`);
+}
+
+// ========== Pointer / Gesture ==========
+const pointers = new Map();
+
+canvas.addEventListener('pointerdown', e => {
+  pointers.set(e.pointerId, { x:e.clientX, y:e.clientY });
+  canvas.setPointerCapture(e.pointerId);
+
+  if (pointers.size === 2) {
+    // start pinch
+    const pts = [...pointers.values()];
+    state.pinchStart = {
+      d: Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y),
+      cx: (pts[0].x + pts[1].x)/2, cy: (pts[0].y + pts[1].y)/2,
+      scale: state.scale, vx: state.vx, vy: state.vy,
+    };
+    cancelLongPress();
+    state.drag = null;
+    return;
+  }
+
+  if (pointers.size === 1) {
+    const p = clientToCanvas(e.clientX, e.clientY);
+    const hit = hitTest(p.x, p.y);
+    const now = Date.now();
+    const isDouble = (now - state.lastTapTime < 300) &&
+                     Math.hypot(e.clientX - state.lastTapX, e.clientY - state.lastTapY) < 30;
+    state.lastTapTime = now; state.lastTapX = e.clientX; state.lastTapY = e.clientY;
+
+    if (isDouble && !hit) {
+      addStateAt(p.x, p.y, 'state');
+      state.lastTapTime = 0;
+      return;
+    }
+
+    if (hit) {
+      // start drag
+      state.drag = { id: hit.id, ox: p.x - hit.x, oy: p.y - hit.y, moved: false };
+      state.selectedId = hit.id;
+      render();
+    } else {
+      // start pan
+      state.drag = { pan:true, sx:e.clientX, sy:e.clientY, vx:state.vx, vy:state.vy, moved:false };
+      // long press for ctx menu (空白)
+      const lpx = e.clientX, lpy = e.clientY;
+      cancelLongPress();
+      state.longPressTimer = setTimeout(() => {
+        showCtxMenu(lpx, lpy);
+        state.drag = null;
+      }, 500);
+    }
+  }
+});
+
+canvas.addEventListener('pointermove', e => {
+  if (!pointers.has(e.pointerId)) return;
+  pointers.set(e.pointerId, { x:e.clientX, y:e.clientY });
+
+  if (state.pinchStart && pointers.size === 2) {
+    const pts = [...pointers.values()];
+    const d = Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y);
+    const cx = (pts[0].x + pts[1].x)/2, cy = (pts[0].y + pts[1].y)/2;
+    const k = d / state.pinchStart.d;
+    const newScale = Math.max(0.25, Math.min(4, state.pinchStart.scale * k));
+    const r = canvas.getBoundingClientRect();
+    const px = state.pinchStart.cx - r.left, py = state.pinchStart.cy - r.top;
+    state.vx = px - (px - state.pinchStart.vx) * (newScale / state.pinchStart.scale) + (cx - state.pinchStart.cx);
+    state.vy = py - (py - state.pinchStart.vy) * (newScale / state.pinchStart.scale) + (cy - state.pinchStart.cy);
+    state.scale = newScale;
+    render();
+    return;
+  }
+
+  if (state.drag && pointers.size === 1) {
+    if (state.drag.pan) {
+      const dx = e.clientX - state.drag.sx, dy = e.clientY - state.drag.sy;
+      if (Math.hypot(dx,dy) > 5) {
+        cancelLongPress();
+        state.drag.moved = true;
+        state.vx = state.drag.vx + dx;
+        state.vy = state.drag.vy + dy;
+        render();
+      }
+    } else {
+      const p = clientToCanvas(e.clientX, e.clientY);
+      const s = state.states.find(x => x.id === state.drag.id);
+      if (!s) return;
+      const nx = p.x - state.drag.ox, ny = p.y - state.drag.oy;
+      if (Math.abs(nx - s.x) > 2 || Math.abs(ny - s.y) > 2) state.drag.moved = true;
+      s.x = nx; s.y = ny;
+      render();
+    }
+  }
+});
+
+function pointerEnd(e) {
+  cancelLongPress();
+  pointers.delete(e.pointerId);
+  if (pointers.size < 2) state.pinchStart = null;
+  if (pointers.size === 0) {
+    if (state.drag && state.drag.pan && !state.drag.moved) {
+      // tap on empty: deselect
+      state.selectedId = null;
+      render();
+      hideCtxMenu();
+    } else if (state.drag && !state.drag.pan) {
+      // snap to 10px grid
+      const s = state.states.find(x => x.id === state.drag.id);
+      if (s) { s.x = Math.round(s.x/10)*10; s.y = Math.round(s.y/10)*10; render(); }
+    }
+    state.drag = null;
+  }
+}
+canvas.addEventListener('pointerup', pointerEnd);
+canvas.addEventListener('pointercancel', pointerEnd);
+
+function cancelLongPress() {
+  if (state.longPressTimer) { clearTimeout(state.longPressTimer); state.longPressTimer = null; }
+}
+
+// ========== Ctx Menu ==========
+function showCtxMenu(cx, cy) {
+  const r = canvas.getBoundingClientRect();
+  ctxMenu.style.left = Math.min(cx - r.left, r.width - 170) + 'px';
+  ctxMenu.style.top  = Math.min(cy - r.top,  r.height - 240) + 'px';
+  ctxMenu.classList.add('show');
+  ctxMenu.dataset.cx = cx; ctxMenu.dataset.cy = cy;
+}
+function hideCtxMenu() { ctxMenu.classList.remove('show'); }
+ctxMenu.addEventListener('click', e => {
+  const t = e.target.closest('button');
+  if (!t) return;
+  const cx = +ctxMenu.dataset.cx, cy = +ctxMenu.dataset.cy;
+  const p = clientToCanvas(cx, cy);
+  addStateAt(p.x, p.y, t.dataset.type);
+  hideCtxMenu();
+});
+
+// ========== Selection Bubble ==========
+bubble.addEventListener('click', e => {
+  const b = e.target.closest('button'); if (!b) return;
+  const s = state.states.find(x => x.id === state.selectedId);
+  if (!s) return;
+  switch (b.dataset.act) {
+    case 'rename': {
+      const v = prompt('名前', s.label);
+      if (v) { s.label = v; render(); }
+      break;
+    }
+    case 'delete': {
+      state.states = state.states.filter(x => x.id !== state.selectedId);
+      state.selectedId = null;
+      render();
+      toast('deleted');
+      break;
+    }
+    case 'color': toast('カラー選択 (mock)'); break;
+    case 'more': openSheet(s); break;
+  }
+});
+
+// ========== Bottom Sheet ==========
+function openSheet(s) {
+  document.getElementById('sheet-title').textContent = `状態: ${s.label}`;
+  document.getElementById('f-name').value = s.id;
+  document.getElementById('f-label').value = s.label;
+  document.getElementById('f-entry').value = '';
+  document.getElementById('f-do').value = '';
+  document.getElementById('f-exit').value = '';
+  sheet.classList.add('show');
+  sheetBackdrop.classList.add('show');
+}
+function closeSheet() {
+  sheet.classList.remove('show');
+  sheetBackdrop.classList.remove('show');
+  // 軽く反映
+  const s = state.states.find(x => x.id === state.selectedId);
+  if (s) {
+    const newLabel = document.getElementById('f-label').value;
+    if (newLabel) s.label = newLabel;
+    render();
+  }
+}
+sheetBackdrop.addEventListener('click', closeSheet);
+
+// シートのドラッグ閉じ
+let sheetDrag = null;
+sheet.querySelector('.grabber').addEventListener('pointerdown', e => {
+  sheetDrag = { sy:e.clientY, h:sheet.offsetHeight };
+  sheet.style.transition = 'none';
+});
+window.addEventListener('pointermove', e => {
+  if (!sheetDrag) return;
+  const dy = e.clientY - sheetDrag.sy;
+  if (dy > 0) sheet.style.transform = `translateY(${dy}px)`;
+});
+window.addEventListener('pointerup', e => {
+  if (!sheetDrag) return;
+  sheet.style.transition = '';
+  const dy = e.clientY - sheetDrag.sy;
+  sheet.style.transform = '';
+  if (dy > 100) closeSheet();
+  sheetDrag = null;
+});
+
+// ========== Bottom Bar ==========
+document.getElementById('fab').addEventListener('click', () => {
+  const r = canvas.getBoundingClientRect();
+  const cx = r.width/2, cy = r.height/2;
+  const p = clientToCanvas(r.left + cx, r.top + cy);
+  addStateAt(p.x, p.y, 'state');
+});
+document.getElementById('btn-fit').addEventListener('click', () => {
+  if (state.states.length === 0) { state.vx=0; state.vy=0; state.scale=1; render(); return; }
+  const minX = Math.min(...state.states.map(s=>s.x));
+  const minY = Math.min(...state.states.map(s=>s.y));
+  const maxX = Math.max(...state.states.map(s=>s.x+s.w));
+  const maxY = Math.max(...state.states.map(s=>s.y+s.h));
+  const r = canvas.getBoundingClientRect();
+  const pad = 40;
+  const sx = (r.width - pad*2) / (maxX - minX || 1);
+  const sy = (r.height - pad*2) / (maxY - minY || 1);
+  state.scale = Math.min(sx, sy, 2);
+  state.vx = pad - minX * state.scale;
+  state.vy = pad - minY * state.scale;
+  render();
+  toast('Fit');
+});
+document.getElementById('btn-undo').addEventListener('click', () => toast('Undo (mock)'));
+document.getElementById('btn-redo').addEventListener('click', () => toast('Redo (mock)'));
+document.getElementById('btn-overflow').addEventListener('click', () => toast('メニュー (mock)'));
+document.getElementById('btn-menu').addEventListener('click', () => toast('New / Open / Save (mock)'));
+document.getElementById('btn-more').addEventListener('click', () => toast('Export PNG/SVG (mock)'));
+
+// ========== Boot ==========
+render();
+</script>
+</body>
+</html>

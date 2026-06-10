@@ -1891,6 +1891,65 @@ function buildSelfRouteShared(box, margin) {
   ];
 }
 
+/** Collect leaf-state and pseudo-state boxes that orthogonal routes must
+ *  not cut through. Composite states are excluded — transitions to/from
+ *  nested children legitimately cross their borders.
+ *  @returns {Array<{x:number,y:number,w:number,h:number}>}
+ */
+function collectObstacleBoxesShared(data, grid) {
+  const boxes = [];
+  for (const st of data.states) {
+    if (st.children && st.children.length > 0) continue;
+    const box = getBoxShared(st.path || st.id, data, grid);
+    if (box) boxes.push(box);
+  }
+  for (const ps of data.pseudoStates) {
+    const box = getBoxShared(ps.path || ps.id, data, grid);
+    if (box) boxes.push(box);
+  }
+  return boxes;
+}
+
+/** Axis-aligned segment vs. margin-expanded box overlap test.
+ *  Diagonal segments (never produced by orthogonal routes) return false. */
+function segmentHitsBoxShared(p1, p2, box, margin) {
+  const m = margin == null ? 5 : margin;
+  const x1 = box.x - m, y1 = box.y - m;
+  const x2 = box.x + box.w + m, y2 = box.y + box.h + m;
+  if (Math.abs(p1.y - p2.y) < 0.01) {
+    const y = p1.y;
+    const minX = Math.min(p1.x, p2.x), maxX = Math.max(p1.x, p2.x);
+    return y > y1 && y < y2 && maxX > x1 && minX < x2;
+  }
+  if (Math.abs(p1.x - p2.x) < 0.01) {
+    const x = p1.x;
+    const minY = Math.min(p1.y, p2.y), maxY = Math.max(p1.y, p2.y);
+    return x > x1 && x < x2 && maxY > y1 && minY < y2;
+  }
+  return false;
+}
+
+function boxesAlmostEqualShared(a, b) {
+  return a && b && Math.abs(a.x - b.x) < 1 && Math.abs(a.y - b.y) < 1 &&
+         Math.abs(a.w - b.w) < 1 && Math.abs(a.h - b.h) < 1;
+}
+
+/** True if any segment of an orthogonal route cuts through an obstacle box.
+ *  The source box is ignored on the first segment and the target box on the
+ *  last one — ports sit directly on the box edge, so those overlaps are
+ *  inherent, not penetrations. */
+function routeHitsObstacleShared(route, boxes, srcBox, tgtBox, margin) {
+  for (let i = 0; i < route.length - 1; i++) {
+    const first = i === 0, last = i === route.length - 2;
+    for (const box of boxes) {
+      if (first && boxesAlmostEqualShared(box, srcBox)) continue;
+      if (last && boxesAlmostEqualShared(box, tgtBox)) continue;
+      if (segmentHitsBoxShared(route[i], route[i + 1], box, margin)) return true;
+    }
+  }
+  return false;
+}
+
 // ═══════════════════════════════════════════════
 // A* Grid-Based Orthogonal Router
 // ═══════════════════════════════════════════════
@@ -2674,6 +2733,14 @@ function renderSVG(parsed) {
   // Collect all polyline routes for crossing detection
   const allRoutes = [];
 
+  // Obstacle-aware rerouting: every geometric route is checked against leaf
+  // state / pseudo-state boxes; on collision the transition is rerouted via
+  // A*. The obstacle grid is built lazily — diagrams whose geometric routes
+  // are all clear never pay for it.
+  const obstacleBoxes = collectObstacleBoxesShared(parsed, g);
+  let renderOG = null;
+  const astarUsedCells = new Set();
+
   // Pre-compute port distribution
   // UNIFIED edge groups: merge incoming and outgoing transitions on the same edge
   // so they share the same port space and don't overlap at the connection point.
@@ -2796,6 +2863,24 @@ function renderSVG(parsed) {
       if (_dirIdx[dirKey] == null) _dirIdx[dirKey] = 0;
       const routeIdx = _dirIdx[dirKey]++;
       route = buildRoute(fromPt, toPt, srcSide, tgtSide, channelOffset, routeIdx);
+      // Geometric routes know nothing about other boxes — when one cuts
+      // through an unrelated state, reroute via A*. The A* result is
+      // re-verified (margin 0) because clearBox() around composite
+      // endpoints can open paths through their children; on any failure
+      // the geometric route stays.
+      if (routeHitsObstacleShared(route, obstacleBoxes, srcBox, tgtBox, 5)) {
+        if (!renderOG) renderOG = buildObstacleGrid(parsed);
+        const wp = astarRoute(renderOG, srcBox, tgtBox, astarUsedCells);
+        if (wp && wp.length >= 2 &&
+            !routeHitsObstacleShared(wp, obstacleBoxes, srcBox, tgtBox, 0)) {
+          route = wp;
+          for (const p of wp) {
+            const cgx = Math.floor(p.x / g), cgy = Math.floor(p.y / g);
+            if (cgx >= 0 && cgx < renderOG.cols && cgy >= 0 && cgy < renderOG.rows)
+              astarUsedCells.add(cgy * renderOG.cols + cgx);
+          }
+        }
+      }
     }
 
     // Crossing detection: check this route against all previously rendered routes
@@ -2873,7 +2958,10 @@ function renderSVG(parsed) {
       svg += `<path d="${d}" fill="none" stroke="${sc}" stroke-width="${sw}"${dashAttr} marker-end="url(#${_amid})"/>`;
     }
 
-    // Store route for future crossing detection
+    // Store route for future crossing detection; expose the final polyline
+    // on the transition (runtime-only, rebuilt every render) for tests and
+    // route inspection.
+    tr._renderedRoute = route;
     allRoutes.push(route);
 
     // Labels — positioned at each route's own midpoint (routes are separated by port distribution)

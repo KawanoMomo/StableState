@@ -2,11 +2,14 @@
   "name": "stablestate-workspace",
   "private": true,
   "version": "0.0.0",
-  "description": "Dev tooling root for StableState — holds Playwright test deps only. The product is still the single stablestate.html file.",
+  "description": "Dev tooling root for StableState — holds Playwright/jsdom test deps only. The product is still the single stablestate.html file.",
   "scripts": {
-    "test:ux:sprint1": "playwright test --config=playwright.config.js tests/ux-brushup/sprint-1"
+    "test:ux:sprint1": "playwright test --config=playwright.config.js tests/ux-brushup/sprint-1",
+    "test:routing": "playwright test --config=playwright.config.js tests/default-routing",
+    "test:headless": "node tests/headless/harness.js"
   },
   "devDependencies": {
-    "@playwright/test": "^1.59.1"
+    "@playwright/test": "^1.59.1",
+    "jsdom": "^29.1.1"
   }
 }
